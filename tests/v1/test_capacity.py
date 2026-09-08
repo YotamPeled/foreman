@@ -879,3 +879,24 @@ def test_queued_work_is_counted_against_the_pool_its_role_runs_on(
 
     block = capsys.readouterr().out.split("Capacity:\n", 1)[1]
     assert "  codex: 1/1 held · 1 waiting" in block
+
+
+def test_a_cap_on_an_unregistered_pool_says_it_governs_nothing(
+        env, monkeypatch, capsys):
+    """A number that looks like a limit and is not must say so.
+
+    The packaged default once configured a pool called `opus` while the
+    adapter registered itself as `claude`, so the owner's cap of two on the
+    megalodon held nothing at all. Configurations written from that default
+    are still on disk, and a stale table there is silent in exactly the same
+    way. The warning names the pool.
+    """
+    from foreman import config
+
+    path = config.ensure_user_config(create_dir=True)
+    path.write_text(path.read_text(encoding="utf-8")
+                    + "\n[pool.nosuchpool]\ncap = 3\n", encoding="utf-8")
+    loaded = config.load()
+    err = capsys.readouterr().err
+    assert "nosuchpool" in err and "governs nothing" in err
+    assert loaded.pools["nosuchpool"]["cap"] == 3

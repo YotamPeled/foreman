@@ -203,6 +203,14 @@ def ensure_user_config(create_dir: bool = False) -> Path:
     return path
 
 
+def _registered_pools() -> frozenset[str]:
+    """Pool names an adapter actually registers, read at call time so a
+    test that registers a fake pool is seen like any other."""
+    from . import pools
+
+    return frozenset(pools.REGISTRY)
+
+
 def load() -> Config:
     """The configuration for this call: packaged defaults, then the user's
     file over them key by key. A file that does not parse warns once and
@@ -219,6 +227,17 @@ def load() -> Config:
               f"using the packaged defaults", file=sys.stderr)
         return Config(pools=merged, path=path, user_read=False)
     for name, entry in _pools_from(raw).items():
+        # A cap on a pool no adapter registers governs nothing, silently.
+        # That is exactly the defect this file was just fixed for: the
+        # packaged default configured a pool called `opus` while the
+        # adapter registers itself as `claude`, so the owner's cap on the
+        # megalodon held nothing. A configuration left over from that
+        # default is still on this machine, so say so rather than let a
+        # number sit there looking like a limit.
+        if name not in _registered_pools():
+            print(f"foreman: warning: {path} caps a pool '{name}' that no "
+                  f"adapter registers, so that cap governs nothing",
+                  file=sys.stderr)
         merged.setdefault(name, {}).update(entry)
     return Config(pools=merged, path=path, user_read=True)
 
