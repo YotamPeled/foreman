@@ -21,8 +21,10 @@ and where each number comes from.
 | **Merge desk** | A supervisor with no component. Lands branches, writes the merge ledger. Never reviews. | 1 | long-lived | no |
 | **Collector** | A daemon, no LLM. Observes, computes, flags, relaunches. | 1 | always | — |
 
-Pools: one per model (`opus`, `codex`, `grok`, `muse`). A pool is a plugin directory (§8). Supervisors come
-from the `opus` pool; the `opus` pool takes no jobs.
+Pools: one per model (`opus`, `codex`, `grok`, `muse`), each a plugin directory (§8) with a system-wide cap.
+The `opus` pool has two caps: supervisors and workers (the "megalodon" for core logic and precision work);
+both draw the same Claude quota. Worker roles, by allocation: **opus** for core logic and cut-throat
+engineering; **muse** for everything else; **astra** and **grok** as reviewers.
 
 ---
 
@@ -41,7 +43,7 @@ want ──▶ foreman plan ──▶ planner interviews ──▶ brief.toml + 
 2. **Watching.** `Super+M` (the panel) or `foreman status` (same text). Four questions, top to bottom:
    what needs me, what is wrong, what is working, what capacity is left. Plus the two queues.
 3. **Acting.** Answer an inbox item, write a rule, freeze/thaw, kill or relaunch a session, change a
-   pool's slots, close a finished component. Each is one command or one key; each lands in a ledger as a
+   pool's cap, prefer a component in the component queue, close a finished component. Each is one command or one key; each lands in a ledger as a
    stamped owner act.
 4. **Not acting.** Everything not in the inbox is somebody else's decision and is already recorded.
 
@@ -52,8 +54,10 @@ Nothing enters the system except through a brief. Plans made elsewhere become br
 ## 3. How each agent uses it
 
 ### Foreman
-- On `component add`: validate (§4.3), write the component and its tasks to the ledger, launch its
-  supervisor (`foreman launch supervisor <component>`), grant it slots per task from pool capacity.
+- On `component add`: validate (§4.3), write the component and its tasks to the ledger, put it in the
+  **component queue**. Admission: a component's supervisor is launched when its `after` components are
+  done and its allocation fits inside the pools' free capacity; the queue is ordered by owner preference,
+  then plan order. Its allocation is reserved for it from launch to `done`.
 - On a supervisor's question (`ask`): if it is money, irreversible or scope → inbox for the owner with a
   recommendation; otherwise answer it and record the answer as a ruling on the component.
 - Every hour: `foreman digest` — computed from ledgers, plus one paragraph of judgement.
@@ -66,10 +70,13 @@ Nothing enters the system except through a brief. Plans made elsewhere become br
    and its own last checkpoint if this is a relaunch. Write a checkpoint ("attached, N tasks, next: …").
 2. **Ready tasks**: a task is ready when every task in its `after` list is `landed` (or `built`, if the
    brief says `after-built`). For each ready task, plan jobs: split the scope into units of work sized for
-   the pool (the pool skill says how big), write one spec per job (§5.2), `foreman job plan`.
-3. **Dispatch**: `foreman job dispatch <job>` — the launcher takes a slot (FCFS per pool), mints a session,
-   creates the worktree and log, injects rules and environment into the spec, starts the worker. If no
-   slot: the job is `queued`; the launcher dispatches it when one frees. The supervisor does not wait.
+   the worker role (the pool skill says how big), write one spec per job (§5.2) naming the role it needs
+   (`opus`, `muse`, or a reviewer), `foreman job plan` — the job enters the **component's job queue**.
+3. **The job queue** is a literal priority queue the supervisor owns and edits (`foreman job order`): it
+   decides what runs first. The launcher pops the highest job whose role has a free worker in the
+   component's allocation, mints a session, creates the worktree and log, injects rules and environment
+   into the spec, starts the worker. Nothing is declared per task about demand; everything is eventually
+   served. The supervisor never waits on a dispatch.
 4. **Return**: the collector marks a job `returned` when its finish marker exists. The supervisor runs the
    task's `verify` command (or the job's own check) itself → `foreman job verify <job> --confirmed` with
    the command and output as evidence, or `--failed` with a finding. Units done are counted from verified
@@ -119,6 +126,14 @@ want      = """what the owner asked for, in the owner's words"""
 done-when = "one sentence the tasks add up to"
 land-on   = "dev"                 # default merge target; a task may override
 reviews   = "on request"          # none | on request | always
+after     = []                    # components that must be done first
+prefer    = 0                     # owner preference in the component queue; higher runs first
+
+[allocation]                      # workers reserved for this component's supervisor, by role
+muse  = 5                         # everything that is not core logic
+opus  = 1                         # core logic, cut-throat engineering, precision
+astra = 1                         # reviewer
+grok  = 1                         # reviewer
 
 [[task]]
 title   = "second reads"
@@ -131,11 +146,11 @@ OUT OF SCOPE: resolving disagreements (audit task). Apps with no first read are 
 """
 verify  = "foreman-verify reads --stage 2 --min 600"   # exit 0 = done; the supervisor runs it
 size    = 600                     # units of work; 1 for a single item
-pool    = "grok"                  # or stages = [{pool="muse", slots=6}, {pool="grok", slots=2}]
-slots   = 6                       # max concurrent jobs on this task
 after   = ["manifest"]            # predecessors; empty = ready at start
-timeout = "20m"                   # per job; defaults to the pool's
+timeout = "20m"                   # per job; defaults to the role's pool
 land-on = "dev"                   # optional override
+# no worker demand here: the supervisor splits the task into jobs, each job names its role,
+# and jobs wait in the component's priority queue for a free worker of that role
 
 [[monitor]]
 question = "how many apps are collected?"
@@ -150,8 +165,9 @@ text = "Nothing on the injection topic goes to Grok."
 ```
 
 ### 4.3 Validation at `component add` (refused otherwise, every violation named at once)
-- every task has `scope` with WHAT / INPUTS / OUTPUTS / OUT OF SCOPE, a `verify` command, `size`, a pool
-  (or stages) that exists, `slots` ≤ the pool's total;
+- every task has `scope` with WHAT / INPUTS / OUTPUTS / OUT OF SCOPE, a `verify` command, `size`;
+- `allocation` names roles that exist and does not exceed any pool's cap on its own; `after` names real
+  components;
 - `after` names real tasks and has no cycle;
 - every monitor has `measure`, `unit`, `every`; `alert` parses;
 - `done-when` is one sentence; `name` is unique; `land-on` is a branch that exists.
@@ -169,9 +185,9 @@ short, runtime-minted, never invented by a session. Every line carries `at` (UTC
 ### 5.1 Work
 | Entity | Fields | State machine |
 |---|---|---|
-| **Component** | id, name, order, want, done_when, land_on, reviews, supervisor (session), brief_path, state | `planning → active → done`; side states `halted` (rule 10), `frozen` |
-| **Task** | id, component, title, scope, verify, size, pool or stages[], slots, after[], timeout, land_on, state, units_done, units_total | `waiting → ready → active → built → landed`; `built` = supervisor CONFIRMED all units; `landed` = merge ledger names it |
-| **Job** | id, task, stage, kind (implement, review, merge, research, verify), spec_path, pool, session, worktree, branch, log, timeout, units (range), attempt, state, planned_at, queued_at, started_at, returned_at, verified_at, artifact, verdict_path | `planned → queued → running → returned → verified \| failed \| killed` |
+| **Component** | id, name, order, prefer, after[], want, done_when, land_on, reviews, allocation{}, supervisor (session), brief_path, state | `queued → active → done`; side states `halted` (rule 10), `frozen` |
+| **Task** | id, component, title, scope, verify, size, after[], timeout, land_on, state, units_done, units_total | `waiting → ready → active → built → landed`; `built` = supervisor CONFIRMED all units; `landed` = merge ledger names it |
+| **Job** | id, task, kind (implement, review, merge, research, verify), role (opus \| muse \| astra \| grok), priority, spec_path, session, worktree, branch, log, timeout, units (range), attempt, state, planned_at, queued_at, started_at, returned_at, verified_at, artifact, verdict_path | `planned → queued → running → returned → verified \| failed \| killed` |
 | **Merge** | id, branch, tasks[], target, review_refs[], head, result, requested_at, landed_at, by | `requested → merging → landed \| failed` |
 
 ### 5.2 The job spec (what a worker receives)
@@ -192,7 +208,8 @@ A spec over one page is refused by `job plan`; a spec without the verification c
 |---|---|
 | **Session** | id, role, pool, model, component, job, pid, launched_by, started_at, last_declared_at, last_observed_at, cpu_s, state (`running \| exited \| stalled \| killed`) |
 | **Pool** | name, model, adapter, slots_total, kinds[], cannot_take[], timeout_default, meter, skill (config, §8) |
-| **Slot grant** | pool, task, job, session, granted_at, released_at — the slot ledger; header counts are sums over open grants |
+| **Allocation** | component, role, count — reserved at admission, released at `done` |
+| **Slot grant** | pool, component, role, job, session, granted_at, released_at — the slot ledger; pool counts are sums over open grants; "idle" = allocated to a component, not granted to a job |
 | **Frozen** | the presence of `~/.local/state/foreman/frozen` (file-presence-as-state) |
 
 ### 5.4 Records
@@ -238,7 +255,12 @@ Ledgers are appended. The panel and the collector watch the directory; every CLI
 ## 7. Derived numbers (`observed.json`, recomputed every tick, never stored elsewhere)
 - per component: units landed / built / total; rate (landed units per hour over the last 2 h); projected
   finish; `doing now` + age; halted? frozen?; monitors' latest values and trends
-- per task: state, units done, jobs running / queued / planned, oldest queued wait
+- per task: state, units done, jobs running / queued, oldest queued wait
+- per component: allocation by role — busy (job, doing what, running for) or idle; the job queue in the
+  supervisor's order with the role each job waits for
+- velocity, swarm-wide and per component: jobs finished / h, tasks finished / h, tokens / h per model
+  (Fable, Opus, GPT from transcripts; Grok and Muse have no counter and show jobs / h with a mark)
+- component queue: waiting components in preference order, what each waits for (an `after`, or capacity)
 - per job: elapsed vs timeout, minutes since last file write, cpu_s
 - per session: seconds since last declared write, since last observed activity
 - per pool: slots held / total, queue depth, oldest wait, meter %, reset time, avg and p90 job duration
@@ -254,6 +276,7 @@ Ledgers are appended. The panel and the collector watch the directory; every CLI
   launch          <spec> <worktree> <log> → starts the process headless, prints pid
   observe         <pid> <worktree> → JSON: transcript mtime, cpu_s, finish marker present
   meter           → JSON: percent, resets_at   (or exit 3: no meter)
+  usage           <session> → JSON: input_tokens, output_tokens   (or exit 3: no counter)
   verdict         <path> → normalised verdict JSON (review jobs)
   SKILL.md        how a supervisor writes a spec this model does well; how to verify its output
 ```
@@ -281,7 +304,9 @@ in the shipped config, and supervisors are not.
     supervisor writes what changed. Scope: the component.
 11. Delegate by job size: under ~10 tool calls, do it; bounded and one page, a worker; vague, do it or a
     Grok-high job; always verify a worker's result by re-running.
-12. Slots are first come, first served, per pool. No reservations by kind. (Priorities later, if ever.)
+12. Capacity: pools cap the system; a component's allocation reserves workers by role; within a component
+    the supervisor's job queue is a priority queue it orders; across components the component queue is
+    ordered by owner preference. No other reservation exists.
 13. Only the foreman is interactive. Every other session is headless, one job per process, finish marker
     in the log, structured verdict file.
 
@@ -316,16 +341,28 @@ in the shipped config, and supervisors are not.
 - **Everyone ↔ Collector**: nothing declared to it; it observes. It writes `observed.json`, anomalies, and
   relaunches.
 - **Panel ↔ state**: read-only on the state directory; every action is a `foreman` verb.
-- **Pool adapter**: `launch`, `observe`, `meter`, `verdict` executables with the argument/JSON shapes above.
+- **Pool adapter**: `launch`, `observe`, `meter`, `usage` (tokens, where the vendor exposes them), `verdict`
+  executables with the argument/JSON shapes above.
 
 ---
 
-## 12. The `foreman` CLI (the whole mutation surface; every verb takes the caller's session from the environment)
+## 12. Tooling by level
+Every role gets exactly its verbs and nothing else, through two doors over one library: the `foreman` CLI
+(owner, scripts, the collector) and one MCP server whose tool set is scoped by the caller's minted session
+id (foreman tools for the foreman, supervisor tools for supervisors, merge tools for the desk; workers get
+no server at all — the launcher denies it). Skills are per role the same way (§15).
+
+Every summoned session receives a generated **role prompt** (`FOREMAN-ROLE.md`, from a template): who you
+are, which component, who you report to, what you report and when (checkpoints, measurements, findings,
+`ask`), your goal (the brief), your allocation, your tools, the rulings, the environment contract. No
+session starts without one; nothing about its situation is left for it to guess.
+
+### The `foreman` verbs (the whole mutation surface; every verb takes the caller's session from the environment)
 | Caller | Verbs |
 |---|---|
-| owner | `plan`, `component add\|close\|list`, `answer <inbox> <text\|option>`, `rule <scope> <text>`, `freeze`, `thaw`, `kill <session>`, `relaunch <session>`, `slots <pool> <n>`, `pool add\|remove\|clone\|list`, `status`, `queues`, `ledger <component>`, `doctor` |
-| foreman | `launch supervisor <component>`, `grant <task> <pool> <n>`, `answer`, `rule component …`, `digest`, `route <inbox> owner\|self` |
-| supervisor | `checkpoint`, `task ready\|built`, `job plan\|dispatch\|verify\|fail`, `evidence`, `finding`, `measure`, `ask`, `merge request`, `component done` |
+| owner | `plan`, `component add\|close\|list\|prefer`, `answer <inbox> <text\|option>`, `rule <scope> <text>`, `freeze`, `thaw`, `kill <session>`, `relaunch <session>`, `cap <pool> <n>`, `pool add\|remove\|clone\|list`, `status`, `queues`, `ledger <component>`, `doctor` |
+| foreman | `admit <component>` (launches its supervisor, reserves its allocation), `answer`, `rule component …`, `digest`, `route <inbox> owner\|self` |
+| supervisor | `checkpoint`, `task ready\|built`, `job plan\|order\|verify\|fail`, `evidence`, `finding`, `measure`, `ask`, `merge request`, `component done` |
 | merge desk | `merge take\|land\|fail` |
 | collector | `observe`, `anomaly`, `relaunch`, `kill` |
 Unknown session id → refused by name. Wrong role for a verb → refused by name. Every refusal lists every
@@ -343,7 +380,8 @@ worktrees vs jobs, slot ledger vs process table, config vs schema.
 | Working | per component: name · supervisor · landed/built/total · rate · left · `doing now` (age) | observed.json |
 | | per task: title · state · units · jobs (model, worktree, elapsed/timeout) · after | tasks.jsonl, jobs.jsonl |
 | | monitors: question · value/of · trend · measured N ago | measurements.jsonl |
-| Task queue | planned and queued jobs, oldest first, pool needed, why blocked | jobs.jsonl, slots.jsonl |
+| Job queue | per component, in the supervisor's order: job, role it waits for, waited | jobs.jsonl, slots.jsonl |
+| Component queue | waiting components in preference order, what each waits for | components, allocations |
 | Merge queue | merging, waiting, last landed with target and review | merges.jsonl |
 | Capacity | per pool: held/total · meter · avg/p90 · waiting | observed.json |
 Same rendering in `foreman status` (text) and the Quickshell panel (`Super+M`). Every key on the panel
@@ -352,8 +390,9 @@ maps to a CLI verb.
 ---
 
 ## 14. Flows
-1. **New component**: planner → brief → `component add` → validate → ledger → `launch supervisor` → supervisor
-   reads rulings, brief, ledger → checkpoint → ready tasks → jobs planned → dispatched as slots allow.
+1. **New component**: planner → brief → `component add` → validate → ledger → component queue → `admit` when
+   `after` done and allocation fits → role prompt generated → supervisor launched → reads rulings, brief,
+   ledger → checkpoint → ready tasks → jobs into its priority queue → launcher pops as workers free.
 2. **A task, end to end**: ready → jobs planned → queued → running (observed) → returned (finish marker) →
    supervisor verifies (CONFIRMED evidence) → optional review job → `merge request` → merge desk lands →
    task `landed` → component progress moves → monitor measured on `landing`.
