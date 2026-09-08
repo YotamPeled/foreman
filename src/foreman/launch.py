@@ -30,7 +30,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from . import caller, ids, paths, store
+from . import caller, ids, paths, procs, store
 from .caller import FOREMAN, SUPERVISOR
 from .cli import subcommand
 from .entities import JOB_KINDS, JOB_ROLES, Session
@@ -477,11 +477,16 @@ def cmd_launch(args: argparse.Namespace) -> int:
             return refuse(f"pool {args.pool} failed to start the process: {exc}")
         # The wrapper runs under setsid as a process group leader, so its
         # pid is its pgid by construction; the group is what a later kill
-        # signals to reach the vendor process.
+        # signals to reach the vendor process. The starttime beside the pid
+        # is the process identity: the collector requires both to match
+        # before believing or killing, so pid reuse cannot hide an intruder
+        # or aim a kill at an unrelated process.
+        starttime = procs.proc_starttime(pid)
         store.update_snapshot(
             paths.roster_path(),
             lambda roster: _move_session(
-                roster, session_id, state="running", pid=pid, pgid=pid),
+                roster, session_id, state="running", pid=pid, pgid=pid,
+                pid_starttime=starttime),
             default={"sessions": {}},
         )
     command = adapter.command_str(ctx)

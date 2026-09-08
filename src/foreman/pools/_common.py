@@ -132,23 +132,19 @@ def spawn_and_wait(argv: list[str], *, pid_path: Path,
 
 
 def cpu_seconds(pid: int | None) -> float:
-    """CPU seconds of the wrapping shell, not of the job.
+    """CPU seconds over the whole process tree below the recorded pid.
 
-    The recorded pid is the wrapper started by the launcher, which does
-    nothing but wait on its pipeline; its own utime/stime never include
-    the seconds the vendor child burns (those are cutime/cstime, unread
-    here). The pid still identifies the job's process group for a later
-    kill, which is what it is recorded for.
+    The recorded pid is the wrapper shell started by the launcher, which
+    does nothing but wait on its pipeline; its own utime and stime stay
+    near zero while the vendor child burns seconds. Reading that pid
+    alone makes every healthy job look idle and fires the stall
+    detector on live work, so the tree below it is summed instead. The
+    pid still identifies the job's process group for a later kill, which
+    is what it is recorded for.
     """
-    if pid is None:
-        return 0.0
-    try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
-            parts = handle.read().rsplit(")", 1)[1].split()
-        ticks = float(parts[11]) + float(parts[12])
-        return ticks / os.sysconf(os.sysconf_names["SC_CLK_TCK"])
-    except (OSError, ValueError, IndexError, KeyError):
-        return 0.0
+    from .. import procs
+
+    return procs.tree_cpu_seconds(pid)
 
 
 def observe_session(session: Any) -> dict:
