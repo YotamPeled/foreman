@@ -117,7 +117,7 @@ def test_launch_records_session_worktree_log_and_roster(env, fake_pool, capsys):
     worktree = str(env / "wt-one")
 
     rc = launch(["muse", "fake", spec, "--repo", str(repo),
-                 "--worktree", worktree, "--component", "corpus",
+                 "--worktree", worktree, "--front", "corpus",
                  "--task", "second reads", "--job", "job-1",
                  "--units", "2-4", "--scope", "WHAT: x\nINPUTS: y\n"])
     assert rc == 0
@@ -138,7 +138,7 @@ def test_launch_records_session_worktree_log_and_roster(env, fake_pool, capsys):
     role_file = Path(worktree) / "FOREMAN-ROLE.md"
     job_text = job_file.read_text(encoding="utf-8")
     role_text = role_file.read_text(encoding="utf-8")
-    assert '# Job job-1 \u00b7 implement \u00b7 task "second reads" \u00b7 component corpus' in job_text
+    assert '# Job job-1 \u00b7 implement \u00b7 task "second reads" \u00b7 front corpus' in job_text
     assert "units: 2-4" in job_text
     assert SPEC_OK in job_text
     assert "WHAT: x\nINPUTS: y\n" in job_text
@@ -167,7 +167,7 @@ def test_launch_records_session_worktree_log_and_roster(env, fake_pool, capsys):
     assert record["role"] == "muse"
     assert record["pool"] == "fake"
     assert record["model"] == "fake-test-model"
-    assert record["component"] == "corpus"
+    assert record["front"] == "corpus"
     assert record["job"] == "job-1"
     assert record["state"] == "running"
     assert isinstance(record["pid"], int)
@@ -809,7 +809,7 @@ def test_only_swarm_and_own_rulings_injected(env, fake_pool, capsys):
     worktree = env / "wt-rulings"
     assert launch(["muse", "fake", spec, "--repo", str(repo),
                    "--worktree", str(worktree),
-                   "--component", "corpus"]) == 0
+                   "--front", "corpus"]) == 0
     capsys.readouterr()
     job_text = (worktree / "FOREMAN-JOB.md").read_text(encoding="utf-8")
     assert "swarm rule one" in job_text

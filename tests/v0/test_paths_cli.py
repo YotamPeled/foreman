@@ -12,17 +12,17 @@ def test_state_and_config_follow_environment(tmp_path, monkeypatch):
     assert paths.state_dir() == tmp_path / "s"
     assert paths.roster_path() == tmp_path / "s" / "roster.json"
     assert paths.observed_path().parent == tmp_path / "s"
-    assert paths.component_tasks_path("corpus") == (
-        tmp_path / "s" / "components" / "corpus" / "tasks.jsonl"
+    assert paths.front_tasks_path("corpus") == (
+        tmp_path / "s" / "fronts" / "corpus" / "tasks.jsonl"
     )
     assert paths.checkpoint_path("ses-1") == (
         tmp_path / "s" / "sessions" / "ses-1" / "checkpoint.json"
     )
     assert paths.config_file() == tmp_path / "c" / "foreman.toml"
-    assert paths.brief_path("corpus").parent == tmp_path / "c" / "components" / "corpus"
+    assert paths.brief_path("corpus").parent == tmp_path / "c" / "fronts" / "corpus"
     root = paths.ensure_state_tree()
     assert root.is_dir()
-    assert (root / "components").is_dir()
+    assert (root / "fronts").is_dir()
     assert (root / "sessions").is_dir()
     assert (root / "events").is_dir()
 

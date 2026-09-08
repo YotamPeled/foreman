@@ -9,7 +9,7 @@ from foreman.entities import (
     Allocation,
     Anomaly,
     Checkpoint,
-    Component,
+    Front,
     Digest,
     Event,
     Evidence,
@@ -26,7 +26,7 @@ from foreman.entities import (
 )
 
 INSTANCES = [
-    Component(
+    Front(
         id="cmp-abc1234",
         name="corpus",
         order=2,
@@ -43,7 +43,7 @@ INSTANCES = [
     ),
     Task(
         id="tas-abc1234",
-        component="cmp-abc1234",
+        front="cmp-abc1234",
         title="second reads",
         scope="WHAT: x\nINPUTS: y\nOUTPUTS: z\nOUT OF SCOPE: w",
         verify="foreman-verify reads",
@@ -95,7 +95,7 @@ INSTANCES = [
         role="supervisor",
         pool="opus",
         model="opus",
-        component="cmp-abc1234",
+        front="cmp-abc1234",
         job=None,
         pid=1234,
         launched_by="ses-foreman",
@@ -116,10 +116,10 @@ INSTANCES = [
         meter=12.0,
         skill="skills/muse.md",
     ),
-    Allocation(component="cmp-abc1234", role="muse", count=5),
+    Allocation(front="cmp-abc1234", role="muse", count=5),
     SlotGrant(
         pool="muse",
-        component="cmp-abc1234",
+        front="cmp-abc1234",
         role="muse",
         job="job-abc1234",
         session="ses-abc1234",
@@ -128,7 +128,7 @@ INSTANCES = [
     ),
     Ruling(
         id="rul-abc1234",
-        scope="component",
+        scope="front",
         text="Nothing goes to Grok.",
         source="owner",
         acks=["ses-abc1234"],
@@ -217,10 +217,10 @@ def test_wire_names_for_keywords():
 
 
 def test_from_dict_ignores_unknown_keys():
-    component = Component.from_dict(
+    front = Front.from_dict(
         {"name": "corpus", "state": "active", "future_field": [1, 2], "nonsense": {}}
     )
-    assert (component.name, component.state) == ("corpus", "active")
+    assert (front.name, front.state) == ("corpus", "active")
     assert Job.from_dict({"id": "job-x", "bogus": 1}).id == "job-x"
     for cls in (
         Task,
@@ -241,7 +241,7 @@ def test_from_dict_ignores_unknown_keys():
 
 
 def test_state_tuples_cover_listed_states():
-    assert set(entities.COMPONENT_STATES) == {"queued", "active", "done", "halted", "frozen"}
+    assert set(entities.FRONT_STATES) == {"queued", "active", "done", "halted", "frozen"}
     assert set(entities.TASK_STATES) == {"waiting", "ready", "active", "built", "landed"}
     assert set(entities.JOB_STATES) == {
         "planned",

@@ -64,7 +64,7 @@ def add_launch_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("role", help="worker role (one of: " + ", ".join(JOB_ROLES) + ")")
     parser.add_argument("pool", help="pool to start the worker through")
     parser.add_argument("spec", help="absolute path to the supervisor's spec file")
-    parser.add_argument("--component", default=None, help="component name")
+    parser.add_argument("--front", default=None, help="front name")
     parser.add_argument("--task", default=None, help="task id or title")
     parser.add_argument("--job", default=None, help="job id this session runs")
     parser.add_argument("--kind", default="implement", choices=JOB_KINDS)
@@ -138,10 +138,10 @@ def default_base(repo: str) -> str:
         return "HEAD"
 
 
-def read_rulings(component: str | None = None) -> list[str]:
-    """Swarm rulings plus this component's own; nothing else travels.
+def read_rulings(front: str | None = None) -> list[str]:
+    """Swarm rulings plus this front's own; nothing else travels.
 
-    A worker on one component must never see another component's rulings,
+    A worker on one front must never see another front's rulings,
     so every other scope is left out of the injected block.
     """
     texts = []
@@ -149,7 +149,7 @@ def read_rulings(component: str | None = None) -> list[str]:
         text = record.get("text")
         if not (isinstance(text, str) and text.strip()):
             continue
-        if record.get("scope") != "swarm" and record.get("scope") != component:
+        if record.get("scope") != "swarm" and record.get("scope") != front:
             continue
         texts.append(text)
     return texts
@@ -161,10 +161,10 @@ def format_rulings(texts: list[str]) -> str:
     return "\n".join(f"- {text}" for text in texts)
 
 
-def lookup_scope(component: str | None, task: str | None) -> str | None:
-    if not component or not task:
+def lookup_scope(front: str | None, task: str | None) -> str | None:
+    if not front or not task:
         return None
-    for record in store.read_ledger(paths.component_tasks_path(component)):
+    for record in store.read_ledger(paths.front_tasks_path(front)):
         if record.get("id") == task or record.get("title") == task:
             scope = record.get("scope")
             if isinstance(scope, str) and scope.strip():
@@ -186,13 +186,13 @@ def environment_block(worktree: str, branch: str, target: str, scratch: str,
     )
 
 
-def build_job_file(job: str, kind: str, task: str, component: str, env: str,
+def build_job_file(job: str, kind: str, task: str, front: str, env: str,
                    rulings: str, scope: str, spec: str,
                    units_label: str | None = None,
                    *, role_text: str) -> str:
     this_job = f"units: {units_label}\n\n{spec}" if units_label else spec
     return (
-        f"# Job {job} \u00b7 {kind} \u00b7 task \"{task}\" \u00b7 component {component}\n"
+        f"# Job {job} \u00b7 {kind} \u00b7 task \"{task}\" \u00b7 front {front}\n"
         "\n"
         "## Role prompt (from FOREMAN-ROLE.md, verbatim: no session starts\n"
         "without its role prompt, and the worker is given this file)\n"
@@ -203,7 +203,7 @@ def build_job_file(job: str, kind: str, task: str, component: str, env: str,
         "\n"
         f"{env}\n"
         "\n"
-        "## Rules (injected: swarm + component rulings, verbatim)\n"
+        "## Rules (injected: swarm + front rulings, verbatim)\n"
         "\n"
         f"{rulings}\n"
         "\n"
@@ -377,26 +377,26 @@ def cmd_launch(args: argparse.Namespace) -> int:
         Path(scratch_dir).mkdir(parents=True, exist_ok=True)
         Path(log_path).touch(exist_ok=False)
 
-        rulings = read_rulings(args.component)
+        rulings = read_rulings(args.front)
         rulings_block = format_rulings(rulings)
         scope = (
             args.scope
-            or lookup_scope(args.component, args.task)
+            or lookup_scope(args.front, args.task)
             or "(no task scope recorded)"
         )
         env = environment_block(worktree, branch, target, scratch_dir,
                                 log_path, verdict_path, timeout)
         job_label = args.job or "(none)"
         task_label = args.task or "(none)"
-        component_label = args.component or "(none)"
+        front_label = args.front or "(none)"
         job_path = os.path.join(worktree, JOB_FILE)
         role_path = os.path.join(worktree, ROLE_FILE)
         # The role prompt is rendered first: no session starts without one,
         # and the worker is given the job file, so it is embedded there.
         role_text = render_role_template(args.role, {
             "role": args.role,
-            "component": component_label,
-            "supervisor": args.component or "(none)",
+            "front": front_label,
+            "supervisor": args.front or "(none)",
             "session_id": session_id,
             "pool": args.pool,
             "model": adapter.model,
@@ -411,7 +411,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
         })
         write_no_symlink(
             job_path,
-            build_job_file(job_label, args.kind, task_label, component_label,
+            build_job_file(job_label, args.kind, task_label, front_label,
                            env, rulings_block, scope, spec_text, args.units,
                            role_text=role_text),
         )
@@ -421,13 +421,13 @@ def cmd_launch(args: argparse.Namespace) -> int:
         # each other: without the job on the session the collector cannot
         # tell which job a finish marker belongs to, and a finished job
         # stays "running" on the screen forever.
-        job_id = args.job or (ids.mint("job") if args.component else None)
+        job_id = args.job or (ids.mint("job") if args.front else None)
         starting = Session(
             id=session_id,
             role=args.role,
             pool=args.pool,
             model=adapter.model,
-            component=args.component,
+            front=args.front,
             job=job_id,
             pid=None,
             pgid=None,
@@ -501,7 +501,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
         # it records the one it just started: without that line the owner
         # sees a session counted in the header and nothing on the screen
         # saying what is running, which is the whole point of the screen.
-        if args.component:
+        if args.front:
             job = entities.Job(
                 id=job_id, task=args.task,
                 kind=args.kind, role=args.role,
@@ -510,7 +510,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
                 timeout=timeout, state="running",
                 started_at=store.utcnow_iso(),
             )
-            store.append_ledger(paths.component_jobs_path(args.component),
+            store.append_ledger(paths.front_jobs_path(args.front),
                                 job.to_dict(), session_id=session_id)
     command = adapter.command_str(ctx)
 

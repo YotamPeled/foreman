@@ -73,32 +73,32 @@ def events_path(day: str | None = None) -> Path:
     return state_dir() / "events" / f"{day}.jsonl"
 
 
-def components_dir() -> Path:
-    return state_dir() / "components"
+def fronts_dir() -> Path:
+    return state_dir() / "fronts"
 
 
-def component_dir(name: str) -> Path:
-    return components_dir() / name
+def front_dir(name: str) -> Path:
+    return fronts_dir() / name
 
 
-def component_tasks_path(name: str) -> Path:
-    return component_dir(name) / "tasks.jsonl"
+def front_tasks_path(name: str) -> Path:
+    return front_dir(name) / "tasks.jsonl"
 
 
-def component_jobs_path(name: str) -> Path:
-    return component_dir(name) / "jobs.jsonl"
+def front_jobs_path(name: str) -> Path:
+    return front_dir(name) / "jobs.jsonl"
 
 
-def component_evidence_path(name: str) -> Path:
-    return component_dir(name) / "evidence.jsonl"
+def front_evidence_path(name: str) -> Path:
+    return front_dir(name) / "evidence.jsonl"
 
 
-def component_findings_path(name: str) -> Path:
-    return component_dir(name) / "findings.jsonl"
+def front_findings_path(name: str) -> Path:
+    return front_dir(name) / "findings.jsonl"
 
 
-def component_measurements_path(name: str) -> Path:
-    return component_dir(name) / "measurements.jsonl"
+def front_measurements_path(name: str) -> Path:
+    return front_dir(name) / "measurements.jsonl"
 
 
 def sessions_dir() -> Path:
@@ -134,11 +134,11 @@ def config_file() -> Path:
 
 
 def brief_path(name: str) -> Path:
-    return config_dir() / "components" / name / "brief.toml"
+    return config_dir() / "fronts" / name / "brief.toml"
 
 
 def plan_path(name: str) -> Path:
-    return config_dir() / "components" / name / "plan.md"
+    return config_dir() / "fronts" / name / "plan.md"
 
 
 def pool_dir(name: str) -> Path:
@@ -148,7 +148,7 @@ def pool_dir(name: str) -> Path:
 def ensure_state_tree() -> Path:
     root = state_dir()
     root.mkdir(parents=True, exist_ok=True)
-    components_dir().mkdir(exist_ok=True)
+    fronts_dir().mkdir(exist_ok=True)
     sessions_dir().mkdir(exist_ok=True)
     (root / "events").mkdir(exist_ok=True)
     return root

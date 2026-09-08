@@ -18,7 +18,7 @@ _RAND_BITS = 10
 _RAND_MAX = (1 << _RAND_BITS) - 1
 
 KIND_PREFIXES = {
-    "component": "cmp",
+    "front": "frn",
     "task": "tas",
     "job": "job",
     "merge": "mrg",

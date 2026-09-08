@@ -187,7 +187,7 @@ def working_directory(pid: int) -> str | None:
 
 
 def executable_of(cmdline: str) -> str:
-    """Basename of the executable: the first cmdline token's final component."""
+    """Basename of the executable: the first cmdline token's final segment."""
     first = cmdline.split()[0] if cmdline.split() else ""
     return first.rsplit("/", 1)[-1]
 

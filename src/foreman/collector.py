@@ -175,21 +175,21 @@ def _anomaly_line(kind: str, subject: str, since: str, detail: str) -> dict:
 
 
 def read_jobs() -> dict[str, tuple[str, dict]]:
-    """Every job ledger line, folded last-wins: id -> (component, record)."""
+    """Every job ledger line, folded last-wins: id -> (front, record)."""
     folded: dict[str, tuple[str, dict]] = {}
     try:
-        components = sorted(Path(paths.components_dir()).iterdir())
+        fronts = sorted(Path(paths.fronts_dir()).iterdir())
     except OSError:
         return folded
-    for component in components:
+    for front in fronts:
         try:
-            records = store.read_ledger(component / "jobs.jsonl")
+            records = store.read_ledger(front / "jobs.jsonl")
         except OSError:
             continue
         for record in records:
             jid = record.get("id")
             if isinstance(jid, str) and jid:
-                folded[jid] = (component.name, record)
+                folded[jid] = (front.name, record)
     return folded
 
 
@@ -276,17 +276,17 @@ def _release_slots(session_id: str, now_iso: str) -> None:
                                 dict(record, released_at=now_iso))
 
 
-def _mark_job(component: str | None, job_id: str | None, to_state: str,
+def _mark_job(front: str | None, job_id: str | None, to_state: str,
               stamp: str | None) -> None:
     """Move a job to ``to_state``. A terminal state is terminal: when the
     latest record for the job is already returned, verified, failed or
     killed, nothing is appended, so a returned event is never duplicated
     and a verification or failure is never overwritten by a later tick."""
-    if not component or not job_id:
+    if not front or not job_id:
         return
     try:
         records = store.read_ledger(
-            paths.component_jobs_path(component))
+            paths.front_jobs_path(front))
     except OSError:
         return
     latest: dict | None = None
@@ -300,7 +300,7 @@ def _mark_job(component: str | None, job_id: str | None, to_state: str,
     revised = dict(latest, state=to_state)
     if stamp is not None and to_state == "returned":
         revised["returned_at"] = stamp
-    store.append_ledger(paths.component_jobs_path(component), revised)
+    store.append_ledger(paths.front_jobs_path(front), revised)
 
 
 def _tick_lock_path() -> Path:
@@ -386,15 +386,15 @@ def _exclusive_tick():
             fcntl.flock(handle, fcntl.LOCK_UN)
 
 
-def _live_supervisor_for(component: str | None, sessions: dict,
+def _live_supervisor_for(front: str | None, sessions: dict,
                            table: dict, trees: dict[str, set[int]]) -> bool:
-    """True when a live supervisor for ``component`` is already running."""
+    """True when a live supervisor for ``front`` is already running."""
     for other in sessions.values():
         if not isinstance(other, dict):
             continue
         if (other.get("role") or "") != "supervisor":
             continue
-        if component is not None and other.get("component") != component:
+        if front is not None and other.get("front") != front:
             continue
         if other.get("state") not in RUNNING_LIKE:
             continue
@@ -580,7 +580,7 @@ def _tick_inner(moment: datetime, now_iso: str,
                           f"from its checkpoint", asserted)
                 update["state"] = "exited"
             elif not _live_supervisor_for(
-                    record.get("component"), sessions, table, trees):
+                    record.get("front"), sessions, table, trees):
                 note_open("supervisor dead", sid,
                           f"supervisor {sid} dead; a person must relaunch it "
                           f"from its checkpoint", asserted)
@@ -592,8 +592,8 @@ def _tick_inner(moment: datetime, now_iso: str,
                 and isinstance(other, dict)
                 and (other.get("role") or "") not in WORKER_EXEMPT_ROLES
                 and other.get("state") in RUNNING_LIKE
-                and (record.get("component") is None
-                     or other.get("component") == record.get("component"))
+                and (record.get("front") is None
+                     or other.get("front") == record.get("front"))
                 and isinstance(other.get("pid"), int)
                 and other.get("pid") in trees.get(other_sid, set())
                 and procs.same_process(
@@ -609,7 +609,7 @@ def _tick_inner(moment: datetime, now_iso: str,
                           f"no jobs", asserted)
         elif worker and pid is not None and not alive:
             if finish:
-                _mark_job(record.get("component"), record.get("job"),
+                _mark_job(record.get("front"), record.get("job"),
                           "returned", now_iso)
             _release_slots(sid, now_iso)
             if state in RUNNING_LIKE:
@@ -626,7 +626,7 @@ def _tick_inner(moment: datetime, now_iso: str,
                 job = record.get("job") or "(no job)"
                 if not remaining:
                     update["state"] = "killed"
-                    _mark_job(record.get("component"), record.get("job"),
+                    _mark_job(record.get("front"), record.get("job"),
                               "failed", None)
                     _release_slots(sid, now_iso)
                     note_open("job timeout", sid,
@@ -647,7 +647,7 @@ def _tick_inner(moment: datetime, now_iso: str,
                               f"process(es) still alive", asserted)
                 elif state in RUNNING_LIKE:
                     update["state"] = "exited"
-                    _mark_job(record.get("component"), record.get("job"),
+                    _mark_job(record.get("front"), record.get("job"),
                               "returned", now_iso)
                     _release_slots(sid, now_iso)
             elif active_at is not None and (
@@ -705,13 +705,13 @@ def _tick_inner(moment: datetime, now_iso: str,
     ledger_files: list[tuple[str, Path]] = [
         (name, paths.state_dir() / name) for name in SCAN_LEDGERS]
     try:
-        components = sorted(Path(paths.components_dir()).iterdir())
+        fronts = sorted(Path(paths.fronts_dir()).iterdir())
     except OSError:
-        components = []
-    for component in components:
+        fronts = []
+    for front in fronts:
         for name in JOB_LEDGER_NAMES:
-            ledger_files.append((f"{component.name}/{name}",
-                                 component / name))
+            ledger_files.append((f"{front.name}/{name}",
+                                 front / name))
     for label, path in ledger_files:
         try:
             records = store.read_ledger(path)
@@ -750,7 +750,7 @@ def _tick_inner(moment: datetime, now_iso: str,
                     subject, set()) or not procs.same_process(
                         tpid, target.get("pid_starttime"), table)
                 if still_dead and not _live_supervisor_for(
-                        target.get("component"), sessions, table, trees):
+                        target.get("front"), sessions, table, trees):
                     continue
             store.append_ledger(paths.anomalies_path(),
                                 dict(record, resolved_at=now_iso))
@@ -825,9 +825,9 @@ def _jobs_view(moment: datetime) -> dict:
             if isinstance(record, dict) and record.get("job"):
                 by_job.setdefault(str(record["job"]), record)
     view = {}
-    for jid, (component, record) in folded.items():
+    for jid, (front, record) in folded.items():
         entry: dict = {"state": record.get("state"),
-                       "component": component}
+                       "front": front}
         started = _parse_time(record.get("started_at"))
         if started is not None:
             entry["elapsed_s"] = (moment - started).total_seconds()
