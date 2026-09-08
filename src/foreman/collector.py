@@ -1164,8 +1164,12 @@ def collector_main(action: str) -> int:
     if action == "restart":
         return restart_collector()
     record_startup_version()
-    config = load_config()
     while True:
+        # The configuration is re-read on every tick, never held from
+        # startup: a cap the owner changed mid-run governs the next tick's
+        # totals with no restart. No file watcher — reading a small TOML
+        # file once every two seconds is cheaper than being wrong.
+        config = load_config()
         try:
             tick(config=config)
         except KeyboardInterrupt:
