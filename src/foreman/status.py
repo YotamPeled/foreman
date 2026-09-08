@@ -430,6 +430,8 @@ def _task_line(task: dict, titles: dict[str, str]) -> str:
         head += f" \u00b7 head {task.get('head')}"
     # A task that was moved backwards says so until it moves again: the
     # reset is the owner's business, not a quiet correction.
+    if task.get("built_by_hand"):
+        head += f" \u00b7 by hand: {task.get('built_by_hand')}"
     if task.get("reset_reason"):
         head += f" \u00b7 reset: {task.get('reset_reason')}"
     return head

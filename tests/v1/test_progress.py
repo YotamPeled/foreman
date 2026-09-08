@@ -808,3 +808,49 @@ def test_a_job_that_names_no_task_can_still_be_verified(
                              "--command", "make check", "--output",
                              "ok"], SUP) == 1
     assert "unknown task" in capsys.readouterr().err
+
+
+def test_a_supervisor_accounts_for_units_it_did_itself(
+        env, monkeypatch, capsys):
+    """Some work has no worker to dispatch it to.
+
+    A front's proof is run by its supervisor, by the brief, so no job
+    carries its units — and without a way to say so the runtime could
+    never close the task its own brief assigns to the supervisor: no job,
+    no units, no `built`, for work that was finished. It is not a way
+    around the evidence: CONFIRMED evidence on the front is required
+    first, and what the supervisor says it did travels onto the screen.
+    """
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+
+    assert run(monkeypatch, ["task", "built", first,
+                             "--did-myself", "I ran the done-when"],
+               SUP) == 1
+    assert "CONFIRMED evidence" in capsys.readouterr().err
+
+    assert run(monkeypatch, ["evidence", "--on", "flow",
+                             "--claim", "the done-when ran",
+                             "--status", "CONFIRMED",
+                             "--command", "make check first",
+                             "--output", "ok"], SUP) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["task", "built", first,
+                             "--did-myself", "I ran the done-when"],
+               SUP) == 0
+    assert "by hand: I ran the done-when" in capsys.readouterr().out
+    built = tasks_by_title("flow")["first"]
+    assert built["state"] == "built"
+    assert built["units_done"] == built["units_total"]
+    assert "by hand: I ran the done-when" in status_out(monkeypatch, capsys)
+
+
+def test_units_still_have_to_be_accounted_for_without_the_flag(
+        env, monkeypatch, capsys):
+    """The flag is the only way past the count, and it is deliberate."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    assert run(monkeypatch, ["task", "built", first], SUP) == 1
+    assert "every unit must be accounted for" in capsys.readouterr().err

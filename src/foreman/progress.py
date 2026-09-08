@@ -313,11 +313,38 @@ def _resolve_task(ref: str, violations: list[str],
     return front, record
 
 
-def task_built_main(task_ref: str) -> int:
+def task_built_main(task_ref: str, did_myself: str | None = None) -> int:
+    """Mark a task built, once every unit is accounted for.
+
+    ``did_myself`` accounts for the units the supervisor did with its own
+    hands. Some work has no worker to dispatch it to — a front's proof is
+    run by the supervisor, by its brief — and without this the runtime
+    could never close the task its own brief assigns to the supervisor: no
+    job, no units, no `built`, for work that is finished. It is not a way
+    around the evidence: it is refused unless the front carries a
+    CONFIRMED evidence record, and what the supervisor says it did travels
+    on the task and onto the screen.
+    """
     verb = "task built"
     me, violations = caller.resolve(verb)
     front, record = _resolve_task(task_ref, violations)
     _check(me, front, verb, violations)
+    by_hand = (did_myself or "").strip()
+    if by_hand and front is not None:
+        try:
+            evidence = store.read_ledger(paths.front_evidence_path(front))
+        except OSError:
+            evidence = []
+        if not any(line.get("status") == CONFIRMED for line in evidence):
+            violations.append(
+                f"field '--did-myself' needs CONFIRMED evidence on front "
+                f"'{front}' first: a unit accounted for by hand is still a "
+                "unit somebody has to have checked")
+    if record is not None and by_hand and not violations:
+        record = dict(record,
+                      units_done=max(record.get("units_done") or 0,
+                                     record.get("units_total") or 0),
+                      built_by_hand=by_hand)
     if record is not None:
         state = record.get("state")
         if state in ("built", "landed"):
@@ -339,7 +366,8 @@ def task_built_main(task_ref: str) -> int:
     store.append_ledger(paths.front_tasks_path(front),
                         _moved(record, state="built"), session_id=who)
     released = _release_successors(front, who)
-    print(f"{record.get('id')} built")
+    print(f"{record.get('id')} built"
+          + (f" (by hand: {by_hand})" if by_hand else ""))
     for rid in released:
         print(f"{rid} ready")
     return 0
@@ -598,6 +626,9 @@ def add_task_arguments(sub: argparse.ArgumentParser) -> None:
     verbs = sub.add_subparsers(dest="task_verb", required=True)
     built = verbs.add_parser("built", help="Mark a task built.")
     built.add_argument("task", help="task id or title")
+    built.add_argument("--did-myself", default=None,
+                       help="account for the units yourself, in one "
+                            "sentence, for work no worker was dispatched to")
     landed = verbs.add_parser("landed", help="Mark a task landed.")
     landed.add_argument("task", help="task id or title")
     landed.add_argument("--head", default=None,
@@ -612,7 +643,7 @@ def add_task_arguments(sub: argparse.ArgumentParser) -> None:
 @cli.subcommand("task", help="Mark a task built or landed, or reset it.")
 def _task_entry(args: argparse.Namespace) -> int:
     if args.task_verb == "built":
-        return task_built_main(args.task)
+        return task_built_main(args.task, did_myself=args.did_myself)
     if args.task_verb == "landed":
         return task_landed_main(args.task, head=args.head)
     if args.task_verb == "reset":
