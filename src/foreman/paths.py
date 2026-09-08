@@ -63,6 +63,10 @@ def anomalies_path() -> Path:
     return state_dir() / "anomalies.jsonl"
 
 
+def collector_path() -> Path:
+    return state_dir() / "collector.json"
+
+
 def events_path(day: str | None = None) -> Path:
     if day is None:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")
