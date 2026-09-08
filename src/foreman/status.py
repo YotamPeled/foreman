@@ -310,6 +310,8 @@ def _task_line(task: dict, titles: dict[str, str]) -> str:
             f"{task.get('units_total', 0)}")
     if after:
         head += f" \u00b7 after: {', '.join(after)}"
+    if task.get("head"):
+        head += f" \u00b7 head {task.get('head')}"
     return head
 
 
@@ -369,6 +371,20 @@ def _working(roster: dict, observed: dict | None, now: datetime,
                          f"{allocation[role]}"
                          for role in sorted(allocation)]
                 lines.append(f"    allocation: {', '.join(parts)}")
+        try:
+            evidence = store.read_ledger(paths.front_evidence_path(name))
+        except OSError:
+            evidence = []
+        try:
+            findings = store.read_ledger(paths.front_findings_path(name))
+        except OSError:
+            findings = []
+        if evidence or findings:
+            confirmed = sum(1 for line in evidence
+                            if line.get("status") == "CONFIRMED")
+            lines.append(f"    evidence: {len(evidence)} "
+                         f"({confirmed} confirmed) "
+                         f"\u00b7 findings: {len(findings)}")
         for task in tasks:
             lines.append(f"    {_task_line(task, titles)}")
             for job in jobs:
