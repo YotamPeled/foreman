@@ -270,7 +270,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
       <span class="div"></span>
       <span>orchestrator <span class="k">fable</span></span>
       <span class="div"></span>
-      <span><span class="k" id="tComps">6</span> components · <span class="k" id="tJobs">6</span> jobs ·
+      <span><span class="k" id="tComps">6</span> fronts · <span class="k" id="tJobs">6</span> jobs ·
         <span class="k" id="tSlots">10/11</span> slots</span>
       <span class="right">
         <span class="bad" id="tAlerts">2 alerts</span>
@@ -341,7 +341,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
       <div class="sub">Everything on this panel is reachable without a mouse. Keys that are
         always there are single; anything that comes and goes prints its own two-letter hint.</div>
       <div class="keys">
-        <div><span class="kc">a</span><b>api</b> focus the component and open its detail</div>
+        <div><span class="kc">a</span><b>api</b> focus the front and open its detail</div>
         <div><span class="kc">j</span>+<span class="kc">_</span><b>jobs</b> hint printed on each job label</div>
         <div><span class="kc">c</span><b>corpus</b></div>
         <div><span class="kc">m</span><b>merge desk</b> the lane every branch lands through</div>
@@ -367,7 +367,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
 /* ══════════════════════════════════════════════════════════════════════════
    foreman / concept B — the swarm as one living system.
    Nothing on the canvas moves that an event did not cause. Ambient motion is
-   allowed only on things that are alive: a working job breathes, a component
+   allowed only on things that are alive: a working job breathes, a front
    turns at its own velocity, the collector's 2s tick sweeps the field.
    ══════════════════════════════════════════════════════════════════════════ */
 const $=s=>document.querySelector(s), el=(t,c,x)=>{const n=document.createElement(t);
@@ -463,7 +463,7 @@ const S={
          ["done","second read disagrees on 4% of rows"],
          ["done","label writes are refused without a reader id"],
          ["plaus","dump export matches the ledger schema"],
-         ["open","sampling plan written on the component"]],
+         ["open","sampling plan written on the front"]],
      jobs:[{n:"label-second-read",m:"muse",w:"wt/corp-18",min:9,to:30,task:"recall"},
            {n:"review·label-second-read",m:"codex astra",w:"wt/corp-rev",min:4,to:15,task:"recall",
             spec:"read the second-read branch before it goes to the desk"}]},
@@ -480,7 +480,7 @@ const S={
     {id:"ingestion",target:"feat/ingest-webhook",name:"ingestion",sup:"sup·ingestion",supModel:"claude opus",x:936,y:849,
      total:18,built:9,landed:9,plaus:1,vel:0,eta:"dispatching stopped",state:"halt",R:76,
      mx:766,my:900,malign:"r",defect:"webhook destination",defects:3,
-     ck:[["done","source registry reads from the component ledger"],
+     ck:[["done","source registry reads from the front ledger"],
          ["done","replay is idempotent on a duplicate id"],
          ["plaus","webhook destination resolves from config"],
          ["open","backfill window is bounded"]],
@@ -503,7 +503,7 @@ const S={
      ck:[["done","one queue for the whole swarm"],
          ["done","every landing writes one merge ledger line"],
          ["plaus","review rounds bounded at two"],
-         ["open","branch handoff frees the component"]],
+         ["open","branch handoff frees the front"]],
      jobs:[]}
   ],
   /* The merge desk, not a gate. A supervisor dispatches a review only when it
@@ -546,7 +546,7 @@ const S={
     {id:"i2",kind:"SCOPE",from:"sup·reaper",born:6,
      q:"Ship the reaper without the dead-worktree sweep?",
      v:"recommends yes",
-     r:"The sweep is 40 minutes of work and nothing downstream reads stale worktrees. Cutting it drops reaper to 10 items and frees the second grok slot for the component sitting idle.",
+     r:"The sweep is 40 minutes of work and nothing downstream reads stale worktrees. Cutting it drops reaper to 10 items and frees the second grok slot for the front sitting idle.",
      btns:[["approve cut","acc"],["decline",""],["answer",""]]}
   ]
 };
@@ -568,7 +568,7 @@ function taskAdd(c,t,stage,n){
 function growCell(c,i){ if(i>=0&&i<c.total){ c.grow[i]=0; c.flash[i]=1; } }
 function build(c){ if(c.built<c.total-c.plaus){ c.built++; growCell(c,c.built-1); return true; } }
 function land(c){ if(c.landed<c.built){ c.landed++; growCell(c,c.landed-1); c.landFlash=1; return true; } }
-/* which component moves next is weighted by how fast it actually is, so the
+/* which front moves next is weighted by how fast it actually is, so the
    picture's growth rate and the printed items/h are the same fact */
 function pickByVelocity(list){
   const live=list.filter(c=>c.vel>0);
@@ -599,7 +599,7 @@ const PLAN={
              {n:"owner-act-stamp",spec:"stamp the owner on every inbox resolution"}]},
   corpus:{started:"09:40",proj:"~17:20",ttl:9,
     queued:[{n:"sampling-plan",m:"grok 4.6",waited:7,
-             spec:"write the sampling plan onto the component ledger"}],
+             spec:"write the sampling plan onto the front ledger"}],
     planned:[{n:"dump-export-shape",spec:"prove the dump export matches the ledger schema"}]},
   reaper:{started:"12:55",proj:"~16:40",ttl:21,
     queued:[{n:"sweep-on-collector-clock",m:"muse",waited:12,
@@ -621,9 +621,9 @@ const PLAN={
 Object.keys(PLAN).forEach(id=>Object.assign(byId(id),PLAN[id]));
 
 /* ══ domain metrics ═══════════════════════════════════════════════════════
-   A component's done-when declares one to three measurements of its own, and
+   A front's done-when declares one to three measurements of its own, and
    its supervisor appends a reading after running the measurement command. The
-   readings are drawn on the body, because what this component is measured by
+   readings are drawn on the body, because what this front is measured by
    is part of what it is — the same way the ring is. A ratio draws as a fill
    against its denominator, a series draws as a sparkline of the rounds.    */
 const METRICS={
@@ -643,7 +643,7 @@ const METRICS={
 Object.keys(METRICS).forEach(id=>{ byId(id).metrics=METRICS[id]; });
 
 /* ══ tasks — the unit of work the ring is made of ═════════════════════════
-   A component is a ring of its tasks. Each task takes the share of the ring
+   A front is a ring of its tasks. Each task takes the share of the ring
    its checklist weight earns, and fills with its own progress. A task also
    declares who may work it and how many may work it at once: that maximum is
    drawn as sockets on the task's arc, so the throttle is a count you can see.
@@ -749,7 +749,7 @@ function litSockets(model){
   let n=0; S.comps.forEach(c=>c.jobs.forEach(j=>{ if(j.m===model) n++; })); return n;
 }
 
-/* per-component and per-job runtime fields the picture reads every frame */
+/* per-front and per-job runtime fields the picture reads every frame */
 S.comps.forEach(c=>{
   c.phase=Math.random()*TAU; c.heat=0; c.flash=new Float32Array(c.total);
   c.grow=new Float32Array(c.total).fill(1);   /* a new cell grows into place */
@@ -776,7 +776,7 @@ S.comps.forEach(c=>{
     }
     j.task=c.tasks[c.berths[j.b].t].id;
     j.beat=Math.random()*TAU; j.act=0;
-    j.spec=j.spec||SPECS[j.n]||"work the spec on the component ledger";
+    j.spec=j.spec||SPECS[j.n]||"work the spec on the front ledger";
     j.by=j.by||c.sup; j.at=j.at||"13:50";
     j.last=j.last||"wrote 2 files in "+j.w; j.lastAgo=j.lastAgo==null?4:j.lastAgo;
     j.f1m=j.f1m==null?3+Math.floor(Math.random()*6):j.f1m;
@@ -922,13 +922,13 @@ function drawComponent(c){
   const hue=dead?C.dark_foreground:halt?C.red:idle?C.light_foreground:C.accent;
   const rOut=c.R, rIn=c.R-19;
 
-  /* mass: the fraction of the component that has actually landed on main.
+  /* mass: the fraction of the front that has actually landed on main.
      It is drawn as weight — a dense core and a thick accreted shell — so how
      much of this thing stands is readable across the room, not just how full
-     the ring is. A light component is a hoop; a heavy one is a body.       */
+     the ring is. A light front is a hoop; a heavy one is a body.       */
   const mass=c.massA;
 
-  /* halo — a component only glows while somebody is writing into it */
+  /* halo — a front only glows while somebody is writing into it */
   if(live&&!S.frozen) bloom(c.x,c.y,c.R*3.0,c.id==="merge-desk"?C.green:C.accent,.09+c.heat*.26);
   if(!dead) bloom(c.x,c.y,c.R*2.2,C.green,.05+mass*.16);
   if(c.ignite>0) bloom(c.x,c.y,c.R*3.4,C.green,c.ignite*.5);
@@ -1039,8 +1039,8 @@ function drawComponent(c){
     ctx.moveTo(c.x-rOut*.72,c.y-rOut*.72); ctx.lineTo(c.x+rOut*.72,c.y+rOut*.72); ctx.stroke();
   }
 
-  /* rotor marks: the ring turns at the component's own velocity, so the marks
-     are long on a churning component, short on a drifting one, absent on a
+  /* rotor marks: the ring turns at the front's own velocity, so the marks
+     are long on a churning front, short on a drifting one, absent on a
      stalled one. The picture reads its speed even in a still screenshot. */
   if(c.wake>0.02){
     const w=c.wake;
@@ -1123,7 +1123,7 @@ function plate(x,y,align,lines,accent,pad,opt){
   return [bx,by,bw,bh];
 }
 
-/* the supervisor's plate sits between its component and the foreman, on the
+/* the supervisor's plate sits between its front and the foreman, on the
    spoke: identity, ownership and countable progress in one block. */
 function drawCompMeta(c){
   const dead=c.state==="silent", halt=c.state==="halt";
@@ -1139,7 +1139,7 @@ function drawCompMeta(c){
   plate(c.mx,c.my,c.malign,L,dead?C.red:halt?C.red:mi(c.supModel),10,
     {key:c.key,hot:isActive("comp",c.id)});
 }
-/* how long this component has been building */
+/* how long this front has been building */
 function sinceStart(c){
   const h=+c.started.slice(0,2), m=+c.started.slice(3);
   let d=fmin()-(h*60+m); if(d<0) d+=1440;
@@ -1164,7 +1164,7 @@ function laneLines(c,L){
 }
 
 /* ── the measurements, drawn on the body ───────────────────────────────────
-   A component's done-when declares one to three measurements of its own and
+   A front's done-when declares one to three measurements of its own and
    its supervisor appends a reading. They ride as concentric bands inside the
    checklist ring: a ratio fills its band against its denominator, a series
    draws its rounds as ticks whose length is the value, brightest at the last.
@@ -1243,7 +1243,7 @@ function drawSockets(c,t,blocked,dead){
     }
   });
 }
-/* the task's own name, printed on its arc when the component is looked at */
+/* the task's own name, printed on its arc when the front is looked at */
 function taskName(c,t){
   const a=(t.a0+t.a1)/2, r=c.R+40;
   const x=c.x+Math.cos(a)*r, y=c.y+Math.sin(a)*r;
@@ -1268,7 +1268,7 @@ function drawJob(c,j){
   const [gx,gy]=berthPos(c,b);
   const col=mc(j.m), ink=mi(j.m), blk=isBlack(j.m);
   const breath=calm||S.frozen?1:1+Math.sin(j.beat)*.055*(0.4+j.act);
-  /* tether: the job is physically attached to the component it works on */
+  /* tether: the job is physically attached to the front it works on */
   const hyp=Math.hypot(gx-c.x,gy-c.y);
   const ex=c.x+(gx-c.x)*((c.R+12)/hyp), ey=c.y+(gy-c.y)*((c.R+12)/hyp);
   ctx.lineWidth=1; ctx.strokeStyle=rgba(ink,.18+j.act*.5);
@@ -1351,7 +1351,7 @@ function drawForeman(){
   ctx.strokeStyle=rgba(col,.35+(1-pulse)*.5); ctx.stroke();
   ctx.restore();
   /* one bearing marker per supervisor, on the foreman's rim: it brightens with
-     whatever that component is doing, so the origin shows who is talking */
+     whatever that front is doing, so the origin shows who is talking */
   S.comps.forEach(c=>{
     const a=Math.atan2(c.y-CY,c.x-CX);
     const dead=c.state==="silent", halt=c.state==="halt";
@@ -1369,8 +1369,8 @@ function drawForeman(){
     {sz:11,align:"right",col:C.light_foreground,a:.55});
 }
 
-/* the standing route every finished branch takes: component → queue → review
-   → main → back onto the component as a hardened item. Drawn faint so the
+/* the standing route every finished branch takes: front → queue → review
+   → main → back onto the front as a hardened item. Drawn faint so the
    loop is legible before a single mote moves along it. */
 function drawFlows(){
   const D=S.desk;
@@ -1512,7 +1512,7 @@ const ago=s=>s<60?s+"s ago":Math.floor(s/60)+"m ago";
 function cardLines(a){
   if(a.kind==="comp"){
     const c=byId(a.id); if(!c) return null;
-    const L=[{s:c.name+"  ·  component",sz:13.5,col:C.foreground,ls:".05em"},
+    const L=[{s:c.name+"  ·  front",sz:13.5,col:C.foreground,ls:".05em"},
       {s:c.sup+" · "+c.supModel+" · dispatched by foreman",sz:11,col:mi(c.supModel),a:.95},
       {s:"started "+c.started+" · "+sinceStart(c)+" in · projected "+c.proj,
        sz:11,col:C.light_foreground,a:.85},
@@ -1523,7 +1523,7 @@ function cardLines(a){
       sz:11.5,col:st==="done"?C.green:st==="plaus"?C.yellow:C.light_foreground,
       a:st==="open"?.75:1,gap:5}));
     const rest=c.total-c.ck.length;
-    if(rest>0) L.push({s:"+"+rest+" more on the component ledger",sz:11,col:C.dark_foreground,gap:10});
+    if(rest>0) L.push({s:"+"+rest+" more on the front ledger",sz:11,col:C.dark_foreground,gap:10});
     if(c.metrics){
       L.push({s:"measured by · read off the body",sz:11,col:C.light_foreground,a:.6,
         ls:".08em",gap:5});
@@ -1725,7 +1725,7 @@ function evHeartbeat(){
     ` · rss ${(300+Math.random()*500)|0}M`,c?c.x:CX,c?c.y:CY);
 }
 
-/* a job returns: its branch leaves the component for the merge desk. Whether
+/* a job returns: its branch leaves the front for the merge desk. Whether
    anyone read it first was the supervisor's call, not a rule. */
 function evJobFinished(){
   const cand=liveJobs().filter(([c])=>c.state===""||c.state==="idle");
@@ -1849,7 +1849,7 @@ setInterval(()=>{
     /* a job waiting on a slot is waiting in plain sight */
     c.queued.forEach(q=>q.waited++);
     /* a supervisor that is out of work writes another spec: the lane on a
-       living component never reads empty for long */
+       living front never reads empty for long */
     if(c.id!=="merge-desk"&&c.state!=="silent"&&c.queued.length+c.planned.length<2){
       const pick=rnd(JOBPOOL);
       c.planned.push({n:pick[0],spec:pick[1]});
@@ -2021,7 +2021,7 @@ function answer(it,node,label){
   }
   if(it.id==="i2"&&took){
     /* the scope cut is visible on the picture: two ring segments disappear and
-       the freed grok slot puts a worker on the component that had none */
+       the freed grok slot puts a worker on the front that had none */
     const r=byId("reaper");
     r.total=10; r.flash=new Float32Array(10); r.grow=new Float32Array(10).fill(1);
     r.tasks[1].w=4; r.tasks[1].u=20; buildTasks(r);
@@ -2099,7 +2099,7 @@ function renderQueueView(){
   });
   rows.sort((a,b)=>(a.state==="queued"?0:1)-(b.state==="queued"?0:1)||
                    (b.q.waited||0)-(a.q.waited||0));
-  let html=`<table><thead><tr><th>job</th><th>component</th><th>state</th>
+  let html=`<table><thead><tr><th>job</th><th>front</th><th>state</th>
     <th>waits on</th><th>waited</th><th>spec</th></tr></thead><tbody>`;
   rows.forEach(r=>{
     const q=r.q, qd=r.state==="queued";
@@ -2255,7 +2255,7 @@ addEventListener("resize",fit); fit();
 /* ── boot ─────────────────────────────────────────────────────────────── */
 renderAlerts(); renderInbox(); renderModels(); refreshMass(); refreshKeyline();
 $("#tClock").textContent=stamp();
-log("observed","obs",`collector attached · 6 components, 10 registered sessions, 1 unregistered`);
+log("observed","obs",`collector attached · 6 fronts, 10 registered sessions, 1 unregistered`);
 log("stall","an",`<b>sup·engine</b> silent 14m · 0 jobs active, 1 opus slot held`);
 log("halt","an",`<b>ingestion</b> halted under rule 10 · webhook destination ×3`);
 log("write","wr",`<b>ledger-write-guard</b> wrote 3 files in wt/api-32 <span style="opacity:.6">→ api</span>`);

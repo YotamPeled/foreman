@@ -261,9 +261,9 @@ section{padding:22px 0 2px}
       <div class="t">&nbsp;</div>
       <div><span class="t">13:58</span> rule <span class="f">swarm/11</span> written — a reviewer never reopens a closed round</div>
       <div><span class="t">14:01</span> answered <span class="f">sup·corpus</span> — read the ledger schema, never the dump</div>
-      <div><span class="t">14:03</span> component <span class="r">ingestion</span> halted under rule 10, waiting on its supervisor</div>
+      <div><span class="t">14:03</span> front <span class="r">ingestion</span> halted under rule 10, waiting on its supervisor</div>
       <div><span class="t">14:04</span> slot grant <span class="f">muse 3 → 3</span> held; codex granted 4, two idle</div>
-      <div><span class="t">14:00</span> digest written <span class="t">·</span> 6 components <span class="t">·</span> 9 jobs <span class="t">·</span> 2 decisions open</div>
+      <div><span class="t">14:00</span> digest written <span class="t">·</span> 6 fronts <span class="t">·</span> 9 jobs <span class="t">·</span> 2 decisions open</div>
       <div class="t">&nbsp;</div>
       <div><span class="g">›</span> <span class="caret"></span></div>
     </div>
@@ -315,7 +315,7 @@ section{padding:22px 0 2px}
   <div class="panel" role="dialog" aria-label="Foreman">
     <div class="phead">
       <span class="brand">foreman</span>
-      <span class="meta">orchestrator fable · 6 components · <span id="hJobs">9</span> jobs · slots <span id="hSlots">12/16</span></span>
+      <span class="meta">orchestrator fable · 6 fronts · <span id="hJobs">9</span> jobs · slots <span id="hSlots">12/16</span></span>
       <span class="wait" id="hWait">2 decisions waiting on you</span>
     </div>
 
@@ -331,7 +331,7 @@ section{padding:22px 0 2px}
       </section>
 
       <section>
-        <div class="shead"><span class="name">plan</span><span class="rule"></span><span class="meta" id="plMeta">owner order · 6 components</span></div>
+        <div class="shead"><span class="name">plan</span><span class="rule"></span><span class="meta" id="plMeta">owner order · 6 fronts</span></div>
         <div id="plan"></div>
       </section>
 
@@ -415,8 +415,8 @@ const S={
            {n:"openapi-drift-check",m:"grok 4.6",w:"wt/api-33",min:2,to:20}]},
     {id:"ingestion",name:"ingestion",sup:"sup·ingestion",model:"opus",total:18,built:9,landed:9,vel:0,
      eta:"dispatching stopped",state:"halt",now:"halted · supervisor must write what changed",
-     blocker:"repeated defect: webhook destination ×3",blockRule:"rule 10 · component scope",
-     ck:[["done","source registry reads from the component ledger"],["done","replay is idempotent on a duplicate id"],
+     blocker:"repeated defect: webhook destination ×3",blockRule:"rule 10 · front scope",
+     ck:[["done","source registry reads from the front ledger"],["done","replay is idempotent on a duplicate id"],
          ["plaus","webhook destination resolves from config"],["open","backfill window is bounded"]],ckDone:9,jobs:[]},
     {id:"reaper",name:"reaper",sup:"sup·reaper",model:"opus",total:12,built:3,landed:1,vel:1.4,eta:"~6h left",
      state:"",now:"waiting on your scope decision",
@@ -426,13 +426,13 @@ const S={
     {id:"corpus",name:"corpus",sup:"sup·corpus",model:"opus",total:31,built:22,landed:19,vel:3.0,eta:"~3h left",
      state:"",now:"two jobs writing · second read queued",
      ck:[["done","labels carry the reader and the moment of reading"],["done","second read disagrees on 4% of rows"],
-         ["plaus","dump export matches the ledger schema"],["open","sampling plan written on the component"]],ckDone:19,
+         ["plaus","dump export matches the ledger schema"],["open","sampling plan written on the front"]],ckDone:19,
      jobs:[{n:"label-second-read",m:"muse",w:"wt/corp-18",min:9,to:30},
            {n:"schema-drift-report",m:"muse",w:"wt/corp-19",min:4,to:20}]},
     {id:"merge-desk",name:"merge-desk",sup:"merge",model:"opus",total:9,built:7,landed:7,vel:1.1,eta:"~1h left",
      state:"",now:"queue depth 3 · reviewing ledger-write-guard",
      ck:[["done","one queue for the whole swarm"],["done","every landing writes one merge ledger line"],
-         ["plaus","review rounds bounded at two"],["open","branch handoff frees the component"]],ckDone:7,
+         ["plaus","review rounds bounded at two"],["open","branch handoff frees the front"]],ckDone:7,
      jobs:[{n:"review·ledger-write-guard",m:"grok 4.6",w:"wt/merge-q",min:3,to:15}]}
   ]
 };
@@ -544,7 +544,7 @@ function detail(c){
     d.appendChild(r);
   });
   const rest=c.total-c.ck.length;
-  if(rest>0) d.appendChild(el("div","more",`+${rest} more items on the component ledger`));
+  if(rest>0) d.appendChild(el("div","more",`+${rest} more items on the front ledger`));
 
   const jh=el("div","dhead");
   const free=S.models.find(m=>m.id==="muse").grant-S.models.find(m=>m.id==="muse").run;

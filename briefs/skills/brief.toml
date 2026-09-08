@@ -4,7 +4,7 @@ want      = """
 The five role skills of DESIGN.md §15 and the role-prompt templates of §12, written for agents: exact
 verbs, exact files, exact moments; nothing a session has to guess.
 """
-done-when = "A fresh Claude session given only foreman-plan produces a brief that passes `component add` on the first try; a fresh headless Opus session given only its role prompt and foreman-supervise drives a fake component through flow 2 without asking anything a ruling covers."
+done-when = "A fresh Claude session given only foreman-plan produces a brief that passes `front add` on the first try; a fresh headless Opus session given only its role prompt and foreman-supervise drives a fake front through flow 2 without asking anything a ruling covers."
 land-on   = "main"
 reviews   = "always"
 after     = ["runtime"]
@@ -51,7 +51,7 @@ checkpoint discipline, when to ask, how to order the queue) and one pool skill p
 spec for it, unit size, timeout, cannot-take, reading its output).
 INPUTS: §3, §5.2, §8, §9; ~/.claude/skills/{muse-workers,grok-workers,opus-supervisor}.
 OUTPUTS: skills/foreman-supervise/SKILL.md, skills/foreman-pool-{opus,muse,astra,grok}/SKILL.md; a fake
-component driven through flow 2 by a session holding only these.
+front driven through flow 2 by a session holding only these.
 OUT OF SCOPE: the foreman's and merge desk's skills.
 """
 verify  = "foreman-verify skill supervise"
