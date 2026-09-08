@@ -19,17 +19,32 @@ another front may take the slot (docs/DESIGN.md section 3, section 9 rule
 
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
+
 from . import config, entities, fronts, ids, paths, store
 
 #: Work not yet running: a job in one of these states is waiting for a slot.
 QUEUE_STATES = ("planned", "queued")
 
+#: The roster role of a front's own session. It draws on a pool like any
+#: worker, and is counted against that pool's ``supervisor_cap``.
+SUPERVISOR_ROLE = "supervisor"
+
 
 def pool_for_role(role: str) -> str:
-    """The pool a worker role runs on. A worker role names its own pool,
-    which is what ``launch``'s own default does; only the two interactive
-    roles are named apart from theirs."""
-    return role
+    """The registered pool a role runs on.
+
+    The mapping is declared in one place — ``roles`` beside the pool in the
+    configuration (:mod:`foreman.config`) — because a role and its pool are
+    only the same word by accident: an ``opus`` worker runs on ``claude``
+    and an ``astra`` reviewer on ``codex``. Returning the role unchanged is
+    what counted queued work against pools that do not exist. A role no
+    pool claims names its own pool, which is what a launch that supplies
+    both already does.
+    """
+    return config.load().pool_for_role(role) or role
 
 
 # --------------------------------------------------------------------------
@@ -93,16 +108,48 @@ def held_by_front_role() -> dict[tuple[str, str], int]:
     return held
 
 
-def grant(*, pool: str, front: str | None, role: str, job: str | None,
-          session: str | None) -> dict:
-    """Take one slot for a job that is starting. Appended, never counted."""
-    record = entities.SlotGrant(
+def _grant_record(*, pool: str, front: str | None, role: str,
+                  job: str | None, session: str | None) -> dict:
+    return entities.SlotGrant(
         id=ids.mint("slot"), pool=pool, front=front or "", role=role,
         job=job, session=session, granted_at=store.utcnow_iso(),
         released_at=None, released_because="",
-    )
-    return store.append_ledger(paths.slots_path(), record.to_dict(),
-                               session_id=session)
+    ).to_dict()
+
+
+def grant(*, pool: str, front: str | None, role: str, job: str | None,
+          session: str | None) -> dict:
+    """Take one slot for a job that is starting. Appended, never counted."""
+    return store.append_ledger(
+        paths.slots_path(),
+        _grant_record(pool=pool, front=front, role=role, job=job,
+                      session=session),
+        session_id=session)
+
+
+def _append_grant_holding_the_lock(record: dict,
+                                   session: str | None) -> dict:
+    """Append one grant line while the store's write lock is already held.
+
+    This is :func:`store.append_ledger`'s write with the lock taken out of
+    it, and it exists for exactly one caller, :func:`admit`. ``flock`` is
+    held per open file description, not per process, so a second
+    ``append_ledger`` inside the lock would block on the lock this process
+    is already holding and never wake up. The alternative — a second lock
+    file of capacity's own — would make two locks where the state directory
+    has one, so the write is inlined here instead.
+    """
+    entry = dict(record)
+    entry.setdefault("at", store.utcnow_iso())
+    if session is not None:
+        entry.setdefault("by", session)
+    ledger = Path(paths.slots_path())
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with open(ledger, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return entry
 
 
 def release_for_session(session_id: str, when: str, because: str) -> int:
@@ -150,26 +197,93 @@ def ceiling(front: str | None, role: str) -> int | None:
     return value
 
 
+def _who(role: str, front: str | None) -> str:
+    """Who a refusal is about: the role, and the front when there is one.
+
+    Every capacity refusal opens the same way, so a supervisor reading two
+    of them side by side is reading the same sentence with different
+    numbers. A refusal that named only the pool left the reader to work out
+    which of its launches had been stopped.
+    """
+    return (f"role {role!r} on front {front!r}" if front
+            else f"role {role!r} on no front")
+
+
 def launch_problems(role: str, pool: str, front: str | None) -> list[str]:
     """The capacity refusals for one launch, in the order they are checked.
 
-    The front's ceiling first, then the pool's cap, each naming the numbers
-    it saw and the limit it hit. Both are returned so a launch wrong on
-    both counts is told both at once, like every other refusal here.
+    The front's ceiling first, then the pool's cap, each naming the role,
+    the front, the numbers it saw and the limit it hit. Both are returned
+    so a launch wrong on both counts is told both at once, like every other
+    refusal here.
     """
     problems: list[str] = []
     limit = ceiling(front, role)
     if limit is not None:
         held = held_by_front_role().get((front or "", role), 0)
         if held >= limit:
-            problems.append(f"role {role!r} on front {front!r}: "
+            problems.append(f"{_who(role, front)}: "
                             f"{held} held, ceiling {limit}")
     cap = config.load().cap(pool)
     if cap is not None:
         held = held_by_pool().get(pool, 0)
         if held >= cap:
-            problems.append(f"pool {pool!r}: {held} held, cap {cap}")
+            problems.append(f"{_who(role, front)}: {held} held in pool "
+                            f"{pool!r}, cap {cap}")
     return problems
+
+
+def admit(*, role: str, pool: str, front: str | None, job: str | None,
+          session: str | None) -> list[str]:
+    """Check the two limits and take the slot, as one operation.
+
+    Returns the refusals, and takes nothing when there are any; returns an
+    empty list and holds one slot when there are none.
+
+    Checking and granting cannot be two operations. Between them the ledger
+    says the slot is free while a launch that has already passed the check
+    is on its way to taking it, so two launchers racing each other both read
+    room for one and both take it — a cap of one holding two workers, and a
+    screen saying the swarm is inside a budget it is outside of. Both halves
+    are done here under the store's one write lock, so the losing launcher
+    reads the winner's grant and is refused by the same sentence it would
+    have read a second later.
+
+    Holding the lock across a check and an append is not a reservation and
+    does not make a front's allocation one: nothing is held between the
+    caller deciding to launch and this call, and what is held afterwards is
+    a running worker's slot, first come first served (docs/DESIGN.md
+    section 9 rule 12). The lock is a moment; a reservation is a promise.
+    """
+    with store._write_lock():
+        problems = launch_problems(role, pool, front)
+        if problems:
+            return problems
+        _append_grant_holding_the_lock(
+            _grant_record(pool=pool, front=front, role=role, job=job,
+                          session=session), session)
+    return []
+
+
+def supervisor_problems(front: str | None, held: int) -> list[str]:
+    """The refusal for a supervisor summoned past the supervisor cap.
+
+    ``supervisor_cap`` is a limit of its own and not a share of ``cap``: a
+    supervisor holds no job slot, so counting it against the pool's job cap
+    would let one busy front's workers lock every other front out of a
+    supervisor. It is counted across every front, because a per-front count
+    is the "one front, one supervisor" rule and is checked separately.
+
+    ``held`` is the number of live supervisors, which only the launcher can
+    say: a roster record is a supervisor only while its process is still
+    that process.
+    """
+    pool = pool_for_role(SUPERVISOR_ROLE)
+    cap = config.load().supervisor_cap(pool)
+    if cap is None or held < cap:
+        return []
+    return [f"{_who(SUPERVISOR_ROLE, front)}: {held} held across every "
+            f"front, supervisor cap {cap} on pool {pool!r}"]
 
 
 # --------------------------------------------------------------------------

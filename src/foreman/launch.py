@@ -445,6 +445,12 @@ def cmd_launch(args: argparse.Namespace) -> int:
     # against a counter somebody forgot to decrement. A dry run runs this
     # too — the whole point of a dry run is to learn whether the real one
     # would be refused.
+    #
+    # This read is the refusal the caller sees beside every other violated
+    # field, and it is not what admits the launch: `capacity.admit` below
+    # checks the same two limits again and takes the slot in the same
+    # locked operation, because a check here that a grant honoured later
+    # is a race two launchers both win.
     problems.extend(capacity.launch_problems(args.role, args.pool, args.front))
     if args.timeout is not None and not TIMEOUT_RE.fullmatch(args.timeout):
         problems.append(
@@ -614,9 +620,37 @@ def cmd_launch(args: argparse.Namespace) -> int:
 
     pid: int | None = None
     if not args.dry_run:
+        # The slot is taken here, before the spawn and in one locked
+        # operation with the check that allows it. Granting after the spawn
+        # left a window in which the ledger said the slot was free and a
+        # worker for it was already starting: two launchers in that window
+        # both passed a cap of one and both got a process. A launch that
+        # names no job takes no job slot (see below), so it is not admitted
+        # here either.
+        if job_id:
+            denied = capacity.admit(
+                role=args.role, pool=args.pool, front=args.front,
+                job=job_id, session=session_id)
+            if denied:
+                # A refused launch leaves nothing behind: no slot was
+                # taken, the worktree goes, and the record closes.
+                store.update_snapshot(
+                    paths.roster_path(),
+                    lambda roster: _move_session(
+                        roster, session_id, state="failed", pid=None,
+                        pgid=None),
+                    default={"sessions": {}},
+                )
+                remove_launch_worktree(repo, branch, worktree)
+                return refuse(*denied)
         try:
             pid = adapter.launch(ctx)
         except Exception as exc:  # noqa: BLE001 - a dead spawn is a refusal
+            # The slot was taken a moment ago for a process that does not
+            # exist. Giving it back here is what keeps a pool from filling
+            # with grants for workers that never started.
+            capacity.release_for_session(
+                session_id, store.utcnow_iso(), "failed")
             store.update_snapshot(
                 paths.roster_path(),
                 lambda roster: _move_session(
@@ -638,17 +672,15 @@ def cmd_launch(args: argparse.Namespace) -> int:
                 pid_starttime=starttime),
             default={"sessions": {}},
         )
-        # The slot is taken at the moment the job starts, never at the
-        # moment it was planned: a ceiling is not a reservation, so nothing
-        # is held while the launch is still only intended. A dry run never
-        # reaches here, and a failed spawn returned above, so the ledger
-        # gains a grant only for a process that exists. A launch that names
-        # no job is not work on a front's queue and takes no job slot: it
-        # is a bare worker somebody started by hand, and the pool counts
-        # what is dispatched, not what wandered in.
-        if job_id:
-            capacity.grant(pool=args.pool, front=args.front, role=args.role,
-                           job=job_id, session=session_id)
+        # The slot was taken just above, at the moment the job starts and
+        # never at the moment it was planned: a ceiling is not a
+        # reservation, so nothing is held while the launch is still only
+        # intended. A dry run never reaches here, and a failed spawn gave
+        # its slot back, so the ledger holds a grant only for a process
+        # that exists. A launch that names no job is not work on a front's
+        # queue and takes no job slot: it is a bare worker somebody started
+        # by hand, and the pool counts what is dispatched, not what
+        # wandered in.
         # In v0 the launcher is the only thing that makes a job exist, so
         # it records the one it just started: without that line the owner
         # sees a session counted in the header and nothing on the screen
@@ -1343,30 +1375,47 @@ def _start_supervisor(session_id: str, *, repo: str, role_prompt: Path,
     return argv, inner, pid, None
 
 
+def live_supervisors(front: str | None = None,
+                     ignore: str | None = None) -> list[tuple[str, dict]]:
+    """Every live supervisor, or every live supervisor of one front.
+
+    Live means rostered as starting or running *and* the recorded process
+    still being that process — a stale record for a pid that is gone, or
+    one a later process has reused, holds neither a front nor a slot.
+
+    Both limits over supervisors read this: the front's own (one front, one
+    supervisor) filters by front, and the system's ``supervisor_cap`` does
+    not, so a machine's supervisors are counted the same way whichever
+    refusal is about to be written.
+    """
+    live: list[tuple[str, dict]] = []
+    sessions = caller.read_roster().get("sessions", {})
+    for session_id, entry in sessions.items():
+        if not isinstance(entry, dict) or session_id == ignore:
+            continue
+        if entry.get("role") != SUPERVISOR:
+            continue
+        if front is not None and entry.get("front") != front:
+            continue
+        if entry.get("state") not in ("starting", "running"):
+            continue
+        pid = entry.get("pid")
+        if pid is None or procs.same_process(pid, entry.get("pid_starttime")):
+            live.append((session_id, entry))
+    return live
+
+
 def live_front_supervisor(front: str | None,
                           ignore: str | None = None) -> tuple[str, dict] | None:
     """The front's live supervisor, if it has one.
 
     One front has one supervisor: two of them is the state the collector
     reads as an intruder, and the one this whole runtime exists to prevent.
-    Live means rostered as starting or running *and* the recorded process
-    still being that process — a stale record for a pid that is gone, or
-    one a later process has reused, holds no front.
     """
     if not front:
         return None
-    sessions = caller.read_roster().get("sessions", {})
-    for session_id, entry in sessions.items():
-        if not isinstance(entry, dict) or session_id == ignore:
-            continue
-        if entry.get("role") != SUPERVISOR or entry.get("front") != front:
-            continue
-        if entry.get("state") not in ("starting", "running"):
-            continue
-        pid = entry.get("pid")
-        if pid is None or procs.same_process(pid, entry.get("pid_starttime")):
-            return session_id, entry
-    return None
+    found = live_supervisors(front, ignore)
+    return found[0] if found else None
 
 
 def _print_supervisor(session_id: str, vendor_id: str, role_prompt: Path,
@@ -1472,6 +1521,13 @@ def launch_supervisor_main(args: argparse.Namespace,
             f"({entry.get('state')}, pid {entry.get('pid')}); one front has "
             f"one supervisor, so replace it with "
             f"`foreman relaunch {held}` instead of summoning a second")
+    # And the system's own limit on supervisors, across every front. The
+    # field was loaded and never read, so the cap the owner set on how many
+    # fronts may be supervised at once bounded nothing: a summon per front
+    # was a summon without a limit. A supervisor is counted apart from the
+    # job slots, which is what a separate `supervisor_cap` is for.
+    problems.extend(
+        capacity.supervisor_problems(front, len(live_supervisors())))
     if problems:
         return refuse(*problems)
     assert record is not None and branch is not None

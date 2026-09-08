@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+import threading
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -27,7 +28,7 @@ import pytest
 from foreman import capacity, cli, config, paths, store
 from foreman.caller import SESSION_ENV
 from foreman.collector import CollectorConfig, tick
-from foreman.entities import Session
+from foreman.entities import JOB_ROLES, Session
 from foreman.pools import LaunchContext, PoolAdapter
 
 #: A brief that validates, allocating two muse and one opus. Two roles is
@@ -228,7 +229,7 @@ def test_the_pool_cap_refuses_the_launch_past_it(env, capsys):
 
     err = refused(env, capsys)
 
-    assert "pool 'fake': 1 held, cap 1" in err
+    assert "role 'muse' on front 'alpha': 1 held in pool 'fake', cap 1" in err
     assert "ceiling" not in err
 
 
@@ -260,7 +261,7 @@ def test_a_front_with_no_record_is_checked_against_the_pool_cap_alone(
 
     err = refused(env, capsys, front="ghost")
 
-    assert "pool 'fake': 1 held, cap 1" in err
+    assert "role 'muse' on front 'ghost': 1 held in pool 'fake', cap 1" in err
     assert "ceiling" not in err
 
 
@@ -281,9 +282,140 @@ def test_a_dry_run_runs_every_check_and_grants_no_slot(env, capsys):
 
     launched(env, capsys)
     err = refused(env, capsys, front="ghost")
-    assert "pool 'fake': 1 held, cap 1" in err
+    assert "role 'muse' on front 'ghost': 1 held in pool 'fake', cap 1" in err
     assert launch(env, "--dry-run", front="ghost") != 0
-    assert "pool 'fake': 1 held, cap 1" in capsys.readouterr().err
+    assert "role 'muse' on front 'ghost': 1 held in pool 'fake', cap 1" in capsys.readouterr().err
+
+
+def test_two_launches_racing_for_one_slot_do_not_both_get_it(env, capsys):
+    """Check-and-grant is one operation, so a cap of one hands out one slot
+    however the launches are timed.
+
+    Two launchers released together both read an empty pool while the other
+    was already on its way to filling it, and both got a worker: the check
+    ran before the spawn and the grant after it, with nothing holding the
+    two together. That is the worst defect this file can carry, because
+    every screen afterwards says the swarm is inside a budget it is not.
+    """
+    add_front(env, "alpha")
+    assert cli.main(["cap", "fake", "1"]) == 0
+    capsys.readouterr()
+    together = threading.Barrier(2)
+    codes: list[int] = []
+
+    def race() -> None:
+        together.wait()
+        codes.append(launch(env))
+
+    racers = [threading.Thread(target=race) for _ in range(2)]
+    for racer in racers:
+        racer.start()
+    for racer in racers:
+        racer.join(timeout=120)
+    err = capsys.readouterr().err
+
+    assert sorted(codes) == [0, 1], f"a cap of one admitted {codes}"
+    assert "role 'muse' on front 'alpha': 1 held in pool 'fake', cap 1" in err, \
+        "the loser must be refused by the cap, not by an accident"
+    assert held() == 1
+    assert len(capacity.open_grants()) == 1
+
+
+def test_a_launch_over_both_limits_is_told_both_of_them(env, capsys):
+    """One refusal carries every limit the launch broke, each with its own
+    numbers. Reporting only the first would send the supervisor to raise the
+    ceiling and hit the cap on the very next try."""
+    add_front(env, "alpha")
+    assert cli.main(["cap", "fake", "2"]) == 0
+    capsys.readouterr()
+    launched(env, capsys)
+    launched(env, capsys)
+
+    err = refused(env, capsys)
+
+    assert "role 'muse' on front 'alpha': 2 held, ceiling 2" in err
+    assert "role 'muse' on front 'alpha': 2 held in pool 'fake', cap 2" in err
+
+
+def test_the_opus_cap_stops_an_opus_worker(env, capsys):
+    """The cap the owner sets on Opus governs the pool Opus workers run on.
+
+    The packaged default configured `[pool.opus]`, the adapter registers
+    itself as `claude`, and a launch is checked against the pool it names,
+    so `cap opus 0` wrote a table nothing ever read and the limit on the
+    most expensive model on the machine held nothing back.
+    """
+    assert cli.main(["cap", "opus", "0"]) == 0
+    out = capsys.readouterr().out
+
+    rc = cli.main(["launch", "opus", "claude", str(env / "spec.md"),
+                   "--repo", str(env), "--front", "ghost",
+                   "--task", "first work", "--dry-run"])
+    err = capsys.readouterr().err
+
+    assert "claude: cap 0" in out
+    assert rc != 0
+    assert ("role 'opus' on front 'ghost': 0 held in pool 'claude', cap 0"
+            in err)
+    assert config.load().cap("claude") == 0
+    assert "[pool.opus]" not in paths.config_file().read_text(encoding="utf-8")
+
+
+def _with_supervisor_cap(count: int) -> None:
+    """The packaged configuration with the supervisor cap set to ``count``."""
+    paths.config_dir().mkdir(parents=True, exist_ok=True)
+    paths.config_file().write_text(
+        config.packaged_text().replace("supervisor_cap = 2",
+                                       f"supervisor_cap = {count}"),
+        encoding="utf-8")
+
+
+def summon(root: Path, front: str) -> int:
+    return cli.main(["launch", "supervisor", front, "--repo", str(root),
+                     "--dry-run"])
+
+
+def test_the_supervisor_cap_refuses_a_summon_past_it(env, capsys):
+    """`supervisor_cap` was loaded and never read: summoning checked only
+    that the front had none already, so the owner's limit on how many
+    supervisors may run at once bounded nothing at all."""
+    add_front(env, "alpha")
+    _with_supervisor_cap(0)
+    capsys.readouterr()
+
+    rc = summon(env, "alpha")
+    err = capsys.readouterr().err
+
+    assert rc != 0
+    assert ("role 'supervisor' on front 'alpha': 0 held across every front, "
+            "supervisor cap 0 on pool 'claude'") in err
+
+
+def test_the_supervisor_cap_counts_supervisors_on_every_front(env, capsys):
+    """The cap is the system's, not the front's: a front with no supervisor
+    of its own is still refused one when the machine is at its limit. A
+    count filtered to the front being summoned would let every front on the
+    machine have one however low the cap was set."""
+    add_front(env, "alpha")
+    add_front(env, "beta")
+    _with_supervisor_cap(1)
+    store.update_snapshot(
+        paths.roster_path(),
+        lambda roster: roster["sessions"].__setitem__(
+            "ses-alpha001", Session(id="ses-alpha001", role="supervisor",
+                                    pool="opus", front="alpha",
+                                    state="running").to_dict()) or roster,
+        default={"sessions": {}})
+    capsys.readouterr()
+
+    rc = summon(env, "beta")
+    err = capsys.readouterr().err
+
+    assert rc != 0
+    assert ("role 'supervisor' on front 'beta': 1 held across every front, "
+            "supervisor cap 1 on pool 'claude'") in err
+    assert "already has a live supervisor" not in err, \
+        "beta has none of its own; this must be the system's cap"
 
 
 # --------------------------------------------------------------------------
@@ -298,7 +430,7 @@ def _at_the_cap(env, capsys) -> str:
     capsys.readouterr()
     sid = launched(env, capsys)
     assert held() == 1
-    assert "pool 'fake': 1 held, cap 1" in refused(env, capsys)
+    assert "role 'muse' on front 'alpha': 1 held in pool 'fake', cap 1" in refused(env, capsys)
     return sid
 
 
@@ -441,8 +573,8 @@ def test_the_packaged_default_is_copied_into_an_existing_config_dir(env):
     assert paths.config_file().read_text(encoding="utf-8") == \
         config.packaged_text()
     assert settings.cap("muse") == 5
-    assert settings.cap("opus") == 2
-    assert settings.supervisor_cap("opus") == 2
+    assert settings.cap("claude") == 2
+    assert settings.supervisor_cap("claude") == 2
 
 
 def test_a_user_file_overrides_one_pool_and_leaves_the_rest(env):
@@ -456,7 +588,7 @@ def test_a_user_file_overrides_one_pool_and_leaves_the_rest(env):
     assert settings.cap("muse") == 9
     assert settings.cap("grok") == 1
     assert settings.cap("codex") == 1
-    assert settings.supervisor_cap("opus") == 2
+    assert settings.supervisor_cap("claude") == 2
 
 
 def test_a_user_file_that_does_not_parse_falls_back_and_warns(env, capsys):
@@ -483,7 +615,7 @@ def test_cap_changes_what_the_next_launch_allows(env, capsys):
     assert cli.main(["cap", "fake", "1"]) == 0
     assert "fake: cap 1" in capsys.readouterr().out
     launched(env, capsys)
-    assert "pool 'fake': 1 held, cap 1" in refused(env, capsys)
+    assert "role 'muse' on front 'alpha': 1 held in pool 'fake', cap 1" in refused(env, capsys)
 
     assert cli.main(["cap", "fake", "2"]) == 0
     capsys.readouterr()
@@ -525,6 +657,91 @@ def test_cap_keeps_every_other_setting_in_the_file(env, capsys):
     text = paths.config_file().read_text(encoding="utf-8")
     assert "tick_seconds = 7" in text
     assert config.load().cap("muse") == 6
+
+
+def test_every_registered_pool_has_a_cap_and_every_cap_names_a_pool(env):
+    """The shipped configuration and the adapter registry name the same
+    pools, and every worker role resolves to one of them. A table for a pool
+    that does not exist is a cap nothing checks; a pool with no table is a
+    model family the owner cannot limit at all."""
+    from foreman import pools
+
+    registered = set(pools.names()) - {FakeAdapter.name}
+    shipped = config.defaults()
+
+    assert set(shipped) == registered
+    for name in registered:
+        assert config.load().cap(name) is not None, f"{name} has no cap"
+    for role in JOB_ROLES + ("supervisor",):
+        assert capacity.pool_for_role(role) in registered, role
+    assert capacity.pool_for_role("opus") == "claude"
+    assert capacity.pool_for_role("astra") == "codex"
+
+
+def test_cap_rewrites_a_table_whose_header_carries_a_comment(env, capsys):
+    """`cap` matched an exact `[pool.<name>]` line, so a header with a
+    trailing comment looked like no table at all and a second one was
+    appended. The file then failed to load, the packaged defaults answered,
+    and the cap the owner had just lowered read *higher* than before — a
+    shutdown that raised the limit."""
+    paths.config_dir().mkdir(parents=True, exist_ok=True)
+    before = ("# the caps I run with\n"
+              "[collector]\n"
+              "tick_seconds = 7  # every seven seconds\n"
+              "\n"
+              "[pool.muse] # the writers\n"
+              "cap = 4\n"
+              "supervisor_cap = 1\n")
+    paths.config_file().write_text(before, encoding="utf-8")
+
+    assert cli.main(["cap", "muse", "0"]) == 0
+    capsys.readouterr()
+
+    after = paths.config_file().read_text(encoding="utf-8")
+    assert [line for line in after.splitlines()
+            if line.startswith("[pool.muse")] == ["[pool.muse] # the writers"]
+    assert [line for line in before.splitlines()
+            if not line.startswith("cap =")] == \
+        [line for line in after.splitlines()
+         if not line.startswith("cap =")], \
+        "every line but the cap line must be byte-identical"
+    settings = config.load()
+    assert settings.user_read is True
+    assert settings.cap("muse") == 0
+    assert settings.supervisor_cap("muse") == 1
+
+
+def test_cap_adds_the_table_to_a_file_that_does_not_have_one(env, capsys):
+    """A file that never named the pool gets one table for it, appended
+    after everything already in the file and nothing else moved."""
+    paths.config_dir().mkdir(parents=True, exist_ok=True)
+    paths.config_file().write_text(
+        "[collector]\ntick_seconds = 7\n", encoding="utf-8")
+
+    assert cli.main(["cap", "grok", "3"]) == 0
+    capsys.readouterr()
+
+    text = paths.config_file().read_text(encoding="utf-8")
+    assert text.startswith("[collector]\ntick_seconds = 7\n")
+    settings = config.load()
+    assert settings.user_read is True
+    assert settings.cap("grok") == 3
+
+
+def test_cap_refuses_a_file_it_cannot_parse_and_writes_nothing(env, capsys):
+    """Editing a broken file can only make it broken in a new way, and this
+    verb is how the owner stops a swarm: it refuses by name and leaves every
+    byte where it was, so the owner fixes the file rather than discovering
+    later that the limit never took."""
+    paths.config_dir().mkdir(parents=True, exist_ok=True)
+    broken = "[pool.muse\ncap = ??\n"
+    paths.config_file().write_text(broken, encoding="utf-8")
+
+    assert cli.main(["cap", "muse", "1"]) == 1
+    err = capsys.readouterr().err
+
+    assert "does not parse" in err
+    assert paths.config_file().read_text(encoding="utf-8") == broken
 
 
 # --------------------------------------------------------------------------
@@ -640,3 +857,25 @@ def test_a_supervisor_launch_holds_no_job_slot(env, capsys):
     assert capacity.held_by_pool() == {"fake": 2}
     assert [grant["role"] for grant in capacity.open_grants()] == \
         ["muse", "muse"]
+
+
+def test_queued_work_is_counted_against_the_pool_its_role_runs_on(
+        env, capsys):
+    """An `astra` reviewer runs on `codex`. Mapping a role to a pool by
+    returning the role unchanged counted the queue against a pool named
+    `astra`, which nothing can launch: the codex row said nobody was waiting
+    while a reviewer had been waiting for its one slot all along."""
+    add_front(env, "alpha")
+    assert cli.main(["cap", "codex", "1"]) == 0
+    capsys.readouterr()
+    capacity.grant(pool="codex", front="alpha", role="astra", job="job-held",
+                   session="ses-held0001")
+    store.append_ledger(paths.front_jobs_path("alpha"), {
+        "id": "job-wait", "task": "first work", "kind": "review",
+        "role": "astra", "state": "queued"})
+
+    assert capacity.waiting_by_pool() == {"codex": 1}
+    assert cli.main(["status"]) == 0
+
+    block = capsys.readouterr().out.split("Capacity:\n", 1)[1]
+    assert "  codex: 1/1 held · 1 waiting" in block
