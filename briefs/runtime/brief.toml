@@ -1,0 +1,174 @@
+name      = "runtime"
+order     = 1
+want      = """
+The Foreman runtime: a state directory, the `foreman` CLI as its only writer, an MCP server with
+role-scoped tools over the same library, pool plugins with adapters, summoning scripts that mint
+identities and generate role prompts, a collector daemon that observes and relaunches, and
+`foreman status` printing the panel's text. Everything in docs/DESIGN.md §3–§12 and §14.
+"""
+done-when = "A fake swarm (fake pool adapters, fake processes) runs through all seven flows of DESIGN.md §14 end to end, driven only by `foreman` verbs, with every anomaly in §10 provoked and detected, and `foreman status` printing the §13 layout."
+land-on   = "main"
+reviews   = "on request"
+after     = []
+prefer    = 10
+
+[allocation]
+muse  = 5
+opus  = 1
+astra = 1
+grok  = 1
+
+[[task]]
+title   = "state directory and ledgers"
+scope   = """
+WHAT: the storage layer of DESIGN.md §6: ledgers as append-only JSONL, snapshots written by stage-and-rename,
+one lock held only across a write, id minting, a schema module for every entity in §5 with validation.
+INPUTS: docs/DESIGN.md §5, §6.
+OUTPUTS: package `foreman.store` with read/append/snapshot functions and entity dataclasses; tests that
+exercise concurrent appends and torn-read safety.
+OUT OF SCOPE: the CLI, the collector, any derived number.
+"""
+verify  = "python -m pytest tests/store -q"
+size    = 1
+after   = []
+
+[[task]]
+title   = "brief validation and component add"
+scope   = """
+WHAT: parse brief.toml (§4.2), validate per §4.3 reporting every violation at once, write the component,
+tasks and allocation to the ledger, enqueue the component.
+INPUTS: §4, the store package.
+OUTPUTS: `foreman component add|list|prefer|close`; a fixture set of valid and invalid briefs with the exact
+refusal text for each invalid one.
+OUT OF SCOPE: admission and launching (next task).
+"""
+verify  = "python -m pytest tests/brief -q"
+size    = 1
+after   = ["state directory and ledgers"]
+
+[[task]]
+title   = "pools, summoning and identity"
+scope   = """
+WHAT: pool plugin directories (§8) with the five adapter executables and manifest; the launcher: pop a job
+whose role has a free worker in the component's allocation, mint a session id, create worktree and log,
+generate FOREMAN-JOB.md (§5.2) and FOREMAN-ROLE.md (§12) from templates with rulings and environment
+injected, start the process via the pool's `launch`, record the slot grant; `admit` for supervisors;
+`relaunch` from checkpoint; refusal of unknown session ids and of verbs outside the caller's role.
+INPUTS: §5.2, §8, §12; four fake pool adapters that spawn a scripted fake worker process.
+OUTPUTS: `foreman admit|job plan|order|relaunch|kill|freeze|thaw`; pool add/remove/clone/list; templates.
+OUT OF SCOPE: real vendor adapters (separate task).
+"""
+verify  = "python -m pytest tests/launch -q"
+size    = 1
+after   = ["brief validation and component add"]
+
+[[task]]
+title   = "supervisor, merge and foreman verbs"
+scope   = """
+WHAT: every remaining verb in §12 for supervisor, merge desk and foreman roles: checkpoint, task ready/built,
+job verify/fail, evidence, finding, measure, ask (with ruling-coverage refusal), merge request/take/land/fail,
+component done, answer, route, rule, digest (computed part).
+INPUTS: §3, §5.4, §12, §14 flows 2, 3, 6, 7.
+OUTPUTS: the verbs; tests that drive flows 2, 3, 6 and 7 through the CLI alone.
+OUT OF SCOPE: the MCP server (next task), the collector.
+"""
+verify  = "python -m pytest tests/verbs -q"
+size    = 1
+after   = ["pools, summoning and identity"]
+
+[[task]]
+title   = "MCP server with role-scoped tools"
+scope   = """
+WHAT: one MCP server over the same library exposing, per connected session (identified by its minted id),
+exactly the verbs its role may call, with typed arguments and the same refusals as the CLI.
+INPUTS: §12; the verbs task.
+OUTPUTS: `foreman mcp` (stdio); a test that connects as each role and lists tools.
+OUT OF SCOPE: workers — they get no server.
+"""
+verify  = "python -m pytest tests/mcp -q"
+size    = 1
+after   = ["supervisor, merge and foreman verbs"]
+
+[[task]]
+title   = "collector"
+scope   = """
+WHAT: the daemon of §3 and §7: every 2 s read process table, worktree mtimes, CPU, finish markers, meters and
+usage through the pool adapters; write roster and observed.json; detect every anomaly in §10 with thresholds
+from foreman.toml; kill timed-out jobs; relaunch dead supervisors; hourly digest hook; systemd user unit.
+INPUTS: §7, §10; fake adapters that can simulate silence, stall, intruder, quota.
+OUTPUTS: `foreman collector run|once`; unit file; tests provoking each of the eleven anomalies.
+OUT OF SCOPE: rendering.
+"""
+verify  = "python -m pytest tests/collector -q"
+size    = 1
+after   = ["pools, summoning and identity"]
+
+[[task]]
+title   = "status and doctor"
+scope   = """
+WHAT: `foreman status` printing the §13 layout from observed.json and ledgers (the same text the panel will
+render); `foreman queues`; `foreman ledger <component>`; `foreman doctor` cross-checking observed against
+recorded (processes vs roster, worktrees vs jobs, slot ledger vs process table, config vs schema).
+INPUTS: §13, the collector's observed.json.
+OUTPUTS: the verbs; a golden-file test of status output for a fixture state directory.
+OUT OF SCOPE: colours, keys, QML.
+"""
+verify  = "python -m pytest tests/status -q"
+size    = 1
+after   = ["collector", "supervisor, merge and foreman verbs"]
+
+[[task]]
+title   = "real vendor adapters"
+scope   = """
+WHAT: the four shipped pools' adapters against the real CLIs on this machine: claude (headless -p with
+--deny for foreman tools, transcript path, usage from JSONL), codex (exec mode, rollout path, /status meter,
+output file verdict), grok (headless with --json-schema verdicts, --deny 'foreman__*', no meter),
+muse (headless, finish marker, no meter, no usage).
+INPUTS: existing launch knowledge in ~/.claude/skills/{muse-workers,grok-workers,opus-supervisor}; §8.
+OUTPUTS: four pool directories under pools/ with manifest, launch, observe, meter, usage, verdict; a smoke
+test per adapter that launches a trivial job and observes it to completion.
+OUT OF SCOPE: anything that spends more than one trivial job per vendor.
+"""
+verify  = "python -m pytest tests/adapters -q -m smoke"
+size    = 4
+after   = ["pools, summoning and identity"]
+
+[[task]]
+title   = "end-to-end fake swarm"
+scope   = """
+WHAT: one test that stands up a state directory with fake pools, adds two components (one `after` the other,
+one preferred), runs the collector, and drives all seven flows of §14 through verbs only, asserting ledger
+contents and `foreman status` output at each step.
+INPUTS: everything above.
+OUTPUTS: tests/e2e; a `make demo` that runs it visibly.
+OUT OF SCOPE: real vendors.
+"""
+verify  = "python -m pytest tests/e2e -q"
+size    = 1
+after   = ["status and doctor", "MCP server with role-scoped tools"]
+
+[[monitor]]
+question = "how many of the 25 verbs in §12 exist and refuse correctly?"
+measure  = "foreman-verify verbs --count"
+unit     = "verbs"
+of       = 25
+every    = "landing"
+
+[[monitor]]
+question = "how many of the 11 anomalies are detected by a test?"
+measure  = "foreman-verify anomalies --count"
+unit     = "anomalies"
+of       = 11
+every    = "landing"
+
+[[monitor]]
+question = "test suite time"
+measure  = "foreman-verify test-seconds"
+unit     = "s"
+every    = "landing"
+alert    = "> 120"
+
+[[rule]]
+text = "Python 3.12, stdlib plus tomllib; no framework; one package `foreman`; every verb reachable both as CLI and as a library call."
+[[rule]]
+text = "Nothing product-specific and no credentials in this repository, ever."

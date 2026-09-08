@@ -1,0 +1,84 @@
+name      = "panel"
+order     = 2
+want      = """
+The Foreman panel inside the Omarchy shell: a Quickshell plugin, toggled by Super+M, rendering DESIGN.md §13
+from the state directory in the plain-language card layout of docs/mock/v0-tree.html, with every action a
+`foreman` verb and every actionable element carrying its key. Plus a bar widget with the header numbers.
+"""
+done-when = "Super+M shows the §13 blocks live from a running collector, every key in the mock performs its verb, the bar widget shows sessions/frozen/needs-you counts, and the plugin installs and uninstalls cleanly on a stock Omarchy."
+land-on   = "main"
+reviews   = "on request"
+after     = []
+prefer    = 5
+
+[allocation]
+muse  = 3
+opus  = 1
+astra = 1
+grok  = 0
+
+[[task]]
+title   = "plugin skeleton and data feed"
+scope   = """
+WHAT: an Omarchy shell plugin directory (manifest with kinds panel + bar-widget), a PanelWindow toggled by
+`omarchy-shell shell toggle foreman`, FileView watchers on observed.json and the ledgers with a 2 s fallback
+poll, a QML model layer exposing §13 blocks; theme from the Color/Style singletons.
+INPUTS: docs/research/omarchy-shell-surfaces.md; /mnt/ssd/projects/omarchy-agent-workspaces for conventions;
+a fixture state directory from the runtime component.
+OUTPUTS: the plugin loads, toggles, and shows raw block counts from the fixture.
+OUT OF SCOPE: layout, keys.
+"""
+verify  = "foreman-verify panel --loads"
+size    = 1
+after   = []
+
+[[task]]
+title   = "blocks in the v0 layout"
+scope   = """
+WHAT: render Needs you, Problems, Working (component cards with tasks, jobs, monitors), Job queue, Component
+queue, Merge queue, Capacity exactly as docs/mock/v0-tree.html, from the model layer.
+INPUTS: the mock; §13.
+OUTPUTS: pixel-comparable rendering of the fixture; phone-width not required.
+OUT OF SCOPE: any graphic beyond the mock's bars.
+"""
+verify  = "foreman-verify panel --blocks"
+size    = 7
+after   = ["plugin skeleton and data feed"]
+
+[[task]]
+title   = "keys and actions"
+scope   = """
+WHAT: every actionable element carries its key chip; static keys for blocks, two-letter hints assigned on
+appearance for dynamic items; each key runs the corresponding `foreman` verb via Process and the panel
+reflects the ledger change; `?` cheat sheet; Esc backs out; Super+M binding installed without rebinding an
+existing key.
+INPUTS: the mock's key map; §12 verbs.
+OUTPUTS: a test driving each key against a fixture and asserting the ledger line.
+OUT OF SCOPE: mouse-only interactions.
+"""
+verify  = "foreman-verify panel --keys"
+size    = 1
+after   = ["blocks in the v0 layout"]
+
+[[task]]
+title   = "bar widget and install"
+scope   = """
+WHAT: a bar widget showing sessions registered/observed, frozen state, needs-you count, anomaly count;
+install/uninstall scripts in the agent-workspaces style (marked edits only, exact reversal).
+INPUTS: omarchy-agent-workspaces install/uninstall.
+OUTPUTS: `install` and `uninstall`; verified on this machine.
+OUT OF SCOPE: anything that edits packaged Omarchy files.
+"""
+verify  = "foreman-verify panel --install-roundtrip"
+size    = 1
+after   = ["keys and actions"]
+
+[[monitor]]
+question = "how many of the §13 blocks render from the fixture?"
+measure  = "foreman-verify panel --blocks-count"
+unit     = "blocks"
+of       = 8
+every    = "landing"
+
+[[rule]]
+text = "Never edit /usr/share/omarchy; clone, never patch; the state directory is the only input."
