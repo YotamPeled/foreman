@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 1,
+  "id": "foreman",
+  "name": "Foreman",
+  "version": "0.1.0",
+  "description": "The swarm on one screen: what needs you, what is wrong, what is running",
+  "kinds": ["panel", "bar-widget"],
+  "keepLoaded": true,
+  "entryPoints": {
+    "panel": "Panel.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Foreman",
+    "description": "Sessions registered and observed, and how many things are waiting on you",
+    "category": "System",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}

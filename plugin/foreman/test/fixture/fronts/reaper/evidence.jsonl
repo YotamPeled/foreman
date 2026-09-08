@@ -1,0 +1,1 @@
+{"on":"tas-rea-1","claim":"Killing a job leaves no process in its group alive","status":"CONFIRMED","command":"make check reaper-kill","output_ref":"evidence/reaper-kill-1358","at":"2026-05-11T13:58:00+00:00"}

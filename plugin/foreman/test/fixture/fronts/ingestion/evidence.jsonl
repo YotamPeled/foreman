@@ -1,0 +1,1 @@
+{"on":"tas-ing-1","claim":"A reused reader id is refused and the batch is not written twice","status":"CONFIRMED","command":"make check ingestion-reader","output_ref":"evidence/ingestion-reader-1345","at":"2026-05-11T13:45:00+00:00"}

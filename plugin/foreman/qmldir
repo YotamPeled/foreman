@@ -1,0 +1,4 @@
+singleton Model 1.0 Model.qml
+FrontFeed 1.0 FrontFeed.qml
+Panel 1.0 Panel.qml
+BarWidget 1.0 BarWidget.qml

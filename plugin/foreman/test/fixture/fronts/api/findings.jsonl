@@ -1,0 +1,1 @@
+{"on":"job-api-1","class":"correctness","title":"The write guard releases the lock before the rename","detail":"Two writers can both stage a file and the second rename wins, so the first writer's append is lost.","evidence_ref":"evidence/api-guard-1352","at":"2026-05-11T13:52:00+00:00"}

@@ -1,0 +1,323 @@
+#!/usr/bin/env python3
+"""Front verification: the command that judges a front's work.
+
+    foreman-verify <front> <check>
+
+One front is implemented, `panel`, and two of its checks:
+
+  --loads          the plugin's QML lints clean and its model layer folds the
+                   fixture into the eight blocks of DESIGN section 13, run
+                   headlessly with no Wayland display
+  --blocks-count   how many of those eight blocks came back non-empty, as one
+                   integer and nothing else
+
+`--blocks`, `--keys` and `--install-roundtrip` belong to jobs that have not
+run yet and exit 2.
+
+Standard library only, so this runs wherever the repository is checked out.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+PLUGIN = REPO / "plugin" / "foreman"
+HARNESS = PLUGIN / "Harness.qml"
+FIXTURE = PLUGIN / "test" / "fixture"
+
+#: Where Omarchy is installed. Read only, never written, never edited.
+OMARCHY = Path(os.environ.get("OMARCHY_PATH", "/usr/share/omarchy"))
+
+#: The eight blocks and the count each one must report against the fixture in
+#: plugin/foreman/test/fixture. These are derived by hand from the fixture
+#: files, never from a run of the parser under test:
+#:
+#:   header      10  observed.json swarm.sessions_registered; roster.json has
+#:                   the same ten sessions
+#:   needsYou     2  inbox.jsonl has 4 lines and 3 ids; inb-theme001 is
+#:                   written twice and the later line answers it, leaving
+#:                   inb-tokens01 and inb-reaper01 open
+#:   problems     3  anomalies.jsonl has 5 lines and 4 (kind, subject) pairs;
+#:                   the later "job stalled/ses-wcorp002" line resolves it,
+#:                   leaving supervisor silent, intruder, defect repeated
+#:   working      5  seven directories under fronts/; digest and dashboard are
+#:                   state "queued", so corpus, api, engine, ingestion, reaper
+#:   jobQueue     6  planned or queued jobs after folding: corpus job-cor-4,
+#:                   api job-api-4 and job-api-5, engine job-eng-1, ingestion
+#:                   job-ing-1, reaper job-rea-1. corpus job-cor-2 is written
+#:                   planned and then running, and the later line wins
+#:   frontQueue   2  digest and dashboard
+#:   mergeQueue   5  merges.jsonl has 6 lines and 5 ids; mrg-labelidx is
+#:                   written twice and the later line lands it
+#:   capacity     4  observed.json pools: opus, codex, grok, muse
+EXPECTED = {
+    "header": 10,
+    "needsYou": 2,
+    "problems": 3,
+    "working": 5,
+    "jobQueue": 6,
+    "frontQueue": 2,
+    "mergeQueue": 5,
+    "capacity": 4,
+}
+
+BLOCKS = list(EXPECTED)
+
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+#: The plugin's surfaces import qs.Commons, which only resolves inside the
+#: Omarchy shell's own config root. Running the model on its own leaves that
+#: import dangling, and Quickshell says so. Every other unresolvable import is
+#: a real failure.
+EXPECTED_DANGLING_IMPORT = "/Commons"
+
+#: qmllint reports everything as a warning with a category in brackets, so the
+#: category is what decides. These fail the check: the file does not parse, an
+#: import does not resolve, a type does not exist. The categories left out are
+#: the ones qmllint also raises against Omarchy's own shipped plugins:
+#: `missing-property`, because it cannot see through the shell's nested token
+#: objects, and `uncreatable-type`, which it says about every PanelWindow.
+FATAL_CATEGORIES = ("[syntax]", "[import]", "[unresolved-type]",
+                    "[missing-type]", "[incompatible-type]",
+                    "[invalid-lint-directive]")
+
+
+class Failure(Exception):
+    """A named check that did not pass."""
+
+
+def _clean(text: str) -> str:
+    return ANSI.sub("", text)
+
+
+def find_qmllint() -> str:
+    """qmllint ships with qt6-declarative but is not on PATH on this machine."""
+    for candidate in ("qmllint", "qmllint6"):
+        found = shutil.which(candidate)
+        if found:
+            return found
+    for candidate in ("/usr/lib/qt6/bin/qmllint", "/usr/lib/qt6/bin/qmllint6"):
+        if Path(candidate).is_file():
+            return candidate
+    raise Failure("qmllint: not found on PATH or under /usr/lib/qt6/bin")
+
+
+def find_quickshell() -> str:
+    for candidate in ("qs", "quickshell"):
+        found = shutil.which(candidate)
+        if found:
+            return found
+    raise Failure("quickshell: neither `qs` nor `quickshell` is on PATH")
+
+
+def headless_env(state_dir: Path) -> dict:
+    """No Wayland display, no GPU, no theme plugin, and the fixture as the
+    only state directory the model can see."""
+    env = dict(os.environ)
+    env.pop("WAYLAND_DISPLAY", None)
+    env.pop("DISPLAY", None)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env["QT_QPA_PLATFORMTHEME"] = ""
+    env["FOREMAN_STATE"] = str(state_dir)
+    return env
+
+
+def check_lint() -> list[str]:
+    """Every QML file in the plugin, linted. An error or an import that does
+    not resolve fails; the property warnings qmllint raises against the
+    shell's nested token objects do not, because it raises the same ones
+    against Omarchy's own shipped plugins."""
+    qmllint = find_qmllint()
+    files = sorted(str(path) for path in PLUGIN.rglob("*.qml"))
+    if not files:
+        raise Failure("qmllint: no QML files found under " + str(PLUGIN))
+
+    # qs.Commons is declared by /usr/share/omarchy/shell/Commons/qmldir as a
+    # module named qs.Commons, so it resolves under an import path holding a
+    # `qs` entry that points at the shell.
+    imports = REPO / ".foreman-verify-imports"
+    imports.mkdir(exist_ok=True)
+    link = imports / "qs"
+    shell = OMARCHY / "shell"
+    try:
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        if shell.is_dir():
+            link.symlink_to(shell)
+
+        result = subprocess.run(
+            [qmllint, "-I", str(imports), *files],
+            capture_output=True, text=True, timeout=180)
+    finally:
+        if link.is_symlink():
+            link.unlink()
+        try:
+            imports.rmdir()
+        except OSError:
+            pass
+
+    output = _clean(result.stdout + result.stderr)
+    problems = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Error:"):
+            problems.append(stripped)
+            continue
+        fatal = any(category in stripped for category in FATAL_CATEGORIES)
+        if fatal or "is not installed" in stripped:
+            if EXPECTED_DANGLING_IMPORT not in stripped:
+                problems.append(stripped)
+    if problems:
+        raise Failure("qmllint: " + str(len(problems)) + " problem(s):\n  "
+                      + "\n  ".join(problems))
+    return files
+
+
+def run_harness(state_dir: Path) -> dict:
+    """The model layer with no window on it, against `state_dir`.
+
+    Quickshell exits 0 on a configuration that failed to load, so the pass or
+    fail decision is made from the output, never from the status."""
+    quickshell = find_quickshell()
+    if not HARNESS.is_file():
+        raise Failure("harness: missing " + str(HARNESS))
+    if not state_dir.is_dir():
+        raise Failure("harness: no such state directory: " + str(state_dir))
+
+    result = subprocess.run(
+        [quickshell, "-p", str(HARNESS)],
+        capture_output=True, text=True, timeout=120,
+        env=headless_env(state_dir))
+    output = _clean(result.stdout + result.stderr)
+
+    trouble = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("ERROR"):
+            trouble.append(stripped)
+        elif "unresolvable import" in stripped:
+            if EXPECTED_DANGLING_IMPORT not in stripped:
+                trouble.append(stripped)
+        elif "TypeError" in stripped or "ReferenceError" in stripped:
+            trouble.append(stripped)
+    if trouble:
+        raise Failure("harness: the model layer reported errors:\n  "
+                      + "\n  ".join(trouble[:10]))
+
+    counts = {}
+    nonempty = None
+    for line in output.splitlines():
+        match = re.search(r"BLOCK ([A-Za-z]+) (-?\d+)\s*$", _clean(line))
+        if match:
+            counts[match.group(1)] = int(match.group(2))
+            continue
+        match = re.search(r"NONEMPTY (-?\d+)\s*$", _clean(line))
+        if match:
+            nonempty = int(match.group(1))
+    if "HARNESS-DONE" not in output:
+        raise Failure("harness: did not finish; output was:\n" + output[-2000:])
+    if nonempty is None:
+        raise Failure("harness: printed no NONEMPTY line")
+    return {"counts": counts, "nonempty": nonempty}
+
+
+def check_blocks(state_dir: Path) -> dict:
+    result = run_harness(state_dir)
+    counts = result["counts"]
+    missing = [name for name in BLOCKS if name not in counts]
+    if missing:
+        raise Failure("blocks: the model never reported " + ", ".join(missing))
+    wrong = ["%s: got %d, the fixture holds %d"
+             % (name, counts[name], EXPECTED[name])
+             for name in BLOCKS if counts[name] != EXPECTED[name]]
+    if wrong:
+        raise Failure("blocks: " + str(len(wrong)) + " count(s) wrong:\n  "
+                      + "\n  ".join(wrong))
+    return result
+
+
+def loads(state_dir: Path) -> int:
+    files = check_lint()
+    print("qmllint: %d QML file(s) clean" % len(files))
+    result = check_blocks(state_dir)
+    for name in BLOCKS:
+        print("%s %d" % (name, result["counts"][name]))
+    print("loads: the plugin lints and its model folds the fixture "
+          "into all eight blocks")
+    return 0
+
+
+def blocks_count(state_dir: Path) -> int:
+    print(run_harness(state_dir)["nonempty"])
+    return 0
+
+
+NOT_IMPLEMENTED = {
+    "--blocks": "the block layout job has not run yet",
+    "--keys": "the keys and actions job has not run yet",
+    "--install-roundtrip": "the install/uninstall job has not run yet",
+}
+
+
+def main(argv: list[str]) -> int:
+    # The check is spelled as a flag (`panel --loads`), so it is pulled out of
+    # argv before argparse sees it and treats it as an option of its own.
+    parser = argparse.ArgumentParser(
+        prog="foreman-verify",
+        usage="foreman-verify <front> <check> [--state DIR]",
+        description="Verify one front's work, one check at a time.")
+    parser.add_argument("front", help="the front to verify (panel)")
+    parser.add_argument("--state", default=str(FIXTURE),
+                        help="state directory to read (default: the fixture)")
+
+    known = set(NOT_IMPLEMENTED) | {"--loads", "--blocks-count"}
+    rest, check = [], None
+    for token in argv:
+        if token in known and check is None:
+            check = token
+        else:
+            rest.append(token)
+    if check is None:
+        parser.print_usage(sys.stderr)
+        print("foreman-verify: no check named; one of "
+              + ", ".join(sorted(known)), file=sys.stderr)
+        return 2
+    args = parser.parse_args(rest)
+    args.check = check
+
+    if args.front != "panel":
+        print("foreman-verify: not implemented yet: front %r" % args.front,
+              file=sys.stderr)
+        return 2
+    if args.check in NOT_IMPLEMENTED:
+        print("foreman-verify: not implemented yet: %s (%s)"
+              % (args.check, NOT_IMPLEMENTED[args.check]), file=sys.stderr)
+        return 2
+
+    checks = {"--loads": loads, "--blocks-count": blocks_count}
+    if args.check not in checks:
+        print("foreman-verify: unknown check %r for front panel" % args.check,
+              file=sys.stderr)
+        return 2
+
+    try:
+        return checks[args.check](Path(args.state).expanduser())
+    except Failure as failure:
+        print("foreman-verify panel %s FAILED\n%s" % (args.check, failure),
+              file=sys.stderr)
+        return 1
+    except subprocess.TimeoutExpired as expired:
+        print("foreman-verify panel %s FAILED\ntimed out running %s"
+              % (args.check, expired.cmd), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))
