@@ -46,8 +46,8 @@ SUPERVISOR_TOOLS = frozenset({
 })
 #: The foreman role's own row: answers and rules, never front or job verbs.
 FOREMAN_TOOLS = frozenset({
-    "answer", "checkpoint", "inbox", "launch", "register", "relaunch",
-    "rule", "status", "version",
+    "answer", "checkpoint", "front_allocate", "inbox", "launch", "register",
+    "relaunch", "rule", "status", "version",
 })
 #: A worker holds no verb, so only the gateless one survives.
 WORKER_TOOLS = frozenset({"version"})
@@ -148,7 +148,7 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     assert "mcp" not in names
     assert SUPERVISOR_TOOLS | FOREMAN_TOOLS | {"front_add", "cap",
                                               "collector"} <= names
-    assert len(names) == 33
+    assert len(names) == 34
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):
