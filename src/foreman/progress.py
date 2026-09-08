@@ -322,7 +322,9 @@ def task_built_main(task_ref: str) -> int:
         else:
             done, total = record.get("units_done") or 0, \
                 record.get("units_total") or 0
-            if done != total:
+            # An overshoot is fine: a repair job carries its own unit, so a
+            # task that needed one ends above its own count.
+            if done < total:
                 violations.append(
                     f"task '{record.get('title')}' has units {done}/{total} "
                     "done: every unit must be accounted for before 'built'")
