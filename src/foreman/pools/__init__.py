@@ -115,7 +115,9 @@ def names() -> list[str]:
 from .muse import MuseAdapter  # noqa: E402
 from .grok import GrokAdapter  # noqa: E402
 from .claude import ClaudeAdapter  # noqa: E402
+from .codex import CodexAdapter  # noqa: E402
 
 register(MuseAdapter.name, MuseAdapter())
 register(GrokAdapter.name, GrokAdapter())
 register(ClaudeAdapter.name, ClaudeAdapter())
+register(CodexAdapter.name, CodexAdapter())

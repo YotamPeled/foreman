@@ -16,3 +16,6 @@ foreman = "foreman.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+markers = ["smoke: runs the real vendor binary; needs credentials on PATH"]
