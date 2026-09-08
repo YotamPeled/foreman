@@ -971,7 +971,9 @@ def panel_keys(state_dir: Path) -> int:
     Answers and the freeze are proven against the ledgers; the cheat
     sheet, Esc and the panel's reflection of the change are proven
     against the harness report; the Problems verbs the CLI cannot run
-    are attempted verbatim and reported unproven."""
+    are attempted verbatim and reported unproven. A wrong-row probe
+    types a first letter, lands a new row underneath, and proves the
+    pending letter cancels and the second letter fires nothing."""
     if not FIXTURE.is_dir():
         raise Failure("keys: no such fixture: " + str(FIXTURE))
     proven: dict = {}
@@ -1009,6 +1011,8 @@ def check_keys_once(tmp: Path, label: str, session: str | None) -> dict:
         done: dict = {}
         queue: list = []
         report: dict = {}
+        wrongrow: dict = {}
+        noverb: set = set()
         # console.log lines arrive with quickshell's own "DEBUG qml: "
         # prefix, so every marker is searched, never startswith-matched.
         for line in lines:
@@ -1028,6 +1032,10 @@ def check_keys_once(tmp: Path, label: str, session: str | None) -> dict:
             if match:
                 done[match.group(1)] = match.group(2)
                 continue
+            match = re.search(r"KEY-NOVERB (\S+)", cleaned)
+            if match:
+                noverb.add(match.group(1))
+                continue
             match = re.search(r"QUEUE (.+?)\s*$", cleaned)
             if match:
                 queue = match.group(1).split(",")
@@ -1038,6 +1046,11 @@ def check_keys_once(tmp: Path, label: str, session: str | None) -> dict:
                               cleaned)
             if match:
                 report[match.group(1)] = match.group(2)
+                continue
+            match = re.search(r"WRONGROW-(PENDING|CANCELLED|NOFIRE|FIRED) (\S+)\s*$",
+                              cleaned)
+            if match:
+                wrongrow[match.group(1)] = match.group(2)
 
         # The six dynamic hints, exactly as the fixture holds them.
         want_hints = {aid: hint for hint, aid, _ in EXPECTED_KEYS}
@@ -1119,6 +1132,40 @@ def check_keys_once(tmp: Path, label: str, session: str | None) -> dict:
             raise Failure("keys: panel does not show the freeze: %s"
                           % report.get("FROZEN-AFTER"))
 
+        # The wrong-row probe: a first letter pending while a row lands
+        # underneath must cancel, the second letter must fire nothing,
+        # and the new row's full hint must fire the new row. The probe
+        # question is answered on the way out, so NEEDSYOU-AFTER above
+        # already counts it.
+        if wrongrow.get("PENDING") != "pending":
+            raise Failure("keys: probe first letter did not narrow: %r"
+                          % wrongrow.get("PENDING"))
+        if wrongrow.get("CANCELLED") != "true":
+            raise Failure("keys: half-typed hint survived the model "
+                          "change; the second letter would fire the "
+                          "new row: %r" % wrongrow.get("CANCELLED"))
+        if wrongrow.get("NOFIRE") != "true":
+            raise Failure("keys: the second letter fired after the map "
+                          "changed: %r" % wrongrow.get("NOFIRE"))
+        fired = wrongrow.get("FIRED", "")
+        probe_match = re.match(r"fired:answer:(.+):approve$", fired)
+        if not probe_match:
+            raise Failure("keys: the new row's hint did not fire the "
+                          "new row: %r" % fired)
+        probe_row = inbox.get(probe_match.group(1), {})
+        if probe_row.get("answered_at") in (None, "") \
+                or probe_row.get("answer") != "yes":
+            raise Failure("keys: probe %r: got answer %r, the verb "
+                          "should have written 'yes'"
+                          % (probe_match.group(1),
+                             probe_row.get("answer")))
+
+        # The kill pill attempts its verb verbatim and says the verb is
+        # absent instead of failing silently.
+        if "problem:intruder:pid-41180" not in noverb:
+            raise Failure("keys: the kill key never reported the "
+                          "absent verb: %r" % sorted(noverb))
+
         print("keys [%s]: F runs `foreman freeze` (frozen file %r)"
               % (label, frozen_text.splitlines()[0]))
         for iid, answer in EXPECTED_KEYS_ANSWERS.items():
@@ -1131,6 +1178,10 @@ def check_keys_once(tmp: Path, label: str, session: str | None) -> dict:
               % label)
         print("keys [%s]: answered questions leave Needs you on the next "
               "tick" % label)
+        print("keys [%s]: half-typed hint cancels when rows change (%s); "
+              "the new hint fires the new row (%s); the kill key reports "
+              "its absent verb" % (label, wrongrow.get("CANCELLED"),
+                                   wrongrow.get("FIRED")))
         return done
     except Failure as failure:
         raise Failure("keys [%s]: %s" % (label, failure))
