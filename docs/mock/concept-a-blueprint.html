@@ -1,0 +1,1523 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>foreman — swarm site plan</title>
+<style>
+/* ═══ Everforest dark · Omarchy tokens ══════════════════════════════════════
+   Every hue below is a token. A re-theme is a swap of this block, nothing else.
+   Semantic map used throughout:
+     accent / dark_foreground → the plan: grid, outlines, built-not-landed
+     orange / yellow          → live work: jobs, sparks, file writes
+     magenta                  → in transit: branches, review, the merge desk
+     green                    → landed mass: merged, solid, permanent
+     red                      → wrong: stall, halt, unregistered
+     yellow                   → waiting on the owner
+   ══════════════════════════════════════════════════════════════════════════ */
+:root{
+  --background:#2d353b; --dark_background:#21272c; --darker_background:#181d20;
+  --lighter_background:#343f44; --foreground:#d3c6aa; --light_foreground:#9da9a0;
+  --dark_foreground:#4f585e; --muted:#475258; --selection:#3d484d;
+  --accent:#7fbbb3; --red:#e67e80; --yellow:#dbbc7f; --orange:#e09d7f;
+  --green:#a7c080; --cyan:#83c092; --blue:#7fbbb3; --magenta:#d699b6;
+
+  --ease:cubic-bezier(.23,1,.32,1);
+  --ease-io:cubic-bezier(.77,0,.175,1);
+  --r:3px;
+  --hair:1px solid var(--lighter_background);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#000;overflow:hidden}
+body{font-family:ui-monospace,SFMono-Regular,Menlo,"DejaVu Sans Mono",monospace;
+  font-size:13px;color:var(--foreground);-webkit-font-smoothing:antialiased;
+  font-variant-ligatures:none;letter-spacing:0}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+
+/* ═══ the screen: a real 2560×1440, scaled to whatever window opens it ═════ */
+.stage{position:absolute;top:50%;left:50%;width:2560px;height:1440px;--s:1;
+  transform:translate(-50%,-50%) scale(var(--s));transform-origin:50% 50%;
+  background:var(--darker_background);overflow:hidden;
+  transition:opacity .24s var(--ease)}
+.stage.away{opacity:0;pointer-events:none}
+.hidden{display:none}
+
+/* faint CRT rule over the whole surface — one static texture, no motion */
+.stage::after{content:"";position:absolute;inset:0;pointer-events:none;z-index:60;
+  background:repeating-linear-gradient(180deg,
+    rgba(24,29,32,0) 0px,rgba(24,29,32,0) 2px,rgba(24,29,32,.30) 3px,rgba(24,29,32,0) 4px);
+  mix-blend-mode:multiply;opacity:.5}
+
+#world{position:absolute;left:0;top:0;width:2560px;height:1440px;z-index:1}
+
+/* ═══ top line ════════════════════════════════════════════════════════════ */
+.top{position:absolute;left:0;right:0;top:0;height:56px;z-index:10;
+  display:flex;align-items:center;gap:20px;padding:0 26px;
+  border-bottom:1px solid var(--selection);
+  background:linear-gradient(180deg,rgba(24,29,32,.96),rgba(24,29,32,.66))}
+.brand{font-size:20px;color:var(--accent);letter-spacing:.14em}
+.brand b{font-weight:400;color:var(--foreground)}
+.sheet{font-size:11.5px;color:var(--light_foreground);opacity:.72;letter-spacing:.16em}
+.topR{margin-left:auto;display:flex;align-items:center;gap:22px;font-size:12.5px;
+  color:var(--light_foreground)}
+.topR .n{color:var(--foreground)}
+.topR .sep{color:var(--dark_foreground)}
+.topR .wait{color:var(--yellow)}
+.topR .wait.none{color:var(--dark_foreground)}
+.clock{font-size:15px;color:var(--foreground);letter-spacing:.06em}
+
+/* ═══ alerts: floating, urgent, over the plan ═════════════════════════════ */
+.alerts{position:absolute;left:40px;top:76px;width:1136px;z-index:14;
+  display:flex;flex-direction:column;gap:10px}
+.al{display:flex;align-items:center;gap:16px;height:58px;padding:0 16px 0 0;
+  border:1px solid rgba(230,126,128,.42);border-left:0;
+  background:linear-gradient(90deg,rgba(230,126,128,.16),rgba(33,39,44,.90) 46%,rgba(33,39,44,.86));
+  box-shadow:0 0 0 1px rgba(24,29,32,.9),0 18px 40px -18px rgba(0,0,0,.9),
+             inset 0 0 34px -14px rgba(230,126,128,.55);
+  transition:opacity .3s var(--ease),transform .3s var(--ease),
+             max-height .3s var(--ease),margin .3s var(--ease),border-color .3s}
+.al .bar{width:4px;align-self:stretch;background:var(--red);flex:none}
+.al.warn{border-color:rgba(224,157,127,.42)}
+.al.warn .bar{background:var(--orange)}
+.al.warn{background:linear-gradient(90deg,rgba(224,157,127,.15),rgba(33,39,44,.90) 46%,rgba(33,39,44,.86))}
+.al .sq{width:9px;height:9px;flex:none;background:var(--red);
+  transition:box-shadow .34s var(--ease),background .3s}
+.al.warn .sq{background:var(--orange)}
+.al .sq.beat{box-shadow:0 0 0 6px rgba(230,126,128,.16)}
+.al.warn .sq.beat{box-shadow:0 0 0 6px rgba(224,157,127,.16)}
+.al .kind{font-size:11px;letter-spacing:.18em;color:var(--red);width:112px;flex:none}
+.al.warn .kind{color:var(--orange)}
+.al .txt{font-size:14px;color:var(--foreground);white-space:nowrap}
+.al .txt em{font-style:normal;color:var(--light_foreground)}
+.al .age{margin-left:auto;font-size:12px;color:var(--light_foreground);opacity:.9;
+  padding-left:18px;flex:none}
+.al.ok{border-color:rgba(167,192,128,.42)}
+.al.ok .bar,.al.ok .sq{background:var(--green)}
+.al.ok .kind{color:var(--green)}
+.al.gone{opacity:0;transform:translateX(-14px);max-height:0;margin-top:-10px;border-width:0}
+
+.btn{font-size:12px;padding:6px 15px;border:1px solid var(--muted);color:var(--light_foreground);
+  background:rgba(24,29,32,.5);letter-spacing:.06em;
+  transition:color .16s,border-color .16s,background .16s}
+.btn:hover{color:var(--foreground);border-color:var(--light_foreground);background:rgba(211,198,170,.07)}
+.btn.acc{border-color:rgba(127,187,179,.5);color:var(--accent)}
+.btn.acc:hover{border-color:var(--accent);background:rgba(127,187,179,.12)}
+.btn.dgr{border-color:rgba(230,126,128,.5);color:var(--red)}
+.btn.dgr:hover{border-color:var(--red);background:rgba(230,126,128,.12)}
+.btn[disabled]{opacity:.38;pointer-events:none}
+
+/* ═══ right rail: inbox + collector feed ══════════════════════════════════ */
+.rail{position:absolute;left:1976px;top:64px;width:564px;height:1116px;z-index:12;
+  display:flex;flex-direction:column;gap:0;
+  border:1px solid var(--selection);background:rgba(33,39,44,.80);
+  box-shadow:inset 0 0 60px -30px rgba(0,0,0,.9)}
+.rhead{display:flex;align-items:center;gap:12px;padding:14px 18px;
+  border-bottom:1px solid var(--selection);flex:none}
+.rhead .t{font-size:12px;letter-spacing:.2em;color:var(--foreground)}
+.rhead .m{margin-left:auto;font-size:11.5px;color:var(--light_foreground);opacity:.85}
+.rhead .m.wait{color:var(--yellow);opacity:1}
+.inbox{flex:none;padding:14px;display:flex;flex-direction:column;gap:12px;
+  border-bottom:1px solid var(--selection)}
+.dec{border:1px solid var(--lighter_background);background:var(--dark_background);
+  padding:14px 16px 13px;position:relative;overflow:hidden;
+  transition:opacity .32s var(--ease),transform .32s var(--ease),
+             max-height .36s var(--ease),padding .32s var(--ease),margin .32s var(--ease)}
+.dec::before{content:"";position:absolute;left:0;top:0;bottom:0;width:2px;background:var(--yellow);opacity:.75}
+.dec.gone{opacity:0;transform:translateX(16px);max-height:0;padding-top:0;padding-bottom:0;
+  margin-bottom:-12px;border-width:0}
+.dec .hd{display:flex;align-items:center;gap:10px}
+.tag{font-size:10.5px;letter-spacing:.16em;padding:2px 8px;border:1px solid rgba(219,188,127,.42);
+  color:var(--yellow)}
+.dec .from{font-size:11px;color:var(--light_foreground);opacity:.8}
+.dec .age{margin-left:auto;font-size:11px;color:var(--yellow);opacity:.95}
+.dec .q{font-size:14.5px;line-height:1.5;margin-top:11px;color:var(--foreground)}
+.dec .rec{margin-top:10px;padding-left:12px;border-left:1px solid var(--muted);
+  font-size:12px;line-height:1.62;color:var(--light_foreground)}
+.dec .rec .lead{opacity:.68}
+.dec .rec .v{color:var(--accent)}
+.dec .acts{display:flex;gap:8px;margin-top:13px}
+.empty{font-size:12px;line-height:1.7;color:var(--light_foreground);opacity:.6;
+  padding:6px 4px}
+.alerts .empty{display:flex;align-items:center;gap:12px;height:34px;padding:0 0 0 4px;
+  opacity:.5;letter-spacing:.04em}
+.alerts .empty::before{content:"";width:9px;height:9px;background:var(--green);opacity:.7}
+
+.feed{flex:1;min-height:0;display:flex;flex-direction:column}
+.feedbody{flex:1;min-height:0;overflow:hidden;padding:10px 16px 14px;
+  display:flex;flex-direction:column;justify-content:flex-start;gap:0}
+.fl{font-size:11.5px;line-height:1.92;white-space:nowrap;color:var(--light_foreground);
+  opacity:.9;display:flex;gap:10px}
+.fl.new{animation:feedin .34s var(--ease)}
+@keyframes feedin{from{opacity:0;transform:translateY(6px)}to{opacity:.9;transform:none}}
+.fl .ts{color:var(--dark_foreground);flex:none}
+.fl .k{width:72px;flex:none;letter-spacing:.06em}
+.fl .b{color:var(--foreground);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.k-observed{color:var(--accent)} .k-commit{color:var(--accent)}
+.k-dispatch{color:var(--orange)} .k-finish{color:var(--orange)}
+.k-verdict{color:var(--magenta)} .k-merge{color:var(--green)}
+.k-anomaly{color:var(--red)}     .k-owner{color:var(--yellow)}
+.k-quota{color:var(--yellow)}    .k-tick{color:var(--dark_foreground)}
+
+/* ═══ bottom: slots, quota, freeze ════════════════════════════════════════ */
+.dock{position:absolute;left:20px;top:1196px;width:2520px;height:190px;z-index:12;
+  display:flex;gap:0;border:1px solid var(--selection);background:rgba(33,39,44,.80)}
+.mslot{flex:1;padding:15px 20px;border-right:1px solid var(--selection);
+  display:flex;flex-direction:column;gap:0;min-width:0}
+.mslot .mn{font-size:14px;color:var(--foreground);letter-spacing:.04em}
+.mslot .mr{font-size:11px;color:var(--light_foreground);opacity:.72;margin-top:4px}
+.pips{display:flex;gap:5px;align-items:center;margin-top:13px}
+.pip{width:15px;height:15px;border:1px solid var(--muted);flex:none;
+  transition:background .22s var(--ease),border-color .22s,box-shadow .3s var(--ease)}
+.pip.on{background:var(--green);border-color:var(--green);
+  box-shadow:0 0 10px -2px rgba(167,192,128,.7)}
+.pip.lit{box-shadow:0 0 0 4px rgba(167,192,128,.20),0 0 12px -2px rgba(167,192,128,.8)}
+.pips .cnt{margin-left:9px;font-size:12.5px;color:var(--light_foreground)}
+.pips .cnt b{color:var(--foreground);font-weight:400}
+.frozen .pip.on{background:transparent;border-color:var(--orange);box-shadow:none}
+.meter{margin-top:15px}
+.mbar{position:relative;height:7px;background:var(--darker_background);
+  border:1px solid var(--lighter_background)}
+.mbar .fill{position:absolute;left:0;top:0;bottom:0;background:var(--green);
+  transition:width .5s var(--ease),background .3s}
+.mbar .fill.warn{background:var(--yellow)} .mbar .fill.crit{background:var(--red)}
+.mtick{position:absolute;top:-4px;bottom:-4px;width:1px;background:var(--light_foreground);opacity:.6}
+.mtick i{position:absolute;top:-13px;left:-7px;font-style:normal;font-size:9.5px;
+  color:var(--light_foreground);opacity:.75}
+.mmeta{display:flex;gap:12px;margin-top:9px;font-size:11px;color:var(--light_foreground);opacity:.85}
+.mmeta .p{color:var(--foreground);opacity:1}
+.nometer{margin-top:15px;height:7px;border-top:1px dashed var(--muted);opacity:.65}
+
+.freeze{width:452px;flex:none;padding:15px 20px;display:flex;flex-direction:column;
+  transition:background .3s}
+.freeze .fh{display:flex;align-items:center;gap:11px}
+.fdot{width:10px;height:10px;background:var(--green);flex:none;
+  box-shadow:0 0 12px -1px rgba(167,192,128,.8);transition:background .3s,box-shadow .3s}
+.freeze .fs{font-size:14px;color:var(--foreground)}
+.freeze .fx{font-size:11px;color:var(--light_foreground);opacity:.8;margin-top:8px;line-height:1.6}
+.fbtn{margin-top:auto;padding:13px 0;text-align:center;font-size:15px;letter-spacing:.24em;
+  border:1px solid rgba(230,126,128,.5);color:var(--red);
+  transition:background .16s,border-color .16s,color .16s,box-shadow .16s}
+.fbtn:hover{background:rgba(230,126,128,.14);border-color:var(--red);
+  box-shadow:inset 0 0 30px -14px rgba(230,126,128,.9)}
+.frozen .freeze{background:rgba(224,157,127,.08)}
+.frozen .fdot{background:var(--orange);box-shadow:0 0 12px -1px rgba(224,157,127,.85)}
+.frozen .freeze .fs{color:var(--orange)}
+.frozen .fbtn{border-color:rgba(127,187,179,.55);color:var(--accent)}
+.frozen .fbtn:hover{background:rgba(127,187,179,.14);border-color:var(--accent)}
+
+/* ═══ status line ═════════════════════════════════════════════════════════ */
+.status{position:absolute;left:20px;right:20px;top:1394px;height:40px;z-index:12;
+  display:flex;align-items:center;gap:14px;font-size:11.5px;color:var(--light_foreground);
+  opacity:.9;letter-spacing:.04em}
+.status .sep{color:var(--dark_foreground)}
+.tickdot{width:6px;height:6px;background:var(--muted);flex:none;transition:background .12s linear,
+  box-shadow .3s var(--ease)}
+.tickdot.on{background:var(--accent);box-shadow:0 0 0 4px rgba(127,187,179,.16)}
+.status .right{margin-left:auto;display:flex;gap:14px;align-items:center}
+kbd{font:inherit;font-size:11px;color:var(--light_foreground);border:1px solid var(--muted);
+  padding:1px 6px}
+
+/* ═══ hover annotation over the plan ══════════════════════════════════════ */
+.annot{position:absolute;z-index:20;width:432px;pointer-events:none;
+  border:1px solid var(--accent);background:rgba(24,29,32,.96);
+  box-shadow:0 24px 60px -20px rgba(0,0,0,.95),inset 0 0 40px -22px rgba(127,187,179,.7);
+  padding:13px 16px 12px;opacity:0;transform:translateY(5px);
+  transition:opacity .16s var(--ease),transform .16s var(--ease)}
+.annot.on{opacity:1;transform:none}
+.annot .ah{display:flex;align-items:baseline;gap:10px;border-bottom:1px solid var(--selection);
+  padding-bottom:9px;margin-bottom:9px}
+.annot .an{font-size:14px;color:var(--foreground);letter-spacing:.12em}
+.annot .am{margin-left:auto;font-size:11px;color:var(--light_foreground)}
+.ck{display:grid;grid-template-columns:78px 1fr;gap:10px;font-size:11.5px;line-height:1.86}
+.ck .s{letter-spacing:.06em}
+.ck.landed .s{color:var(--green)}   .ck.landed span:last-child{color:var(--foreground)}
+.ck.built .s{color:var(--accent)}   .ck.built span:last-child{color:var(--light_foreground)}
+.ck.open .s{color:var(--dark_foreground)}
+.ck.open span:last-child{color:var(--light_foreground);opacity:.62}
+.annot .more{font-size:11px;color:var(--light_foreground);opacity:.6;margin-top:8px;
+  padding-top:8px;border-top:1px solid var(--selection)}
+
+/* ═══ freeze: a wash over the whole site, and a stamp on the drawing ══════ */
+.wash{position:absolute;left:20px;top:64px;width:1936px;height:1116px;z-index:13;
+  pointer-events:none;opacity:0;background:rgba(224,157,127,.04);
+  box-shadow:inset 0 0 0 2px rgba(224,157,127,.55),
+             inset 0 0 200px -60px rgba(224,157,127,.55);
+  transition:opacity .26s var(--ease)}
+.frozen .wash{opacity:1}
+.stamp{position:absolute;left:1394px;top:84px;width:540px;z-index:16;pointer-events:none;
+  padding:14px 20px 15px;opacity:0;transform:rotate(-2.4deg) scale(.97);
+  border:2px solid var(--orange);outline:1px solid rgba(224,157,127,.35);outline-offset:4px;
+  background:rgba(24,29,32,.86);
+  box-shadow:0 26px 60px -24px rgba(0,0,0,.95),inset 0 0 60px -26px rgba(224,157,127,.9);
+  transition:opacity .22s var(--ease),transform .22s var(--ease)}
+.frozen .stamp{opacity:1;transform:rotate(-2.4deg) scale(1)}
+.stamp .bt{display:block;font-size:25px;letter-spacing:.30em;color:var(--orange)}
+.stamp .bs{display:block;font-size:11.5px;letter-spacing:.14em;color:var(--light_foreground);
+  margin-top:9px;line-height:1.72}
+.stamp .bs b{color:var(--orange);font-weight:400}
+
+/* ═══ away state ══════════════════════════════════════════════════════════ */
+.away-note{position:absolute;inset:0;z-index:70;display:none;align-items:center;
+  justify-content:center;font-size:13px;color:var(--dark_foreground);letter-spacing:.3em}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition-duration:.01ms!important;animation-duration:.01ms!important}
+}
+</style>
+</head>
+<body>
+
+<div class="stage" id="stage">
+  <canvas id="world" width="2560" height="1440"></canvas>
+
+  <!-- ── top line ─────────────────────────────────────────────────────── -->
+  <div class="top">
+    <span class="brand">foreman<b></b></span>
+    <span class="sheet">SWARM SITE PLAN · SHEET 1/1</span>
+    <span class="topR">
+      <span><span class="n" id="tComps">6</span> components</span><span class="sep">·</span>
+      <span><span class="n" id="tJobs">7</span> jobs running</span><span class="sep">·</span>
+      <span>slots <span class="n" id="tSlots">10/11</span></span><span class="sep">·</span>
+      <span>roster <span class="n" id="tRoster">12</span> of <span class="n" id="tSeen">13</span> registered</span>
+      <span class="sep">·</span>
+      <span class="wait" id="tWait">2 waiting on you</span>
+      <span class="clock" id="clock">14:07:00</span>
+    </span>
+  </div>
+
+  <!-- ── alerts ───────────────────────────────────────────────────────── -->
+  <div class="alerts" id="alerts"></div>
+
+  <!-- ── freeze: wash over the site, stamp on the drawing ─────────────── -->
+  <div class="wash"></div>
+  <div class="stamp">
+    <span class="bt">DISPATCH FROZEN</span>
+    <span class="bs">ZERO SLOTS GRANTED · EVERY LAUNCH SCRIPT REFUSES<br>
+      <b id="stampAt">frozen at 14:07 by you</b> · <span id="stampJobs">7 running jobs</span> finish, none replaced</span>
+  </div>
+
+  <!-- ── right rail ───────────────────────────────────────────────────── -->
+  <div class="rail">
+    <div class="rhead"><span class="t">INBOX</span>
+      <span class="m wait" id="inMeta">2 waiting on you</span></div>
+    <div class="inbox" id="inbox"></div>
+    <div class="feed">
+      <div class="rhead"><span class="t">COLLECTOR FEED</span>
+        <span class="m">observed · every 2s · no model</span></div>
+      <div class="feedbody" id="feed"></div>
+    </div>
+  </div>
+
+  <!-- ── dock: slots, quota, freeze ───────────────────────────────────── -->
+  <div class="dock" id="dock"></div>
+
+  <!-- ── status ───────────────────────────────────────────────────────── -->
+  <div class="status">
+    <span class="tickdot" id="tickDot"></span>
+    <span>collector tick 2s</span><span class="sep">·</span>
+    <span>last digest 14:00</span><span class="sep">·</span>
+    <span><span id="evCount">1284</span> events observed this hour</span><span class="sep">·</span>
+    <span>merge queue <span id="stQ">3</span></span>
+    <span class="right">
+      <span>1 cell = 1 checklist item · outline planned · flat built · solid landed</span>
+      <span class="sep">·</span><kbd>esc</kbd><span>close</span>
+    </span>
+  </div>
+
+  <div class="annot" id="annot"></div>
+</div>
+<div class="away-note" id="awayNote">SUPER+M</div>
+
+<script>
+"use strict";
+/* ══════════════════════════════════════════════════════════════════════════
+   FOREMAN — CONCEPT A · THE LIVING BLUEPRINT
+   The project is drawn as an isometric site plan. Each component is a plot of
+   ground; each checklist item is one cell of that plot. A cell is an outline
+   while it is planned, a flat filled tile once it is CONFIRMED (built), and a
+   solid extruded block once it is merged (landed). So a component's mass is
+   its landed work: you read progress as built volume, not as a bar.
+   Nothing on this page moves that was not caused by an event.
+   ══════════════════════════════════════════════════════════════════════════ */
+
+const $  = (s,r=document)=>r.querySelector(s);
+const el = (t,c,x)=>{const n=document.createElement(t);if(c)n.className=c;if(x!=null)n.textContent=x;return n;};
+const CALM = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const rnd  = a=>a[Math.floor(Math.random()*a.length)];
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const eOut = t=>1-Math.pow(1-t,3);
+
+/* ── palette read straight out of the CSS tokens ─────────────────────── */
+const CS = getComputedStyle(document.documentElement);
+const T  = n=>CS.getPropertyValue("--"+n).trim();
+const TOK = {};
+["background","dark_background","darker_background","lighter_background","foreground",
+ "light_foreground","dark_foreground","muted","selection","accent","red","yellow",
+ "orange","green","cyan","blue","magenta"].forEach(k=>TOK[k]=T(k));
+const RGB = {};
+for(const k in TOK){const h=TOK[k];RGB[k]=[parseInt(h.slice(1,3),16),parseInt(h.slice(3,5),16),parseInt(h.slice(5,7),16)];}
+const C = (k,a=1)=>`rgba(${RGB[k][0]},${RGB[k][1]},${RGB[k][2]},${a})`;
+/* a token darkened for the shaded faces of an extruded block */
+const CD = (k,f,a=1)=>`rgba(${Math.round(RGB[k][0]*f)},${Math.round(RGB[k][1]*f)},${Math.round(RGB[k][2]*f)},${a})`;
+
+/* ── the drawing plane ───────────────────────────────────────────────── */
+const HW = 28, HH = 14, ZH = 19;               // iso half-tile and block height
+const MAP = {x:20, y:64, w:1936, h:1116};
+const AX  = {x:HW, y:HH}, AY = {x:-HW, y:HH};  // the two ground axes on screen
+const FOREMAN = {x:190, y:700};
+
+/* ══ state ════════════════════════════════════════════════════════════ */
+const COMPS = [
+ {id:"engine", name:"ENGINE", sup:"sup·engine", model:"claude opus",
+  cx:615, cy:405, cols:6, rows:4, total:24, built:15, landed:12, vel:0,
+  eta:"NO HORIZON", state:"stall", note:"supervisor silent 14m · 0 jobs",
+  ck:[["landed","session id is minted before the process starts"],
+      ["landed","a launch with no free slot is refused at the door"],
+      ["landed","the worktree is allocated before the spec is written"],
+      ["built","timeout kills the child group, not just the leader"],
+      ["built","frozen state survives a collector restart"],
+      ["open","relaunch replays the checkpoint, then reads the rules"],
+      ["open","every launch writes one roster line, no exceptions"]]},
+
+ {id:"api", name:"API", sup:"sup·api", model:"claude opus",
+  cx:660, cy:755, cols:6, rows:4, total:22, built:14, landed:11, vel:2.1,
+  eta:"FINISH ~18:10", state:"", note:"3 jobs writing",
+  ck:[["landed","routes are registered straight from the ledger schema"],
+      ["landed","a write from an unknown session id is refused"],
+      ["landed","job dispatch returns the worktree path"],
+      ["built","the inbox resolve endpoint stamps the owner act"],
+      ["built","the quota adapter reads the 5-hour window"],
+      ["open","the digest endpoint serves the 14:00 paragraph"],
+      ["open","freeze refuses a launch with a 409, not a 500"]]},
+
+ {id:"ingestion", name:"INGESTION", sup:"sup·ingestion", model:"claude opus",
+  cx:500, cy:1030, cols:5, rows:4, total:18, built:9, landed:9, vel:0,
+  eta:"DISPATCH STOPPED", state:"halt",
+  note:"halted · webhook destination ×3 · rule 10",
+  ck:[["landed","the source registry reads from the component ledger"],
+      ["landed","replay is idempotent on a duplicate delivery id"],
+      ["open","the webhook destination resolves from config, not code"],
+      ["open","the backfill window is bounded and stated"],
+      ["open","a dead source leaves the registry in one tick"]]},
+
+ {id:"corpus", name:"CORPUS", sup:"sup·corpus", model:"claude opus",
+  cx:1235, cy:425, cols:7, rows:5, total:31, built:22, landed:19, vel:3.0,
+  eta:"FINISH ~17:05", state:"", note:"2 jobs writing · second read queued",
+  ck:[["landed","every label carries its reader and its moment of reading"],
+      ["landed","the second read disagrees on 4% of rows, and says which"],
+      ["landed","export matches the ledger schema byte for byte"],
+      ["built","the sampling plan is written on the component, not in chat"],
+      ["built","a row with no evidence cannot be marked CONFIRMED"],
+      ["open","drift between the two readers is reported hourly"]]},
+
+ {id:"reaper", name:"REAPER", sup:"sup·reaper", model:"claude opus",
+  cx:1235, cy:800, cols:4, rows:3, total:12, built:3, landed:1, vel:1.4,
+  eta:"FINISH ~20:20", state:"", note:"waiting on your scope decision",
+  ck:[["landed","a dead session leaves the roster in one tick"],
+      ["built","an orphan worktree is detected, never removed"],
+      ["built","the sweep runs on the collector clock, not a cron"],
+      ["open","stale worktrees older than a day are swept"],
+      ["open","the sweep writes one merge-ledger line per removal"]]},
+
+ {id:"merge-desk", name:"MERGE DESK", sup:"merge", model:"claude opus",
+  cx:1620, cy:700, cols:3, rows:3, total:9, built:7, landed:7, vel:1.1,
+  eta:"FINISH ~15:15", state:"", note:"queue depth 3",
+  ck:[["landed","one queue for the whole swarm, not one per component"],
+      ["landed","every landing writes one merge-ledger line"],
+      ["landed","review rounds per job are bounded at two"],
+      ["built","a failed second round returns a finding about the spec"],
+      ["open","branch handoff frees the component immediately"]]}
+];
+const byId = id=>COMPS.find(c=>c.id===id);
+
+const JOBS = [
+ {c:"api",   n:"inbox-resolve-endpoint", m:"muse",        w:"wt/api-31",  min:6,  to:25},
+ {c:"api",   n:"ledger-write-guard",     m:"muse",        w:"wt/api-32",  min:17, to:30},
+ {c:"api",   n:"openapi-drift-check",    m:"grok 4.6",    w:"wt/api-33",  min:2,  to:20},
+ {c:"corpus",n:"label-second-read",      m:"muse",        w:"wt/corp-18", min:9,  to:30},
+ {c:"corpus",n:"schema-drift-report",    m:"claude opus", w:"wt/corp-19", min:4,  to:20},
+ {c:"reaper",n:"review·orphan-scan",     m:"codex astra", w:"wt/reap-04", min:11, to:25},
+ {c:"merge-desk",n:"review·write-guard", m:"codex astra", w:"wt/merge-q", min:3,  to:15}
+];
+const JOBPOOL = ["session-registry-read","quota-meter-adapter","checkpoint-restore",
+  "slot-refusal-path","digest-endpoint","stall-rule-timer","worktree-allocator",
+  "verdict-file-parser","roster-diff","freeze-409-path","merge-ledger-line"];
+
+const MODELS = [
+ {id:"opus",  name:"CLAUDE OPUS",  role:"supervisors · verification", run:4, grant:4, pct:41,
+  reset:"resets 17:00"},
+ {id:"astra", name:"CODEX ASTRA",  role:"reviewers",                  run:2, grant:2, pct:62,
+  reset:"resets 19:00"},
+ {id:"grok",  name:"GROK 4.6",     role:"reviewers · fallback workers",run:1, grant:2, pct:null,
+  proxy:"3.4 jobs/h"},
+ {id:"muse",  name:"MUSE",         role:"workers",                    run:3, grant:3, pct:null,
+  proxy:"5.1 jobs/h"}
+];
+const modelOf = m=>m.startsWith("muse")?"muse":m.startsWith("grok")?"grok"
+                 :m.startsWith("codex")?"astra":"opus";
+
+const S = {
+  frozen:false, mergeQ:3, evCount:1284, roster:12, seen:13,
+  rogue:{x:1000, y:1035, alive:true, pid:"41180", die:0},
+  ledger:[["14:03","corpus","9f2a41c","labels carry their reader and moment"],
+          ["14:01","api",   "b41e9c2","job dispatch returns the worktree path"],
+          ["13:58","merge-desk","7c30d18","review rounds per job bounded at two"],
+          ["13:54","engine","2e88a04","the worktree is allocated before the spec"]],
+  parts:[], packets:[], sweep:-1, hover:null, pin:null,
+  alerts:[
+   {id:"a1", kind:"STALL", tone:"red", age:14, act:"relaunch",
+    txt:'engine supervisor silent 14 min <em>— no jobs active, no ledger write since 13:53</em>',
+    done:'sup·engine relaunched from checkpoint <em>— reading the rules ledger</em>'},
+   {id:"a2", kind:"NO SLOT", tone:"warn", age:3, act:"kill",
+    txt:'unregistered codex process pid 41180 <em>— no slot, no minted id, cannot write</em>',
+    done:'pid 41180 killed <em>— roster is 12 of 12, slot ledger unchanged</em>'}
+  ],
+  inbox:[
+   {id:"i1", tag:"MONEY", from:"foreman · fable 5.1", age:23,
+    q:"Buy 2M extra Codex tokens so the review pool keeps two reviewers overnight?",
+    rec:["recommends no","Grok 4.6 covers reviews until Monday at 3.4 jobs/h and the Codex 5-hour window resets at 19:00. Nothing on the plan needs a second reviewer before the merge queue drains."],
+    acts:[["approve buy","acc"],["decline",""],["answer",""]]},
+   {id:"i2", tag:"SCOPE", from:"sup·reaper", age:6,
+    q:"Ship the reaper without the dead-worktree sweep?",
+    rec:["recommends yes","The sweep is two items of work and nothing downstream reads a stale worktree. Cutting it moves reaper's horizon in by four hours and frees a muse slot for corpus."],
+    acts:[["approve cut","acc"],["keep it",""],["answer",""]]}
+  ]
+};
+
+/* ── plot geometry ───────────────────────────────────────────────────── */
+function geo(c){
+  const ox = c.cx - (c.cols-c.rows)/2*HW;
+  const oy = c.cy - (c.cols+c.rows-2)/2*HH;
+  return {ox, oy,
+    N:{x:ox,                    y:oy-HH},
+    E:{x:ox+c.cols*HW,          y:oy+(c.cols-1)*HH},
+    S:{x:ox+(c.cols-c.rows)*HW, y:oy+(c.cols+c.rows-1)*HH},
+    W:{x:ox-c.rows*HW,          y:oy+(c.rows-1)*HH}};
+}
+const cellPos = (c,k)=>{const i=k%c.cols, j=(k/c.cols)|0;
+  return {x:c.g.ox+(i-j)*HW, y:c.g.oy+(i+j)*HH};};
+
+COMPS.forEach(c=>{
+  c.g = geo(c);
+  c.cells = [];
+  for(let k=0;k<c.total;k++){
+    const st = k<c.landed ? 2 : k<c.built ? 1 : 0;
+    c.cells.push({st, rise:st===2?1:0, fill:st>=1?1:0, glow:0, dead:0});
+  }
+  c.jobs = [];
+  c.beat = 0;                 // supervisor heartbeat glow
+  c.alive = c.state==="";     // a stalled or halted plot does not breathe
+  /* paint order: back of the plot first, so extrusions occlude correctly */
+  c.order = c.cells.map((_,k)=>k)
+    .sort((a,b)=>((a%c.cols)+(a/c.cols|0)) - ((b%c.cols)+(b/c.cols|0)));
+});
+
+/* jobs live on the frontier cell of their component */
+let JID = 0;
+function frontier(c){
+  for(let k=0;k<c.cells.length;k++) if(c.cells[k].st<2 && !c.cells[k].dead) return k;
+  return c.cells.length-1;
+}
+JOBS.forEach(j=>{
+  const c = byId(j.c);
+  c.jobs.push({...j, id:"j"+(++JID), cell:clamp(frontier(c)+c.jobs.length,0,c.total-1),
+    tr:Array.from({length:26},()=>Math.random()<.55?1+((Math.random()*3)|0):0),
+    act:.5+Math.random()*.35, ph:Math.random()*6.28, flash:0, born:0});
+});
+
+/* ══ the story clock ══════════════════════════════════════════════════ */
+const T0 = Date.now(), SEC0 = 14*3600+7*60;
+const nowSec = ()=>SEC0+((Date.now()-T0)/1000|0);
+const hhmmss = s=>[(s/3600|0)%24,(s/60|0)%60,s%60].map(v=>String(v).padStart(2,"0")).join(":");
+const hhmm   = s=>[(s/3600|0)%24,(s/60|0)%60].map(v=>String(v).padStart(2,"0")).join(":");
+
+/* ══ canvas setup ═════════════════════════════════════════════════════ */
+const cv = $("#world"), g = cv.getContext("2d");
+g.textBaseline = "alphabetic";
+const FONT = (px,w="")=>`${w?w+" ":""}${px}px ui-monospace,SFMono-Regular,Menlo,"DejaVu Sans Mono",monospace`;
+
+/* grain: one tile, built once, tiled by pattern — no network, no motion */
+const grainTile = document.createElement("canvas"); grainTile.width=grainTile.height=180;
+{ const gg=grainTile.getContext("2d"), im=gg.createImageData(180,180);
+  for(let i=0;i<im.data.length;i+=4){const v=(Math.random()*255)|0;
+    im.data[i]=im.data[i+1]=im.data[i+2]=v; im.data[i+3]=13;}
+  gg.putImageData(im,0,0); }
+const grain = g.createPattern(grainTile,"repeat");
+
+/* the ground: iso grid + datum lines + vignette, drawn once to an offscreen */
+const ground = document.createElement("canvas"); ground.width=2560; ground.height=1440;
+(function drawGround(){
+  const q = ground.getContext("2d");
+  q.save(); q.beginPath(); q.rect(MAP.x,MAP.y,MAP.w,MAP.h); q.clip();
+  const gr = q.createLinearGradient(MAP.x,MAP.y,MAP.x+MAP.w,MAP.y+MAP.h);
+  gr.addColorStop(0, C("dark_background",1));
+  gr.addColorStop(.55,C("darker_background",1));
+  gr.addColorStop(1, "#141819");
+  q.fillStyle=gr; q.fillRect(MAP.x,MAP.y,MAP.w,MAP.h);
+
+  /* iso grid, both axes, from the foreman origin */
+  q.lineWidth=1;
+  for(let n=-90;n<=90;n++){
+    const major = n%5===0;
+    q.strokeStyle = C("lighter_background", major?.30:.13);
+    // lines parallel to the +x axis
+    q.beginPath();
+    q.moveTo(FOREMAN.x + n*AY.x - 200*AX.x, FOREMAN.y + n*AY.y - 200*AX.y);
+    q.lineTo(FOREMAN.x + n*AY.x + 200*AX.x, FOREMAN.y + n*AY.y + 200*AX.y);
+    q.stroke();
+    // lines parallel to the +y axis
+    q.beginPath();
+    q.moveTo(FOREMAN.x + n*AX.x - 200*AY.x, FOREMAN.y + n*AX.y - 200*AY.y);
+    q.lineTo(FOREMAN.x + n*AX.x + 200*AY.x, FOREMAN.y + n*AX.y + 200*AY.y);
+    q.stroke();
+  }
+  /* the two datum lines through the origin */
+  q.strokeStyle=C("accent",.20); q.lineWidth=1.4;
+  [AX,AY].forEach(a=>{ q.beginPath();
+    q.moveTo(FOREMAN.x-200*a.x, FOREMAN.y-200*a.y);
+    q.lineTo(FOREMAN.x+200*a.x, FOREMAN.y+200*a.y); q.stroke(); });
+
+  /* vignette pulls the eye to the middle of the plan */
+  const vg = q.createRadialGradient(1080,640,180, 1080,640,1500);
+  vg.addColorStop(0,"rgba(0,0,0,0)"); vg.addColorStop(.62,"rgba(0,0,0,.30)");
+  vg.addColorStop(1,"rgba(0,0,0,.80)");
+  q.fillStyle=vg; q.fillRect(MAP.x,MAP.y,MAP.w,MAP.h);
+  q.restore();
+
+  /* the sheet border and the title block, like a real drawing */
+  q.strokeStyle=C("selection",1); q.lineWidth=1;
+  q.strokeRect(MAP.x+.5,MAP.y+.5,MAP.w-1,MAP.h-1);
+  q.strokeStyle=C("lighter_background",.7);
+  q.strokeRect(MAP.x+7.5,MAP.y+7.5,MAP.w-15,MAP.h-15);
+  q.font=FONT(10.5); q.fillStyle=C("dark_foreground",1);
+  q.fillText("FOREMAN · SWARM SITE PLAN · PROJECTION ISOMETRIC 2:1 · 1 CELL = 1 CHECKLIST ITEM · OBSERVED, NOT DECLARED",
+    MAP.x+22, MAP.y+MAP.h-16);
+  q.textAlign="right";
+  q.fillText("DRAWN BY THE COLLECTOR · REV 14:07 · SHEET 1 OF 1", MAP.x+MAP.w-22, MAP.y+MAP.h-16);
+  q.textAlign="left";
+})();
+
+/* ══ drawing primitives ═══════════════════════════════════════════════ */
+function dia(x,y,hw,hh){ g.beginPath(); g.moveTo(x,y-hh); g.lineTo(x+hw,y);
+  g.lineTo(x,y+hh); g.lineTo(x-hw,y); g.closePath(); }
+
+/* one checklist item */
+function drawCell(x,y,cell,tone){
+  const hw=HW-4, hh=HH-2;
+  if(cell.dead>0){                                   /* an item cut from scope */
+    const a=1-cell.dead;
+    dia(x,y,hw*(1-cell.dead*.5),hh*(1-cell.dead*.5));
+    g.strokeStyle=C("yellow",.5*a); g.lineWidth=1.2; g.stroke();
+    g.beginPath(); g.moveTo(x-hw*.5,y); g.lineTo(x+hw*.5,y);
+    g.strokeStyle=C("yellow",.7*a); g.stroke();
+    return;
+  }
+  if(cell.st===0){                                   /* planned */
+    dia(x,y,hw,hh);
+    g.strokeStyle=C("dark_foreground",.9); g.lineWidth=1; g.stroke();
+    return;
+  }
+  if(cell.st===1){                                   /* built · CONFIRMED, not merged */
+    const f=cell.fill;
+    dia(x,y,hw,hh);
+    g.fillStyle=C(tone,.20*f); g.fill();
+    g.strokeStyle=C(tone,.34+.52*f); g.lineWidth=1.3; g.stroke();
+    /* the confirm mark: a short scribed tick inside the tile */
+    g.beginPath(); g.moveTo(x-7,y); g.lineTo(x-2,y+4); g.lineTo(x+8,y-4);
+    g.strokeStyle=C(tone,.80*f); g.lineWidth=1.4; g.stroke();
+    return;
+  }
+  /* landed · merged: an extruded block. Height is the whole point. */
+  const z = ZH*eOut(cell.rise), gl = cell.glow;
+  if(z>1){
+    g.fillStyle=CD("green",.32,1);                   // left face, in shade
+    g.beginPath(); g.moveTo(x-hw,y); g.lineTo(x,y+hh); g.lineTo(x,y+hh-z); g.lineTo(x-hw,y-z);
+    g.closePath(); g.fill();
+    g.fillStyle=CD("green",.20,1);                   // right face, deeper shade
+    g.beginPath(); g.moveTo(x+hw,y); g.lineTo(x,y+hh); g.lineTo(x,y+hh-z); g.lineTo(x+hw,y-z);
+    g.closePath(); g.fill();
+    g.strokeStyle=C("green",.26); g.lineWidth=1;
+    g.beginPath(); g.moveTo(x,y+hh); g.lineTo(x,y+hh-z); g.stroke();
+  }
+  dia(x,y-z,hw,hh);
+  g.fillStyle=C("green",.60+.32*gl); g.fill();
+  g.strokeStyle=C("green",.55); g.lineWidth=1; g.stroke();
+  /* the two edges facing the light, so the mass reads as solid */
+  g.beginPath(); g.moveTo(x-hw,y-z); g.lineTo(x,y-hh-z); g.lineTo(x+hw,y-z);
+  g.strokeStyle=C("green",.95+.05*gl); g.lineWidth=1.4; g.stroke();
+  if(gl>0.01){
+    g.save(); g.globalCompositeOperation="lighter";
+    dia(x,y-z,hw+10*gl,hh+6*gl);
+    g.strokeStyle=C("green",.6*gl); g.lineWidth=1.8; g.stroke();
+    g.restore();
+  }
+}
+
+/* the whole plot: ground footprint, cells, ruler, horizon */
+function drawPlot(c,t){
+  const G=c.g;
+  const foot=()=>{ g.beginPath(); g.moveTo(G.N.x,G.N.y); g.lineTo(G.E.x,G.E.y);
+    g.lineTo(G.S.x,G.S.y); g.lineTo(G.W.x,G.W.y); g.closePath(); };
+  foot();
+  if(c.state==="halt"){
+    g.save(); g.clip();
+    g.fillStyle=C("red",.05); g.fillRect(G.W.x,G.N.y-10,G.E.x-G.W.x,G.S.y-G.N.y+20);
+    g.strokeStyle=C("red",.14); g.lineWidth=6;
+    for(let i=-12;i<26;i++){ g.beginPath();
+      g.moveTo(G.W.x+i*24, G.N.y-40); g.lineTo(G.W.x+i*24-200, G.N.y+240); g.stroke(); }
+    g.restore();
+    foot(); g.strokeStyle=C("red",.6); g.lineWidth=1.6; g.stroke();
+  }else if(c.state==="stall"){
+    g.fillStyle=C("darker_background",.5); g.fill();
+    g.setLineDash([7,7]); g.strokeStyle=C("red",.42); g.lineWidth=1.4; g.stroke();
+    g.setLineDash([]);
+  }else{
+    g.fillStyle=C("darker_background",.42); g.fill();
+    g.strokeStyle=C("dark_foreground",.55); g.lineWidth=1.2; g.stroke();
+  }
+  /* corner ticks, like a survey marker */
+  g.strokeStyle=C("light_foreground",.4); g.lineWidth=1;
+  [[G.N,0,-9],[G.E,9,0],[G.S,0,9],[G.W,-9,0]].forEach(([p,dx,dy])=>{
+    g.beginPath(); g.moveTo(p.x,p.y); g.lineTo(p.x+dx,p.y+dy); g.stroke(); });
+
+  /* cells, back to front so the extrusions occlude correctly */
+  for(const k of c.order){
+    const p=cellPos(c,k);
+    drawCell(p.x,p.y,c.cells[k],"accent");
+  }
+
+  /* progress ruler along the south-east edge: landed | built | planned */
+  const ex=G.E.x-G.S.x, ey=G.E.y-G.S.y, L=Math.hypot(ex,ey);
+  const nx=7, ny=14;
+  const rs={x:G.S.x+nx,y:G.S.y+ny}, re={x:G.E.x+nx,y:G.E.y+ny};
+  const at=f=>({x:rs.x+(re.x-rs.x)*f, y:rs.y+(re.y-rs.y)*f});
+  g.lineWidth=3; g.lineCap="butt";
+  g.strokeStyle=C("dark_foreground",.7);
+  g.beginPath(); g.moveTo(rs.x,rs.y); g.lineTo(re.x,re.y); g.stroke();
+  const fb=c.built/c.total, fl=c.landed/c.total;
+  const pb=at(fb), pl=at(fl);
+  g.strokeStyle=C("accent",.55);
+  g.beginPath(); g.moveTo(rs.x,rs.y); g.lineTo(pb.x,pb.y); g.stroke();
+  g.strokeStyle=C("green",.9);
+  g.beginPath(); g.moveTo(rs.x,rs.y); g.lineTo(pl.x,pl.y); g.stroke();
+
+  /* horizon plate at the front corner */
+  const hx=G.S.x-14, hy=G.S.y+34;
+  g.font=FONT(11.5);
+  const dead = c.state!=="";
+  g.fillStyle = dead ? C("red",.95) : C("light_foreground",.95);
+  g.fillText(c.eta, hx, hy);
+  g.font=FONT(10.5);
+  g.fillStyle = dead ? C("red",.72) : C("light_foreground",.6);
+  g.fillText(dead ? c.note : `${c.vel.toFixed(1)} items/h · ${c.total-c.landed} to land`, hx, hy+15);
+
+  /* the supervisor: a mast at the back corner with a lantern on top */
+  drawBeacon(c,t);
+}
+
+function drawBeacon(c,t){
+  const G=c.g, bx=G.N.x, by=G.N.y, top=by-66;
+  const tone = c.state==="stall" ? "red" : c.state==="halt" ? "red"
+             : S.frozen ? "orange" : "accent";
+  g.strokeStyle=C(tone,.5); g.lineWidth=1.4;
+  g.beginPath(); g.moveTo(bx,by); g.lineTo(bx,top+7); g.stroke();
+  /* the guy-wires down to the plot corners — the supervisor owns this ground */
+  g.strokeStyle=C(tone,.16); g.lineWidth=1;
+  g.beginPath(); g.moveTo(bx,top+10); g.lineTo(G.W.x,G.W.y);
+  g.moveTo(bx,top+10); g.lineTo(G.E.x,G.E.y); g.stroke();
+
+  /* lantern: pulses when the supervisor writes; dark when it is silent */
+  const live = c.state==="" && !S.frozen;
+  const b = live ? c.beat : 0;
+  g.save();
+  if(c.state==="stall"){
+    g.setLineDash([3,3]); g.strokeStyle=C("red",.8); g.lineWidth=1.3;
+    dia(bx,top,9,6); g.stroke(); g.setLineDash([]);
+  }else{
+    g.globalCompositeOperation="lighter";
+    dia(bx,top,9+5*b,6+3.4*b);
+    g.fillStyle=C(tone,.30+.55*b); g.fill();
+    g.globalCompositeOperation="source-over";
+    dia(bx,top,9,6); g.strokeStyle=C(tone,.9); g.lineWidth=1.3; g.stroke();
+  }
+  g.restore();
+
+  /* the plate: who owns this plot, on what model, and how much of it stands */
+  const lx=bx+18;
+  g.font=FONT(15);
+  g.fillStyle = c.state ? C("red",1) : C("foreground",1);
+  g.fillText(c.name, lx, top-8);
+  const nw = g.measureText(c.name).width;
+  g.font=FONT(11);
+  if(c.state==="halt"){ g.fillStyle=C("red",1); g.fillText("HALTED", lx+nw+14, top-8); }
+  if(c.state==="stall"){ g.fillStyle=C("red",1); g.fillText("SILENT 14m", lx+nw+14, top-8); }
+  g.font=FONT(11.5);
+  g.fillStyle=C("light_foreground",.9);
+  g.fillText(`${c.sup}  ${c.model}`, lx, top+9);
+  g.font=FONT(11.5);
+  g.fillStyle=C("light_foreground",.75);
+  const stat = `${c.landed} landed · ${c.built} built / ${c.total}`;
+  g.fillText(stat, lx, top+26);
+  /* a tiny green/accent swatch pair so the numbers read as the colours on the ground */
+  g.fillStyle=C("green",.9);  g.fillRect(lx-.5, top+30, 8, 3);
+  g.fillStyle=C("accent",.6); g.fillRect(lx+11, top+30, 8, 3);
+}
+
+/* the foreman: the origin of every dispatch */
+let foremanPulse = 0;
+function drawForeman(t){
+  const {x,y}=FOREMAN;
+  g.save();
+  g.globalCompositeOperation="lighter";
+  const rg=g.createRadialGradient(x,y,4,x,y,86+40*foremanPulse);
+  rg.addColorStop(0,C("accent",.34+.3*foremanPulse)); rg.addColorStop(1,C("accent",0));
+  g.fillStyle=rg; g.beginPath(); g.arc(x,y,86+40*foremanPulse,0,6.2832); g.fill();
+  g.restore();
+
+  /* a plinth on the ground plane, then the node above it */
+  dia(x,y+30,46,23); g.fillStyle=C("darker_background",.9); g.fill();
+  g.strokeStyle=C("accent",.4); g.lineWidth=1.2; g.stroke();
+  g.strokeStyle=C("accent",.30); g.lineWidth=1;
+  g.beginPath(); g.moveTo(x,y+30); g.lineTo(x,y); g.stroke();
+
+  /* six notches around the ring, one per component it holds */
+  g.strokeStyle=C("accent",.85); g.lineWidth=2;
+  g.beginPath(); g.arc(x,y,26,0,6.2832); g.stroke();
+  g.strokeStyle=C("accent",.35); g.lineWidth=1;
+  g.beginPath(); g.arc(x,y,34,0,6.2832); g.stroke();
+  for(let i=0;i<6;i++){ const a=-1.57+i*1.0472;
+    g.strokeStyle=C("accent",.7); g.lineWidth=1.4; g.beginPath();
+    g.moveTo(x+Math.cos(a)*30,y+Math.sin(a)*30);
+    g.lineTo(x+Math.cos(a)*38,y+Math.sin(a)*38); g.stroke(); }
+  dia(x,y,11,7); g.fillStyle=C("accent",.75+.25*foremanPulse); g.fill();
+
+  g.font=FONT(15); g.fillStyle=C("foreground",1); g.textAlign="center";
+  g.fillText("FOREMAN", x, y+72);
+  g.font=FONT(11.5); g.fillStyle=C("accent",.95);
+  g.fillText("fable 5.1 · orchestrator", x, y+90);
+  g.font=FONT(10.5); g.fillStyle=C("light_foreground",.6);
+  g.fillText("the only session you talk to", x, y+107);
+  g.textAlign="left";
+}
+
+/* an L-route that follows the ground grid, the way a drawing routes a service */
+function route(a,b){
+  const dx=b.x-a.x, dy=b.y-a.y;
+  const u=(dx/HW + dy/HH)/2, v=(dy/HH - dx/HW)/2;
+  const mid={x:a.x+u*AX.x, y:a.y+u*AX.y};
+  return [a,mid,b];
+}
+function polyAt(p,t){
+  let L=0; const seg=[];
+  for(let i=1;i<p.length;i++){const d=Math.hypot(p[i].x-p[i-1].x,p[i].y-p[i-1].y);seg.push(d);L+=d;}
+  let d=t*L;
+  for(let i=0;i<seg.length;i++){
+    if(d<=seg[i]||i===seg.length-1){const f=seg[i]?clamp(d/seg[i],0,1):1;
+      return {x:p[i].x+(p[i+1].x-p[i].x)*f, y:p[i].y+(p[i+1].y-p[i].y)*f};}
+    d-=seg[i];
+  }
+  return p[p.length-1];
+}
+COMPS.forEach(c=>{ c.route = route(FOREMAN,{x:c.g.N.x,y:c.g.N.y-66}); });
+const MERGE = byId("merge-desk");
+COMPS.forEach(c=>{ if(c!==MERGE) c.mroute = route({x:c.g.E.x,y:c.g.E.y},{x:MERGE.g.W.x,y:MERGE.g.W.y}); });
+
+function drawLinks(){
+  COMPS.forEach(c=>{
+    const p=c.route, halt=c.state==="halt";
+    g.lineWidth=1.3;
+    if(halt){
+      g.setLineDash([9,11]); g.strokeStyle=C("red",.45);
+    }else if(S.frozen){
+      g.setLineDash([4,8]); g.strokeStyle=C("orange",.32);
+    }else{
+      g.setLineDash([]); g.strokeStyle=C("accent",.30); g.lineWidth=1.7;
+    }
+    g.beginPath(); g.moveTo(p[0].x,p[0].y); g.lineTo(p[1].x,p[1].y); g.lineTo(p[2].x,p[2].y);
+    g.stroke(); g.setLineDash([]);
+    /* a junction mark at the elbow, so a dispatch route reads as a route */
+    if(!halt){ dia(p[1].x,p[1].y,4,2.5);
+      g.fillStyle = S.frozen ? C("orange",.5) : C("accent",.55); g.fill(); }
+    /* a break symbol where dispatch is cut */
+    if(halt){
+      const m=polyAt(p,.55);
+      g.strokeStyle=C("red",.9); g.lineWidth=2;
+      g.beginPath(); g.moveTo(m.x-9,m.y-9); g.lineTo(m.x+9,m.y+9);
+      g.moveTo(m.x+9,m.y-9); g.lineTo(m.x-9,m.y+9); g.stroke();
+      g.font=FONT(10); g.fillStyle=C("red",.9);
+      g.fillText("RULE 10", m.x+15, m.y+4);
+    }
+    /* handoff route to the merge desk, drawn faintly and always */
+    if(c.mroute && c.state===""){
+      g.setLineDash([2,10]); g.strokeStyle=C("magenta",.20); g.lineWidth=1.1;
+      const q=c.mroute;
+      g.beginPath(); g.moveTo(q[0].x,q[0].y); g.lineTo(q[1].x,q[1].y); g.lineTo(q[2].x,q[2].y);
+      g.stroke(); g.setLineDash([]);
+    }
+  });
+}
+
+/* a job at work: a mark over the cell it is building, and an annotation card */
+function drawJobs(t){
+  COMPS.forEach(c=>{
+    const G=c.g;
+    c.jobs.forEach((j,idx)=>{
+      const p = cellPos(c,j.cell);
+      const alt = 64 + idx*24;
+      const breathe = CALM ? 0 : Math.sin(t*3.4 + j.ph)*.5+.5;
+      const mx=p.x, my=p.y-alt-(CALM?0:breathe*3);
+      const card = {x:G.E.x+28, y:G.N.y+idx*56, w:220, h:48};
+
+      /* leader: card → mark → the cell it is writing into */
+      g.strokeStyle=C("orange",.30); g.lineWidth=1;
+      g.beginPath(); g.moveTo(card.x, card.y+16); g.lineTo(mx+13, my); g.stroke();
+      g.strokeStyle=C("orange",.22+.38*j.flash); g.lineWidth=1.2;
+      g.beginPath(); g.moveTo(mx,my+8); g.lineTo(p.x,p.y-(c.cells[j.cell].st===2?ZH:0)); g.stroke();
+
+      /* the mark: a small diamond that breathes while the job is alive */
+      const s=1+(CALM?0:breathe*.10)+j.flash*.35;
+      g.save(); g.globalCompositeOperation="lighter";
+      dia(mx,my,11*s+7*j.flash,7*s+4*j.flash);
+      g.fillStyle=C("orange",.16+.42*j.flash); g.fill(); g.restore();
+      dia(mx,my,11*s,7*s);
+      g.fillStyle=C("darker_background",.9); g.fill();
+      g.strokeStyle=C("orange",.75+.25*j.flash); g.lineWidth=1.4; g.stroke();
+      dia(mx,my,4,2.5); g.fillStyle=C("orange",.6+.4*j.flash); g.fill();
+
+      /* annotation card: name, model, worktree, elapsed/timeout, live trace */
+      g.fillStyle=C("darker_background",.80);
+      g.fillRect(card.x,card.y,card.w,card.h);
+      g.strokeStyle=C("orange",.30); g.lineWidth=1;
+      g.strokeRect(card.x+.5,card.y+.5,card.w-1,card.h-1);
+      g.fillStyle=C("orange",.9); g.fillRect(card.x,card.y,2,card.h);
+
+      g.font=FONT(12); g.fillStyle=C("foreground",1);
+      g.fillText(j.n, card.x+10, card.y+16);
+      g.font=FONT(10.5); g.fillStyle=C("light_foreground",.85);
+      g.fillText(`${j.m}  ${j.w}`, card.x+10, card.y+30);
+
+      /* timeout bar: how much of its rope this job has used */
+      const f=clamp(j.min/j.to,0,1);
+      const bx=card.x+10, by=card.y+40, bw=56;
+      g.strokeStyle=C("muted",.9); g.lineWidth=1;
+      g.beginPath(); g.moveTo(bx,by); g.lineTo(bx+bw,by); g.stroke();
+      g.strokeStyle=f>.85?C("red",1):f>.65?C("yellow",1):C("orange",.85); g.lineWidth=2.6;
+      g.beginPath(); g.moveTo(bx,by); g.lineTo(bx+bw*f,by); g.stroke();
+      g.font=FONT(10); g.fillStyle=f>.85?C("red",1):C("light_foreground",.85);
+      g.fillText(`${j.min}m/${j.to}m`, bx+bw+7, by+3.5);
+
+      /* live trace: files written per collector tick, newest at the right */
+      const tx=card.x+card.w-5, ty=card.y+card.h-4, N=16;
+      for(let i=0;i<N;i++){
+        const v=j.tr[j.tr.length-1-i]||0, h=v?Math.min(15,2+v*4):1;
+        g.fillStyle = v ? C("orange",.32+.62*(1-i/N)) : C("muted",.5);
+        g.fillRect(tx-i*3-2, ty-h, 2, h);
+      }
+      if(j.flash>0) j.flash=Math.max(0,j.flash-.035);
+    });
+  });
+}
+
+/* the merge desk: the queue of branches waiting, and what has already landed */
+function drawQueue(){
+  const G=MERGE.g, qx=1424, qy=952;
+  /* the desk's own service run into the plan */
+  g.setLineDash([3,7]); g.strokeStyle=C("magenta",.30); g.lineWidth=1.1;
+  g.beginPath(); g.moveTo(qx+120,qy-34); g.lineTo(G.S.x,G.S.y); g.stroke();
+  g.setLineDash([]);
+
+  g.font=FONT(11.5); g.fillStyle=C("magenta",.95);
+  g.fillText("MERGE QUEUE", qx, qy-14);
+  g.font=FONT(10.5); g.fillStyle=C("light_foreground",.55);
+  g.fillText("one queue for the whole swarm · reviewed, then landed", qx+112, qy-14);
+  for(let i=0;i<7;i++){
+    const on=i<S.mergeQ;
+    g.beginPath(); g.rect(qx+i*26, qy, 18, 14);
+    g.fillStyle = on ? C("magenta",.5) : C("darker_background",.6); g.fill();
+    g.strokeStyle = on ? C("magenta",.95) : C("muted",.7); g.lineWidth=1; g.stroke();
+  }
+  g.font=FONT(13); g.fillStyle=C("foreground",1);
+  g.fillText(`${S.mergeQ} branch${S.mergeQ===1?"":"es"} waiting`, qx+7*26+12, qy+12);
+
+  g.font=FONT(11.5); g.fillStyle=C("green",.95);
+  g.fillText("MERGE LEDGER", qx, qy+56);
+  g.font=FONT(10.5); g.fillStyle=C("light_foreground",.55);
+  g.fillText("one line per landing · what, which review, which head", qx+112, qy+56);
+  S.ledger.slice(0,4).forEach(([ts,comp,head,what],i)=>{
+    const y=qy+78+i*19;
+    g.font=FONT(11);
+    g.fillStyle=C("dark_foreground",1);      g.fillText(ts, qx, y);
+    g.fillStyle=C("green",.9);               g.fillText(head, qx+48, y);
+    g.fillStyle=C("light_foreground",.95);   g.fillText(comp, qx+124, y);
+    g.fillStyle=C("light_foreground",.6);    g.fillText(what, qx+230, y);
+  });
+}
+
+/* the unregistered process: on the plan, off the grid, tied to nothing */
+function drawRogue(t){
+  const r=S.rogue; if(!r.alive && r.die>=1) return;
+  const k = r.alive ? 1 : 1-r.die;
+  const bob = CALM?0:Math.sin(t*1.7)*4;
+  const x=r.x, y=r.y+bob;
+  g.save(); g.globalAlpha=k;
+  g.save(); g.globalCompositeOperation="lighter";
+  const rg=g.createRadialGradient(x,y,2,x,y,46);
+  rg.addColorStop(0,C("red",.30)); rg.addColorStop(1,C("red",0));
+  g.fillStyle=rg; g.beginPath(); g.arc(x,y,46,0,6.2832); g.fill(); g.restore();
+  g.setLineDash([4,4]); g.strokeStyle=C("red",.7); g.lineWidth=1.3;
+  dia(x,y,20*k,12*k); g.stroke(); g.setLineDash([]);
+  g.strokeStyle=C("red",1); g.lineWidth=2;
+  g.beginPath(); g.moveTo(x-8,y-5); g.lineTo(x+8,y+5);
+  g.moveTo(x+8,y-5); g.lineTo(x-8,y+5); g.stroke();
+  g.font=FONT(12); g.fillStyle=C("red",1);
+  g.fillText(`pid ${r.pid} · codex`, x+30, y-2);
+  g.font=FONT(10.5); g.fillStyle=C("red",.72);
+  g.fillText("NO SLOT · NO MINTED ID · CANNOT WRITE", x+30, y+14);
+  g.restore();
+}
+
+/* the whole project in one line, in the drawing's clear margin */
+function drawTotals(){
+  const x=1394, R=1930;
+  let landed=0, built=0, total=0, vel=0, live=0, blind=0, last=0;
+  COMPS.forEach(c=>{
+    landed+=c.landed; built+=c.built; total+=c.total; vel+=c.vel;
+    if(c.state==="") live++; else blind++;
+    const m=/(\d\d):(\d\d)/.exec(c.eta);
+    if(m) last=Math.max(last, +m[1]*60 + +m[2]);
+  });
+  g.font=FONT(11.5); g.fillStyle=C("light_foreground",.85);
+  g.fillText("SITE TOTAL", x, 104);
+  g.textAlign="right";
+  g.fillStyle=C("light_foreground",.6);
+  g.fillText(`${COMPS.length} components · ${live} building · ${blind} stopped`, R, 104);
+  g.textAlign="left";
+
+  g.font=FONT(23); g.fillStyle=C("green",1);
+  g.fillText(String(landed), x, 136);
+  let w=g.measureText(String(landed)).width;
+  g.font=FONT(13); g.fillStyle=C("green",.8);
+  g.fillText("landed", x+w+8, 136); w+=8+g.measureText("landed").width;
+  g.font=FONT(13); g.fillStyle=C("accent",.85);
+  g.fillText(`·  ${built} built`, x+w+12, 136);
+  w+=12+g.measureText(`·  ${built} built`).width;
+  g.fillStyle=C("light_foreground",.6);
+  g.fillText(`·  ${total} planned`, x+w+12, 136);
+
+  /* the same three-part ruler the plots carry, at project scale */
+  const y=152;
+  g.lineWidth=4; g.lineCap="butt";
+  g.strokeStyle=C("dark_foreground",.8);
+  g.beginPath(); g.moveTo(x,y); g.lineTo(R,y); g.stroke();
+  g.strokeStyle=C("accent",.55);
+  g.beginPath(); g.moveTo(x,y); g.lineTo(x+(R-x)*built/total,y); g.stroke();
+  g.strokeStyle=C("green",.95);
+  g.beginPath(); g.moveTo(x,y); g.lineTo(x+(R-x)*landed/total,y); g.stroke();
+
+  g.font=FONT(11); g.fillStyle=C("light_foreground",.6);
+  const lt=`${String((last/60|0)).padStart(2,"0")}:${String(last%60).padStart(2,"0")}`;
+  g.fillText(`${vel.toFixed(1)} items/h across the swarm · last component lands ~${lt}`
+    + (blind?` · ${blind} with no horizon`:""), x, 174);
+}
+
+/* the legend: this is an information display, so it says what it draws */
+function drawLegend(){
+  const x=64, y=1000;
+  g.font=FONT(11); g.fillStyle=C("light_foreground",.85);
+  g.fillText("KEY", x, y-14);
+  g.strokeStyle=C("lighter_background",.9); g.lineWidth=1;
+  g.beginPath(); g.moveTo(x+32,y-18); g.lineTo(x+214,y-18); g.stroke();
+  const rows=[
+    ["cell", 0, "planned item"],
+    ["cell", 1, "built · CONFIRMED"],
+    ["cell", 2, "landed · merged"],
+    ["job",  0, "job at work"],
+    ["sup",  0, "supervisor beacon"]
+  ];
+  rows.forEach(([kind,st,label],i)=>{
+    const cy=y+8+i*30, cx=x+18;
+    if(kind==="cell") drawCell(cx,cy,{st,rise:1,fill:1,glow:0,dead:0},"accent");
+    if(kind==="job"){ dia(cx,cy,11,7); g.fillStyle=C("darker_background",.9); g.fill();
+      g.strokeStyle=C("orange",.85); g.lineWidth=1.4; g.stroke();
+      dia(cx,cy,4,2.5); g.fillStyle=C("orange",.7); g.fill(); }
+    if(kind==="sup"){ g.strokeStyle=C("accent",.6); g.lineWidth=1.4;
+      g.beginPath(); g.moveTo(cx,cy+9); g.lineTo(cx,cy-4); g.stroke();
+      dia(cx,cy-8,8,5); g.strokeStyle=C("accent",.9); g.stroke(); }
+    g.font=FONT(11); g.fillStyle=C("light_foreground",.8);
+    g.fillText(label, x+48, cy+4);
+  });
+}
+
+/* ══ particles: sparks and packets ════════════════════════════════════ */
+function spark(x,y,col,n=5){
+  if(CALM) return;
+  for(let i=0;i<n;i++){
+    const a=-Math.PI/2 + (Math.random()-.5)*2.2, sp=40+Math.random()*120;
+    S.parts.push({x,y, vx:Math.cos(a)*sp, vy:Math.sin(a)*sp*.75,
+      life:1, dec:1.1+Math.random()*.9, col, r:1+Math.random()*1.6});
+  }
+  if(S.parts.length>320) S.parts.splice(0,S.parts.length-320);
+}
+/* a packet is the picture of a thing in flight, never the thing itself:
+   state changes are committed on their own clock so a throttled frame loop
+   (a backgrounded tab) can never strand a landing half way across the plan */
+function packet(path,col,dur){
+  if(CALM) return;
+  S.packets.push({p:path, t:0, sp:1/dur, col});
+  if(S.packets.length>24) S.packets.shift();
+}
+function stepParts(dt){
+  for(let i=S.parts.length-1;i>=0;i--){
+    const p=S.parts[i];
+    p.x+=p.vx*dt; p.y+=p.vy*dt; p.vy+=150*dt; p.life-=p.dec*dt;
+    if(p.life<=0) S.parts.splice(i,1);
+  }
+  for(let i=S.packets.length-1;i>=0;i--){
+    const k=S.packets[i]; k.t+=k.sp*dt;
+    if(k.t>=1) S.packets.splice(i,1);
+  }
+}
+function drawParts(){
+  g.save(); g.globalCompositeOperation="lighter";
+  for(const p of S.parts){
+    g.fillStyle=C(p.col, clamp(p.life,0,1)*.9);
+    g.beginPath(); g.arc(p.x,p.y,p.r*(0.5+p.life),0,6.2832); g.fill();
+  }
+  for(const k of S.packets){
+    const q=polyAt(k.p,k.t), tail=polyAt(k.p,Math.max(0,k.t-.10));
+    const gr=g.createLinearGradient(tail.x,tail.y,q.x,q.y);
+    gr.addColorStop(0,C(k.col,0)); gr.addColorStop(1,C(k.col,.85));
+    g.strokeStyle=gr; g.lineWidth=2.6; g.lineCap="round";
+    g.beginPath(); g.moveTo(tail.x,tail.y); g.lineTo(q.x,q.y); g.stroke();
+    g.fillStyle=C(k.col,.95);
+    g.beginPath(); g.arc(q.x,q.y,3.4,0,6.2832); g.fill();
+    g.fillStyle=C(k.col,.22);
+    g.beginPath(); g.arc(q.x,q.y,9,0,6.2832); g.fill();
+  }
+  g.restore();
+}
+
+/* the collector's 2-second observation, seen as one pass across the plane */
+function drawSweep(){
+  if(S.sweep<0 || CALM) return;
+  const t=S.sweep;
+  const x0=MAP.x-200, x1=MAP.x+MAP.w+260;
+  const px=x0+(x1-x0)*t, py=MAP.y+MAP.h*t*0.35;
+  const gr=g.createLinearGradient(px-AX.x*7,py-AX.y*7, px+AX.x*7,py+AX.y*7);
+  gr.addColorStop(0,C("accent",0)); gr.addColorStop(.5,C("accent",.11)); gr.addColorStop(1,C("accent",0));
+  g.save(); g.globalCompositeOperation="lighter";
+  g.fillStyle=gr; g.fillRect(MAP.x,MAP.y,MAP.w,MAP.h); g.restore();
+}
+
+/* ══ the frame ════════════════════════════════════════════════════════ */
+let last=performance.now();
+function frame(now){
+  const dt=Math.min(.05,(now-last)/1000); last=now;
+  const t=now/1000;
+  stepParts(dt);
+  if(S.sweep>=0){ S.sweep+=dt*1.5; if(S.sweep>1) S.sweep=-1; }
+  if(!S.rogue.alive && S.rogue.die<1) S.rogue.die=Math.min(1,S.rogue.die+dt*2.2);
+  foremanPulse=Math.max(0,foremanPulse-dt*1.6);
+  COMPS.forEach(c=>{
+    c.beat=Math.max(0,c.beat-dt*1.5);
+    c.cells.forEach(cl=>{
+      if(cl.st===2&&cl.rise<1) cl.rise=Math.min(1,cl.rise+dt*2.1);
+      if(cl.st===1&&cl.fill<1) cl.fill=Math.min(1,cl.fill+dt*3.2);
+      if(cl.glow>0) cl.glow=Math.max(0,cl.glow-dt*1.15);
+      if(cl.dead>0&&cl.dead<1) cl.dead=Math.min(1,cl.dead+dt*1.6);
+    });
+  });
+
+  g.clearRect(0,0,2560,1440);
+  g.drawImage(ground,0,0);
+  g.save(); g.beginPath(); g.rect(MAP.x,MAP.y,MAP.w,MAP.h); g.clip();
+  drawSweep();
+  drawLinks();
+  COMPS.forEach(c=>drawPlot(c,t));
+  drawQueue();
+  drawForeman(t);
+  drawJobs(t);
+  drawRogue(t);
+  drawTotals();
+  drawLegend();
+  drawParts();
+  g.fillStyle=grain; g.fillRect(MAP.x,MAP.y,MAP.w,MAP.h);
+  g.restore();
+  requestAnimationFrame(frame);
+}
+
+/* ══ HUD render ═══════════════════════════════════════════════════════ */
+function renderAlerts(){
+  const w=$("#alerts"); w.innerHTML="";
+  if(!S.alerts.length)
+    w.appendChild(el("div","empty","nothing floating · every session observed matches what it declared"));
+  S.alerts.forEach(a=>{
+    const d=el("div","al"+(a.tone==="warn"?" warn":"")); d.id=a.id;
+    d.innerHTML=`<span class="bar"></span><span class="sq"></span>
+      <span class="kind">${a.kind}</span><span class="txt">${a.txt}</span>
+      <span class="age" data-age="${a.id}">${a.age}m unresolved</span>`;
+    const b=el("button","btn dgr",a.act); b.onclick=()=>resolveAlert(a,b,d);
+    d.appendChild(b); w.appendChild(d);
+  });
+}
+function resolveAlert(a,btn,node){
+  btn.disabled=true;
+  const txt=node.querySelector(".txt");
+  txt.innerHTML = a.act==="relaunch"
+    ? 'relaunching sup·engine from its checkpoint <em>— reading the rules ledger first</em>'
+    : 'sending SIGTERM to pid 41180 <em>— it holds no slot, nothing to release</em>';
+  feed("owner", a.act==="relaunch" ? "sup·engine relaunch requested by you"
+                                   : "kill pid 41180 requested by you");
+  setTimeout(()=>{
+    node.classList.add("ok"); node.classList.remove("warn");
+    node.querySelector(".kind").textContent="CLEARED";
+    txt.innerHTML=a.done;
+    node.querySelector(".age").textContent="just now";
+    if(a.id==="a1"){
+      const c=byId("engine");
+      c.state=""; c.alive=true; c.vel=1.6; c.eta="FINISH ~19:40";
+      c.note="reading rules · checklist re-read";
+      c.beat=1; foremanPulse=1;
+      packet(c.route,"accent",.85);
+      setTimeout(()=>dispatchTo(c), 900);
+      feed("dispatch","sup·engine  checkpoint replayed  slot held");
+    }
+    if(a.id==="a2"){
+      S.rogue.alive=false; S.seen=12;
+      setTimeout(()=>{ S.rogue.die=1; }, 1000);
+      spark(S.rogue.x,S.rogue.y,"red",16);
+      feed("anomaly","pid 41180 gone · roster 12 of 12 registered");
+      hudCounts();
+    }
+    setTimeout(()=>{ node.classList.add("gone");
+      setTimeout(()=>{ S.alerts=S.alerts.filter(x=>x!==a); renderAlerts(); },330); },1400);
+  },820);
+}
+
+function renderInbox(){
+  const w=$("#inbox"); w.innerHTML="";
+  if(!S.inbox.length)
+    w.appendChild(el("div","empty","Nothing waiting on you. Money, irreversible acts and product scope queue here — everything else the foreman decides and records."));
+  S.inbox.forEach(it=>{
+    const d=el("div","dec"); d.id=it.id;
+    d.innerHTML=`<div class="hd"><span class="tag">${it.tag}</span>
+        <span class="from">${it.from}</span>
+        <span class="age" data-age="${it.id}">waited ${it.age}m</span></div>
+      <div class="q">${it.q}</div>
+      <div class="rec"><span class="lead">foreman </span><span class="v">${it.rec[0]}</span> — ${it.rec[1]}</div>`;
+    const f=el("div","acts");
+    it.acts.forEach(([l,c])=>{ const b=el("button","btn "+c,l); b.onclick=()=>answer(it,d,l); f.appendChild(b); });
+    d.appendChild(f); w.appendChild(d);
+  });
+  const n=S.inbox.length;
+  $("#inMeta").textContent = n ? `${n} waiting on you` : "nothing waiting on you";
+  $("#inMeta").classList.toggle("wait", n>0);
+  const tw=$("#tWait");
+  tw.textContent = n ? `${n} waiting on you` : "0 waiting on you";
+  tw.classList.toggle("none", n===0);
+}
+function answer(it,node,label){
+  node.querySelectorAll("button").forEach(b=>b.disabled=true);
+  node.querySelector(".rec").innerHTML =
+    `<span class="lead">recorded </span><span class="v">${label}</span> — stamped as an owner act at ${hhmm(nowSec())}, and a rule on ${it.from} from here on.`;
+  feed("owner", `${it.tag.toLowerCase()} decision · ${label} · stamped`);
+
+  if(it.id==="i2" && label==="approve cut"){
+    /* scope cut: two planned items are struck from the plot, the horizon moves in */
+    const r=byId("reaper");
+    for(let k=r.cells.length-1,removed=0; k>=0 && removed<2; k--){
+      if(r.cells[k].st===0 && !r.cells[k].dead){ r.cells[k].dead=0.001; removed++; }
+    }
+    setTimeout(()=>{ r.total=10; r.vel=1.8; r.eta="FINISH ~16:35";
+      r.note="scope cut · sweep dropped"; r.ck=r.ck.slice(0,3); },700);
+    feed("commit","reaper  2 items struck from the checklist  horizon −4h");
+  }
+  if(it.id==="i1" && label==="approve buy"){
+    const m=MODELS.find(x=>x.id==="astra");
+    m.grant=4; m.reset="topped up · resets 19:00";
+    renderDock(); hudCounts();
+    feed("quota","codex astra granted 4 slots · 2M tokens purchased");
+  }
+  setTimeout(()=>{ node.classList.add("gone");
+    setTimeout(()=>{ S.inbox=S.inbox.filter(x=>x!==it); renderInbox(); },340); },1000);
+}
+
+function renderDock(){
+  const w=$("#dock"); w.innerHTML="";
+  MODELS.forEach(m=>{
+    const d=el("div","mslot"); d.id="ms-"+m.id;
+    let pips="";
+    for(let i=0;i<m.grant;i++) pips+=`<span class="pip${i<m.run?" on":""}" data-pip="${m.id}-${i}"></span>`;
+    let meter;
+    if(m.pct==null){
+      meter=`<div class="nometer"></div>
+        <div class="mmeta"><span>no vendor meter</span>
+        <span>proxied by <span class="p" data-proxy="${m.id}">${m.proxy}</span></span></div>`;
+    }else{
+      const cls=m.pct>=100?" crit":m.pct>=80?" warn":"";
+      meter=`<div class="meter"><div class="mbar">
+          <span class="fill${cls}" data-fill="${m.id}" style="width:${m.pct}%"></span>
+          <span class="mtick" style="left:80%"><i>80</i></span>
+          <span class="mtick" style="left:calc(100% - 1px)"><i>100</i></span>
+        </div>
+        <div class="mmeta"><span class="p" data-pct="${m.id}">${m.pct}%</span>
+        <span>of the 5-hour window · ${m.reset}</span></div></div>`;
+    }
+    d.innerHTML=`<span class="mn">${m.name}</span><span class="mr">${m.role}</span>
+      <div class="pips">${pips}<span class="cnt"><b data-run="${m.id}">${m.run}</b> / ${m.grant} slots</span></div>
+      ${meter}`;
+    w.appendChild(d);
+  });
+  const f=el("div","freeze");
+  f.innerHTML=`<div class="fh"><span class="fdot"></span>
+      <span class="fs" id="frzState">dispatch running</span></div>
+    <div class="fx" id="frzSub">launch scripts may take a slot · 12 sessions registered · no other kill switch</div>`;
+  const b=el("button","fbtn","FREEZE"); b.id="frzBtn"; b.onclick=toggleFreeze;
+  f.appendChild(b); w.appendChild(f);
+}
+
+function hudCounts(){
+  const jobs=COMPS.reduce((a,c)=>a+c.jobs.length,0);
+  const run=MODELS.reduce((a,m)=>a+m.run,0), gr=MODELS.reduce((a,m)=>a+m.grant,0);
+  $("#tJobs").textContent=jobs;
+  $("#tSlots").textContent=S.frozen?`${run}/0`:`${run}/${gr}`;
+  $("#tRoster").textContent=S.roster; $("#tSeen").textContent=S.seen;
+  $("#stQ").textContent=S.mergeQ;
+  $("#evCount").textContent=S.evCount.toLocaleString("en-US");
+}
+
+function toggleFreeze(){
+  S.frozen=!S.frozen;
+  $("#stage").classList.toggle("frozen",S.frozen);
+  $("#frzState").textContent=S.frozen?"dispatch frozen":"dispatch running";
+  const jobs=COMPS.reduce((a,c)=>a+c.jobs.length,0);
+  $("#frzSub").textContent=S.frozen
+    ? `zero slots granted at ${hhmm(nowSec())} · ${jobs} running jobs finish, none replaced`
+    : "launch scripts may take a slot · 12 sessions registered · no other kill switch";
+  $("#frzBtn").textContent=S.frozen?"THAW":"FREEZE";
+  $("#stampAt").textContent=`frozen at ${hhmm(nowSec())} by you`;
+  $("#stampJobs").textContent=`${jobs} running job${jobs===1?"":"s"}`;
+  feed("owner", S.frozen ? "freeze · slot grants set to zero by you"
+                         : "thaw · slot grants restored by you");
+  hudCounts();
+}
+
+/* ══ collector feed ═══════════════════════════════════════════════════ */
+const FEEDMAX=26;
+function feed(kind,body){
+  const w=$("#feed");
+  const l=el("div","fl new");
+  l.innerHTML=`<span class="ts">${hhmmss(nowSec())}</span>
+    <span class="k k-${kind}">${kind}</span><span class="b">${body}</span>`;
+  w.appendChild(l);
+  while(w.children.length>FEEDMAX) w.removeChild(w.firstChild);
+  setTimeout(()=>l.classList.remove("new"),360);
+  S.evCount++;
+}
+
+/* ══ the event stream — nothing moves that did not happen ═════════════ */
+const HEADS=()=>Math.random().toString(16).slice(2,9);
+function runningJobs(){ const o=[]; COMPS.forEach(c=>c.jobs.forEach(j=>o.push([c,j]))); return o; }
+
+function evWrite(){
+  const pair=rnd(runningJobs()); if(!pair) return;
+  const [c,j]=pair;
+  const n=1+((Math.random()*3)|0);
+  j.tr[j.tr.length-1]+=n; j.flash=1;
+  const p=cellPos(c,j.cell);
+  spark(p.x, p.y-(c.cells[j.cell].st===2?ZH:0), "orange", 3+n);
+  c.beat=Math.min(1,c.beat+.5);
+  feed("observed", `${j.w}  +${n} file${n>1?"s":""}  ${j.n}`);
+}
+function evCommit(){
+  /* a component never piles up more than a handful of unmerged confirmations —
+     the merge desk is the bottleneck, and the supervisor waits for it */
+  const live=COMPS.filter(c=>c.state===""&&c.built<c.total&&c.built-c.landed<6);
+  if(!live.length) return;
+  const c=rnd(live);
+  let k=-1;
+  for(let i=0;i<c.cells.length;i++) if(c.cells[i].st===0&&!c.cells[i].dead){k=i;break;}
+  if(k<0) return;
+  c.cells[k].st=1; c.cells[k].fill=0; c.built++;
+  const p=cellPos(c,k); spark(p.x,p.y,"accent",7);
+  c.beat=1;
+  const item=(c.ck.find(x=>x[0]==="open")||["","checklist item"])[1];
+  feed("commit", `${c.id}  CONFIRMED  ${item.slice(0,42)}`);
+}
+function evDispatch(){
+  if(S.frozen) return;
+  const c=rnd(COMPS.filter(x=>x.state===""&&x.jobs.length<3));
+  if(!c) return;
+  foremanPulse=1;
+  packet(c.route,"accent",.8,()=>{ c.beat=1; dispatchTo(c); });
+  feed("dispatch", `foreman → ${c.sup}  slot granted`);
+}
+function dispatchTo(c){
+  if(S.frozen || c.jobs.length>=3) return;
+  const model = rnd(["muse","muse","grok 4.6","codex astra"]);
+  const j={c:c.id, n:rnd(JOBPOOL), m:model,
+    w:`wt/${c.id.slice(0,4)}-${40+((Math.random()*40)|0)}`,
+    min:0, to:rnd([15,20,25,30]), id:"j"+(++JID),
+    cell:frontier(c), tr:new Array(26).fill(0), act:.5+Math.random()*.35,
+    ph:Math.random()*6.28, flash:1, born:nowSec()};
+  c.jobs.push(j);
+  const mk=MODELS.find(m=>m.id===modelOf(model));
+  if(mk && mk.run<mk.grant){ mk.run++; renderDock(); litPip(mk); }
+  feed("dispatch", `${c.sup} → job·${j.n}  ${model}  ${j.w}  timeout ${j.to}m`);
+  hudCounts();
+}
+function litPip(m){
+  const n=document.querySelector(`[data-pip="${m.id}-${m.run-1}"]`);
+  if(n&&!CALM){ n.classList.add("lit"); setTimeout(()=>n.classList.remove("lit"),700); }
+}
+function evFinish(){
+  const live=runningJobs(); if(live.length<3) return;
+  const [c,j]=rnd(live);
+  const from=cellPos(c,j.cell);
+  const path=route({x:from.x,y:from.y-60},{x:MERGE.g.W.x,y:MERGE.g.W.y});
+  spark(from.x,from.y,"orange",10);
+  feed("finish", `job·${j.n}  exit 0  ${j.min}m  branch handed off`);
+  c.jobs=c.jobs.filter(x=>x!==j);
+  const mk=MODELS.find(m=>m.id===modelOf(j.m));
+  if(mk&&mk.run>0){ mk.run--; renderDock(); }
+  packet(path,"magenta",1.05);
+  setTimeout(()=>{
+    S.mergeQ=Math.min(7,S.mergeQ+1); hudCounts();
+    feed("verdict", `${j.n}  queued for review  queue ${S.mergeQ}`);
+  }, 1050);
+  hudCounts();
+  if(!S.frozen) setTimeout(()=>dispatchTo(c),1600+Math.random()*1200);
+}
+function evVerdict(){
+  if(S.mergeQ<=0) return;
+  const c=rnd(COMPS.filter(x=>x.landed<x.built&&x.state!=="halt"));
+  if(!c) return;
+  S.mergeQ--; hudCounts();
+  const head=HEADS();
+  const path=route({x:MERGE.g.W.x,y:MERGE.g.W.y},{x:c.g.E.x,y:c.g.E.y});
+  feed("verdict", `review PASS  ${head}  landing on ${c.id}`);
+  packet(path,"magenta",.95);
+  setTimeout(()=>land(c,head), 950);
+}
+function land(c,head){
+  let k=-1;
+  for(let i=0;i<c.cells.length;i++) if(c.cells[i].st===1&&!c.cells[i].dead){k=i;break;}
+  if(k<0) return;
+  c.cells[k].st=2; c.cells[k].rise=0; c.cells[k].glow=1; c.landed++;
+  const p=cellPos(c,k);
+  spark(p.x,p.y-ZH,"green",12);
+  c.beat=1;
+  const item=rnd(c.ck)[1];
+  S.ledger.unshift([hhmm(nowSec()), c.id, head, item.slice(0,40)]);
+  if(S.ledger.length>6) S.ledger.pop();
+  feed("merge", `${c.id}  ${head} landed  ${c.landed} of ${c.total} standing`);
+}
+function evHeartbeat(){
+  const c=rnd(COMPS.filter(x=>x.state===""));
+  if(!c) return;
+  c.beat=1;
+  feed("observed", `${c.sup}  checkpoint written  ${c.jobs.length} job${c.jobs.length===1?"":"s"} active`);
+}
+function evQuota(){
+  const m=rnd(MODELS.filter(x=>x.pct!=null));
+  m.pct=Math.min(99,m.pct+(Math.random()<.8?1:0));
+  const f=document.querySelector(`[data-fill="${m.id}"]`), p=document.querySelector(`[data-pct="${m.id}"]`);
+  if(f){ f.style.width=m.pct+"%";
+    f.className="fill"+(m.pct>=100?" crit":m.pct>=80?" warn":""); }
+  if(p) p.textContent=m.pct+"%";
+  if(Math.random()<.25) feed("quota", `${m.name.toLowerCase()}  ${m.pct}% of the 5-hour window`);
+}
+
+const STREAM=[[evWrite,44],[evCommit,7],[evDispatch,6],[evFinish,13],
+              [evVerdict,14],[evHeartbeat,11],[evQuota,5]];
+function fire(){
+  let r=Math.random()*100;
+  for(const [fn,wt] of STREAM){ if((r-=wt)<0){ try{fn();}catch(e){} break; } }
+  setTimeout(fire, 620+Math.random()*900);
+}
+
+/* the collector tick: one observation pass, every two seconds */
+setInterval(()=>{
+  const d=$("#tickDot"); d.classList.add("on"); setTimeout(()=>d.classList.remove("on"),190);
+  S.sweep=0;
+  document.querySelectorAll(".al .sq").forEach(n=>{
+    n.classList.add("beat"); setTimeout(()=>n.classList.remove("beat"),340); });
+  COMPS.forEach(c=>c.jobs.forEach(j=>{
+    j.tr.shift(); j.tr.push(Math.random()<j.act ? 1+((Math.random()*3)|0) : 0); }));
+  hudCounts();
+},2000);
+
+/* ages and elapsed clocks advance on the minute */
+setInterval(()=>{
+  S.alerts.forEach(a=>{ a.age++; const n=document.querySelector(`[data-age="${a.id}"]`);
+    if(n&&!n.textContent.startsWith("just")) n.textContent=a.age+"m unresolved"; });
+  S.inbox.forEach(i=>{ i.age++; const n=document.querySelector(`[data-age="${i.id}"]`);
+    if(n) n.textContent=`waited ${i.age}m`; });
+  COMPS.forEach(c=>c.jobs.forEach(j=>j.min++));
+},60000);
+
+setInterval(()=>{ $("#clock").textContent=hhmmss(nowSec()); },1000);
+
+/* ══ hover: the plan answers what a plot's cells actually are ═════════ */
+const annot=$("#annot");
+function plotAt(mx,my){
+  for(const c of COMPS){
+    const G=c.g;
+    if(mx<G.W.x-20||mx>G.E.x+20||my<G.N.y-80||my>G.S.y+46) continue;
+    /* inside the diamond, in plan coordinates */
+    const dx=mx-c.cx, dy=my-c.cy;
+    if(Math.abs(dx)/((c.cols+c.rows)*HW/2) + Math.abs(dy)/((c.cols+c.rows)*HH/2) <= 1.25) return c;
+    if(my<G.N.y && my>G.N.y-80 && mx>G.N.x-30 && mx<G.N.x+330) return c;   // its beacon plate
+  }
+  return null;
+}
+cv.addEventListener("mousemove",e=>{
+  const r=cv.getBoundingClientRect(), sc=r.width/2560;
+  const mx=(e.clientX-r.left)/sc, my=(e.clientY-r.top)/sc;
+  const c=plotAt(mx,my);
+  if(c!==S.hover){ S.hover=c; showAnnot(c); }
+});
+cv.addEventListener("mouseleave",()=>{ S.hover=null; showAnnot(null); });
+function showAnnot(c){
+  if(!c){ annot.classList.remove("on"); return; }
+  const rows=c.ck.map(([st,txt])=>
+    `<div class="ck ${st}"><span class="s">${st==="landed"?"LANDED":st==="built"?"BUILT":"PLANNED"}</span><span>${txt}</span></div>`).join("");
+  const shown=c.ck.length, rest=c.total-shown;
+  annot.innerHTML=`<div class="ah"><span class="an">${c.name}</span>
+      <span class="am">${c.landed} landed · ${c.built} built · ${c.total} items · ${c.vel.toFixed(1)}/h</span></div>
+    ${rows}${rest>0?`<div class="more">+${rest} more items on the component ledger · ${c.sup} maintains this checklist</div>`:""}`;
+  const px=clamp(c.g.E.x+30, 40, 2560-472);
+  const py=clamp(c.g.N.y-40, 76, 1440-360);
+  annot.style.left=px+"px"; annot.style.top=py+"px";
+  annot.classList.add("on");
+}
+
+/* ══ Super+M / esc ════════════════════════════════════════════════════ */
+addEventListener("keydown",e=>{
+  if(e.key==="Escape"){
+    const s=$("#stage"); s.classList.toggle("away");
+    $("#awayNote").style.display = s.classList.contains("away") ? "flex" : "none";
+  }
+  if(e.key==="f"||e.key==="F") toggleFreeze();
+});
+
+/* ══ fit the 2560×1440 screen to whatever window opens it ═════════════ */
+function fit(){ $("#stage").style.setProperty("--s",
+  Math.min(innerWidth/2560, innerHeight/1440).toFixed(4)); }
+addEventListener("resize",fit); fit();
+
+/* ══ go ═══════════════════════════════════════════════════════════════ */
+renderAlerts(); renderInbox(); renderDock(); hudCounts();
+[["observed","wt/api-32  head 4b1e9c2  +3 files  ledger-write-guard"],
+ ["observed","sup·corpus  checkpoint written  2 jobs active"],
+ ["anomaly", "pid 41180 codex  no slot, no minted id  writes refused"],
+ ["anomaly", "sup·engine  no write for 14m, 0 jobs  stalled by rule"],
+ ["merge",   "corpus  9f2a41c landed  19 of 31 standing"],
+ ["quota",   "codex astra  62% of the 5-hour window"]
+].forEach(([k,b])=>feed(k,b));
+$("#clock").textContent=hhmmss(nowSec());
+requestAnimationFrame(frame);
+setTimeout(fire,900);
+</script>
+</body>
+</html>

@@ -1,0 +1,1841 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>foreman — constellation</title>
+<style>
+/* ═══ Everforest dark · Omarchy tokens ═══════════════════════════════════
+   Every hue below is a token. A re-theme is a swap of these fourteen lines;
+   the canvas reads them back out of the custom properties at boot.        */
+:root{
+  --background:#2d353b; --dark_background:#21272c; --darker_background:#181d20;
+  --lighter_background:#343f44; --foreground:#d3c6aa; --light_foreground:#9da9a0;
+  --dark_foreground:#4f585e; --muted:#475258; --selection:#3d484d;
+  --accent:#7fbbb3; --red:#e67e80; --yellow:#dbbc7f; --orange:#e09d7f;
+  --green:#a7c080; --cyan:#83c092; --blue:#7fbbb3; --magenta:#d699b6;
+
+  /* vendor identity, held apart from the theme: these four are the models'
+     own brand colours, not Everforest hues, so a re-theme leaves them alone.
+     grok is black — on a dark field it is drawn as a black body with a pale
+     edge, and model_grok_ink is that edge wherever a line or glyph must read. */
+  --model_claude:#d97757; --model_codex:#10a37f;
+  --model_muse:#6b9fe8;   --model_grok:#0b0d10; --model_grok_ink:#e6e3dd;
+
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"DejaVu Sans Mono",monospace;
+  --ease:cubic-bezier(.23,1,.32,1);
+  --r:3px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:#000;overflow:hidden}
+body{font-family:var(--mono);font-size:13px;color:var(--foreground);
+  -webkit-font-smoothing:antialiased;font-variant-ligatures:none}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+
+/* the mock is one 2560×1440 screen, scaled into whatever window opens it */
+.stage{position:absolute;top:50%;left:50%;width:2560px;height:1440px;--s:1;
+  transform:translate(-50%,-50%) scale(var(--s));transform-origin:50% 50%;
+  background:var(--darker_background);overflow:hidden}
+
+#sky{position:absolute;left:0;top:0;width:2560px;height:1440px}
+.grain{position:absolute;inset:0;pointer-events:none;opacity:.055;mix-blend-mode:overlay;
+  background-repeat:repeat}
+.vig{position:absolute;inset:0;pointer-events:none;
+  background:radial-gradient(120% 90% at 50% 46%,rgba(0,0,0,0) 42%,rgba(0,0,0,.42) 78%,rgba(0,0,0,.72) 100%)}
+
+/* ═══ HUD chrome ══════════════════════════════════════════════════════════ */
+.hud{position:absolute;inset:0;pointer-events:none;transition:opacity .28s var(--ease)}
+.hud>*{pointer-events:auto}
+.stage.watch .hud{opacity:0;pointer-events:none}
+
+.topbar{position:absolute;left:0;right:0;top:0;height:56px;display:flex;align-items:center;
+  gap:22px;padding:0 32px;background:linear-gradient(180deg,rgba(24,29,32,.94),rgba(24,29,32,.55) 70%,rgba(24,29,32,0));
+  font-size:13px;color:var(--light_foreground)}
+.brand{font-size:19px;color:var(--accent);letter-spacing:.22em}
+.brand em{font-style:normal;color:var(--dark_foreground)}
+.topbar .div{width:1px;height:18px;background:var(--selection)}
+.topbar .k{color:var(--foreground)}
+.topbar .warn{color:var(--yellow)}
+.topbar .bad{color:var(--red)}
+.topbar .right{margin-left:auto;display:flex;align-items:center;gap:22px}
+.pulse{width:7px;height:7px;border-radius:50%;background:var(--dark_foreground);
+  transition:background .1s linear,box-shadow .5s var(--ease)}
+.pulse.on{background:var(--accent);box-shadow:0 0 0 5px rgba(127,187,179,.16)}
+.stage.frozen .pulse{background:var(--red)}
+
+.col{position:absolute;top:76px;width:452px;display:flex;flex-direction:column;gap:12px}
+.colL{left:32px} .colR{right:32px}
+.ch{display:flex;align-items:center;gap:12px;font-size:11px;letter-spacing:.22em;
+  color:var(--light_foreground);opacity:.8;margin-bottom:-2px}
+.ch .rule{flex:1;height:1px;background:linear-gradient(90deg,var(--selection),transparent)}
+.ch .n{opacity:.75;letter-spacing:.08em}
+
+.pane{background:rgba(24,29,32,.78);border:1px solid var(--selection);border-radius:var(--r);
+  backdrop-filter:blur(9px) saturate(.9);-webkit-backdrop-filter:blur(9px) saturate(.9)}
+
+/* alerts — they sit on the glass and burn */
+.alert{position:relative;display:flex;align-items:flex-start;gap:13px;padding:13px 15px 13px 17px;
+  border:1px solid rgba(230,126,128,.34);border-left:2px solid var(--red);
+  background:rgba(230,126,128,.06);border-radius:var(--r);
+  backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);
+  transition:opacity .3s var(--ease),transform .3s var(--ease),max-height .34s var(--ease),
+             padding .3s var(--ease),margin .3s var(--ease),border-color .3s,background .3s}
+.alert.orange{border-color:rgba(224,157,127,.34);border-left-color:var(--orange);
+  background:rgba(224,157,127,.055)}
+.alert .body{flex:1;min-width:0}
+.alert .t{font-size:13.5px;color:var(--foreground);line-height:1.4}
+.alert .m{margin-top:6px;font-size:11.5px;color:var(--light_foreground);opacity:.85;
+  display:flex;gap:9px;align-items:center}
+.alert .m .sep{color:var(--dark_foreground)}
+.alert .m .loc{color:var(--red)}
+.alert.orange .m .loc{color:var(--orange)}
+.alert .act{align-self:center}
+.alert.ok{border-color:rgba(167,192,128,.34);border-left-color:var(--green);background:rgba(167,192,128,.06)}
+.alert.ok .m .loc{color:var(--green)}
+.alert.gone{opacity:0;transform:translateY(-6px);max-height:0;padding-top:0;padding-bottom:0;
+  margin-top:-12px;border-width:0;overflow:hidden}
+
+.btn{font-size:12px;padding:6px 13px;border-radius:var(--r);border:1px solid var(--muted);
+  color:var(--light_foreground);white-space:nowrap;
+  transition:color .14s,border-color .14s,background .14s}
+@media (hover:hover) and (pointer:fine){
+  .btn:hover{color:var(--foreground);border-color:var(--light_foreground);background:rgba(211,198,170,.06)}
+  .btn.acc:hover{border-color:var(--accent);background:rgba(127,187,179,.11)}
+  .btn.dgr:hover{border-color:var(--red);background:rgba(230,126,128,.11)}
+}
+.btn.acc{border-color:rgba(127,187,179,.5);color:var(--accent)}
+.btn.dgr{border-color:rgba(230,126,128,.45);color:var(--red)}
+.btn[disabled]{opacity:.38;pointer-events:none}
+
+/* inbox — the few things only he can decide */
+.dec{padding:15px 17px 14px;border-radius:var(--r);
+  background:rgba(33,39,44,.82);border:1px solid var(--selection);border-left:2px solid var(--yellow);
+  backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);
+  transition:opacity .3s var(--ease),transform .3s var(--ease),max-height .36s var(--ease),
+             padding .3s var(--ease),margin .3s var(--ease),border-color .3s}
+.dec .head{display:flex;align-items:center;gap:10px;font-size:11px;letter-spacing:.14em;
+  color:var(--yellow);opacity:.95}
+.dec .head .from{margin-left:auto;letter-spacing:.02em;color:var(--light_foreground);opacity:.75}
+.dec .q{margin-top:10px;font-size:14.5px;line-height:1.5;color:var(--foreground)}
+.dec .rec{margin-top:11px;padding-left:12px;border-left:1px solid var(--muted);
+  font-size:12px;line-height:1.62;color:var(--light_foreground)}
+.dec .rec b{font-weight:400;color:var(--accent)}
+.dec .rec .lead{opacity:.7}
+.dec .foot{display:flex;align-items:center;gap:8px;margin-top:13px}
+.dec .age{margin-left:auto;font-size:11.5px;color:var(--light_foreground);opacity:.8}
+.dec.done{border-left-color:var(--green)}
+.dec.gone{opacity:0;transform:translateY(-6px);max-height:0;padding-top:0;padding-bottom:0;
+  margin-top:-12px;border-width:0;overflow:hidden}
+
+/* slots + quota */
+.mrow{display:grid;grid-template-columns:12px 1fr;gap:12px;padding:12px 14px;
+  border-bottom:1px solid rgba(61,72,77,.5)}
+.mrow:last-of-type{border-bottom:0}
+.mrow .swatch{width:8px;height:8px;margin-top:5px;border-radius:2px}
+.mrow .l1{display:flex;align-items:baseline;gap:10px}
+.mrow .nm{font-size:13.5px;color:var(--foreground)}
+.mrow .role{font-size:11px;color:var(--light_foreground);opacity:.7}
+.mrow .slots{margin-left:auto;display:flex;align-items:center;gap:6px;font-size:12px;
+  color:var(--light_foreground)}
+.mrow .slots b{font-weight:400;color:var(--foreground)}
+.pips{display:flex;gap:3px}
+.pip{width:9px;height:9px;border:1px solid var(--muted);border-radius:1px;
+  transition:background .25s var(--ease),border-color .25s var(--ease)}
+.pip.on{background:currentColor;border-color:currentColor}
+.meter{position:relative;height:5px;margin-top:10px;background:var(--darker_background);
+  border:1px solid rgba(71,82,88,.7);border-radius:1px}
+.meter .fill{position:absolute;left:0;top:0;bottom:0;background:var(--green);
+  transition:width .5s var(--ease),background .3s}
+.meter .fill.warn{background:var(--yellow)} .meter .fill.crit{background:var(--red)}
+.meter .tick{position:absolute;top:-4px;bottom:-4px;width:1px;background:var(--light_foreground);opacity:.6}
+.meter .tick b{position:absolute;top:-15px;left:-8px;font-size:9.5px;font-weight:400;
+  color:var(--light_foreground);opacity:.75;letter-spacing:.04em}
+.nometer{height:5px;margin-top:10px;border-top:1px dashed var(--muted);opacity:.6}
+.mmeta{display:flex;gap:10px;margin-top:8px;font-size:11px;color:var(--light_foreground);opacity:.82}
+.mmeta .pct{color:var(--foreground);opacity:1}
+.mmeta .r{margin-left:auto}
+
+.freeze{display:flex;align-items:center;gap:16px;padding:16px 18px;border-radius:var(--r);
+  background:rgba(33,39,44,.82);border:1px solid var(--selection);
+  backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px);
+  transition:border-color .3s,background .3s}
+.freeze .fd{width:9px;height:9px;border-radius:50%;background:var(--green);flex:none}
+.freeze .fs{font-size:14px;display:block;color:var(--foreground)}
+.freeze .fx{display:block;font-size:11px;color:var(--light_foreground);opacity:.85;margin-top:5px;
+  line-height:1.5}
+.freeze .fbtn{font-size:13px;letter-spacing:.14em;padding:10px 20px;
+  border:1px solid rgba(230,126,128,.5);color:var(--red);border-radius:var(--r);
+  transition:background .14s,border-color .14s,color .14s}
+.stage.frozen .freeze{border-color:rgba(230,126,128,.42);background:rgba(230,126,128,.08)}
+.stage.frozen .freeze .fd{background:var(--red)}
+.stage.frozen .freeze .fs{color:var(--red)}
+.stage.frozen .freeze .fbtn{border-color:rgba(127,187,179,.5);color:var(--accent)}
+
+.mass{padding:14px 16px;border-radius:var(--r);background:rgba(33,39,44,.82);
+  border:1px solid var(--selection);backdrop-filter:blur(9px);-webkit-backdrop-filter:blur(9px)}
+.mass .big{font-size:26px;color:var(--foreground);letter-spacing:.02em}
+.mass .big i{font-style:normal;color:var(--dark_foreground);font-size:19px}
+.mass .sub{font-size:11.5px;color:var(--light_foreground);opacity:.85;margin-top:6px}
+.mass .bar{position:relative;height:6px;margin-top:11px;background:var(--darker_background);
+  border:1px solid rgba(71,82,88,.7);border-radius:1px;overflow:hidden}
+.mass .bar i{position:absolute;left:0;top:0;bottom:0;transition:width .55s var(--ease)}
+.mass .bar .b{background:rgba(127,187,179,.34)} .mass .bar .l{background:var(--green)}
+
+/* collector ledger, under the merge rail */
+.feed{position:absolute;left:560px;top:1240px;width:1420px;height:150px;overflow:hidden;
+  font-size:12px;line-height:26px;color:var(--light_foreground);
+  -webkit-mask-image:linear-gradient(180deg,transparent,#000 24%);
+  mask-image:linear-gradient(180deg,transparent,#000 24%)}
+.feed div{display:flex;gap:14px;white-space:nowrap;animation:fslide .34s var(--ease)}
+@keyframes fslide{from{opacity:0;transform:translateY(7px)}to{opacity:1;transform:none}}
+.feed .ts{color:var(--dark_foreground)}
+.feed .kd{width:78px;flex:none;letter-spacing:.06em}
+.feed .kd.obs{color:var(--light_foreground);opacity:.7}
+.feed .kd.wr{color:var(--accent)} .feed .kd.mg{color:var(--green)}
+.feed .kd.an{color:var(--red)} .feed .kd.qu{color:var(--yellow)}
+.feed .kd.dp{color:var(--magenta)} .feed .kd.ow{color:var(--orange)}
+.feed b{font-weight:400;color:var(--foreground)}
+
+.status{position:absolute;left:0;right:0;bottom:0;height:44px;display:flex;align-items:center;
+  gap:18px;padding:0 32px;font-size:11.5px;color:var(--light_foreground);
+  background:linear-gradient(0deg,rgba(24,29,32,.94),rgba(24,29,32,0));letter-spacing:.02em}
+.status .sep{color:var(--dark_foreground)}
+.status .right{margin-left:auto;display:flex;gap:16px;opacity:.75}
+.status kbd{font:inherit;border:1px solid var(--muted);border-radius:2px;padding:1px 6px;
+  color:var(--light_foreground)}
+
+/* key chips — the Omarchy menu convention, printed on the thing itself */
+.kc{display:inline-block;min-width:17px;padding:1px 5px;border:1px solid var(--muted);
+  border-radius:2px;font-size:10px;line-height:1.4;letter-spacing:.1em;text-align:center;
+  color:var(--light_foreground);background:rgba(24,29,32,.7);flex:none;
+  transition:border-color .12s,color .12s,background .12s}
+.kc.hot{border-color:var(--accent);color:var(--accent);background:rgba(127,187,179,.16)}
+.ch .kc{margin-left:2px}
+.alert .act,.dec .foot .btn{position:relative}
+.btnrow{display:flex;align-items:center;gap:6px}
+
+/* overlays: the swarm queue and the cheat sheet */
+.ov{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);z-index:20;
+  background:rgba(24,29,32,.96);border:1px solid var(--selection);border-radius:var(--r);
+  box-shadow:0 24px 90px rgba(0,0,0,.6);padding:26px 30px 24px}
+.ov h2{font:inherit;font-size:13px;letter-spacing:.24em;color:var(--accent);font-weight:400}
+.ov .sub{font-size:11.5px;color:var(--light_foreground);opacity:.75;margin-top:7px}
+.ov table{border-collapse:collapse;margin-top:18px;font-size:12px;width:100%}
+.ov th{text-align:left;font-weight:400;font-size:10px;letter-spacing:.2em;
+  color:var(--light_foreground);opacity:.6;padding:0 20px 8px 0;border-bottom:1px solid var(--selection)}
+.ov td{padding:7px 20px 7px 0;color:var(--light_foreground);
+  border-bottom:1px solid rgba(61,72,77,.4);white-space:nowrap}
+.ov td.n{color:var(--foreground)}
+.ov td.w{color:var(--yellow)}
+.ov tr.plan td{opacity:.62}
+.ov .swatch{display:inline-block;width:8px;height:8px;border-radius:2px;margin-right:7px;
+  vertical-align:-1px}
+#queueView{width:1180px}
+.press{display:flex;gap:26px;margin-top:22px;padding-top:18px;border-top:1px solid var(--selection)}
+.press .p{flex:1}
+.press .pn{font-size:12px;color:var(--foreground);display:flex;align-items:center;gap:8px}
+.press .pb{position:relative;height:6px;margin-top:9px;background:var(--darker_background);
+  border:1px solid rgba(71,82,88,.7);border-radius:1px;overflow:hidden}
+.press .pb i{position:absolute;left:0;top:0;bottom:0}
+.press .px{font-size:10.5px;color:var(--light_foreground);opacity:.8;margin-top:7px}
+#help{width:880px}
+.keys{display:grid;grid-template-columns:1fr 1fr;gap:9px 40px;margin-top:20px}
+.keys div{display:flex;align-items:baseline;gap:11px;font-size:12px;color:var(--light_foreground)}
+.keys div b{font-weight:400;color:var(--foreground)}
+#keyline{margin-left:auto;font-size:11.5px;color:var(--light_foreground);letter-spacing:.06em}
+#keyline.armed{color:var(--accent)} #keyline.dim{opacity:.55}
+
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{animation-duration:0ms!important;transition-duration:0ms!important}
+}
+</style>
+</head>
+<body>
+<div class="stage" id="stage">
+  <canvas id="sky" width="2560" height="1440" aria-hidden="true"></canvas>
+  <div class="grain" id="grain"></div>
+  <div class="vig"></div>
+
+  <div class="hud">
+    <div class="topbar">
+      <span class="brand">foreman<em>/</em>constellation</span>
+      <span class="div"></span>
+      <span><span class="k" id="tClock">14:07</span> · mon</span>
+      <span class="div"></span>
+      <span>orchestrator <span class="k">fable</span></span>
+      <span class="div"></span>
+      <span><span class="k" id="tComps">6</span> components · <span class="k" id="tJobs">6</span> jobs ·
+        <span class="k" id="tSlots">10/11</span> slots</span>
+      <span class="right">
+        <span class="bad" id="tAlerts">2 alerts</span>
+        <span class="warn" id="tWait">2 waiting on you</span>
+        <span class="div"></span>
+        <span id="tTick">collector 2s</span>
+        <span class="pulse" id="tPulse"></span>
+      </span>
+    </div>
+
+    <div class="col colL">
+      <div class="ch"><span>ALERTS</span><span class="rule"></span><span class="n" id="alN">2 floating</span><span class="kc">z_</span></div>
+      <div id="alerts" style="display:flex;flex-direction:column;gap:10px"></div>
+      <div class="ch" style="margin-top:14px"><span>WAITING ON YOU</span><span class="rule"></span>
+        <span class="n" id="inN">2 decisions</span><span class="kc">x_</span></div>
+      <div id="inbox" style="display:flex;flex-direction:column;gap:12px"></div>
+    </div>
+
+    <div class="col colR">
+      <div class="ch"><span>SLOTS &amp; QUOTA</span><span class="rule"></span><span class="n" id="swN">4 models</span><span class="kc">q</span></div>
+      <div class="pane" id="models"></div>
+      <div class="freeze">
+        <span class="fd"></span>
+        <span style="min-width:0">
+          <span class="fs" id="frzState">dispatch running</span>
+          <span class="fx" id="frzSub">launches may take slots · 10 sessions registered</span>
+        </span>
+        <span class="btnrow" style="margin-left:auto"><span class="kc">f</span>
+          <button class="fbtn" id="frzBtn">FREEZE</button></span>
+      </div>
+      <div class="ch" style="margin-top:14px"><span>PROJECT MASS</span><span class="rule"></span>
+        <span class="n">confirmed / merged</span></div>
+      <div class="mass">
+        <div class="big"><span id="mBuilt">70</span> <i>of</i> <span id="mTotal">116</span> <i>items built</i></div>
+        <div class="sub"><span id="mLanded">59</span> landed on main ·
+          <span id="mOpen">46</span> open · <span id="mPl">7</span> plausible, unconfirmed</div>
+        <div class="bar"><i class="b" id="mBarB"></i><i class="l" id="mBarL"></i></div>
+      </div>
+    </div>
+
+    <div class="feed" id="feed"></div>
+
+    <div class="status">
+      <span>collector tick <span id="sTick">2s</span></span><span class="sep">·</span>
+      <span id="sObs">observing 6 worktrees, 10 processes</span><span class="sep">·</span>
+      <span id="sMerge">merge queue 3 · 2 reviewers</span><span class="sep">·</span>
+      <span id="sDig">last digest 14:00</span>
+      <span class="right">
+        <span><span class="kc">q</span> queue</span>
+        <span><span class="kc">f</span> freeze</span>
+        <span><span class="kc">w</span> watch</span>
+        <span><span class="kc">?</span> keys</span>
+        <span><span class="kc">esc</span> back</span>
+      </span>
+      <span id="keyline" class="dim">press ? for keys</span>
+    </div>
+
+    <div class="ov" id="queueView" hidden role="dialog" aria-label="Swarm queue">
+      <h2>SWARM QUEUE</h2>
+      <div class="sub">Every job the foreman and its supervisors intend to run, in order.
+        A job is <b>planned</b> once its spec is written and <b>queued</b> once it is waiting
+        on a slot. Queue depth per model is slot pressure.</div>
+      <div id="qvBody"></div>
+    </div>
+
+    <div class="ov" id="help" hidden role="dialog" aria-label="Keys">
+      <h2>KEYS</h2>
+      <div class="sub">Everything on this panel is reachable without a mouse. Keys that are
+        always there are single; anything that comes and goes prints its own two-letter hint.</div>
+      <div class="keys">
+        <div><span class="kc">a</span><b>api</b> focus the component and open its detail</div>
+        <div><span class="kc">j</span>+<span class="kc">_</span><b>jobs</b> hint printed on each job label</div>
+        <div><span class="kc">c</span><b>corpus</b></div>
+        <div><span class="kc">k</span>+<span class="kc">_</span><b>reviewers</b> hint printed at the gate</div>
+        <div><span class="kc">r</span><b>reaper</b></div>
+        <div><span class="kc">z</span>+<span class="kc">_</span><b>alerts</b> runs the alert's action</div>
+        <div><span class="kc">i</span><b>ingestion</b></div>
+        <div><span class="kc">x</span>+<span class="kc">_</span><b>decisions</b> runs that button</div>
+        <div><span class="kc">e</span><b>engine</b></div>
+        <div><span class="kc">q</span><b>swarm queue</b> planned and queued, everywhere</div>
+        <div><span class="kc">m</span><b>merge desk</b></div>
+        <div><span class="kc">f</span><b>freeze</b> / thaw dispatch</div>
+        <div><span class="kc">?</span><b>this sheet</b></div>
+        <div><span class="kc">w</span><b>watch</b> hide the hud and just watch</div>
+        <div><span class="kc">esc</span><b>back out</b> hint, then overlay, then focus</div>
+        <div><span class="kc">super</span>+<span class="kc">m</span><b>close the panel</b></div>
+      </div>
+    </div>
+  </div>
+  <p class="sr" id="srLive" role="status" aria-live="polite"></p>
+</div>
+
+<script>
+"use strict";
+/* ══════════════════════════════════════════════════════════════════════════
+   foreman / concept B — the swarm as one living system.
+   Nothing on the canvas moves that an event did not cause. Ambient motion is
+   allowed only on things that are alive: a working job breathes, a component
+   turns at its own velocity, the collector's 2s tick sweeps the field.
+   ══════════════════════════════════════════════════════════════════════════ */
+const $=s=>document.querySelector(s), el=(t,c,x)=>{const n=document.createElement(t);
+  if(c)n.className=c; if(x!=null)n.textContent=x; return n;};
+const calm=matchMedia("(prefers-reduced-motion: reduce)").matches;
+const rnd=a=>a[Math.floor(Math.random()*a.length)];
+const clamp=(v,a,b)=>v<a?a:v>b?b:v;
+const TAU=Math.PI*2;
+
+/* ── colour tokens, read straight out of the CSS custom properties ─────── */
+const cs=getComputedStyle(document.documentElement);
+const C={};
+["background","dark_background","darker_background","lighter_background","foreground",
+ "light_foreground","dark_foreground","muted","selection","accent","red","yellow","orange",
+ "green","cyan","blue","magenta",
+ "model_claude","model_codex","model_muse","model_grok","model_grok_ink"]
+  .forEach(k=>C[k]=cs.getPropertyValue("--"+k).trim());
+const _rgb={};
+function rgba(hex,a){
+  let c=_rgb[hex]; if(!c){const n=parseInt(hex.slice(1),16);c=_rgb[hex]=[n>>16&255,n>>8&255,n&255];}
+  return "rgba("+c[0]+","+c[1]+","+c[2]+","+a+")";
+}
+/* Every model wears its vendor's own colour, and that colour is the ownership
+   cue everywhere: glyph, tether, plate edge, slot pip, quota row, legend.
+   MC = the body colour. MI = the ink: the colour a line, label or glow must
+   use to stay legible. They differ only for grok, whose body is black.      */
+const MC={"claude opus":C.model_claude,"codex astra":C.model_codex,
+          "grok 4.6":C.model_grok,"muse":C.model_muse};
+const MI={"claude opus":C.model_claude,"codex astra":C.model_codex,
+          "grok 4.6":C.model_grok_ink,"muse":C.model_muse};
+const isBlack=m=>m==="grok 4.6";
+const mc=m=>MC[m]||C.accent, mi=m=>MI[m]||C.accent;
+
+/* ══ state ════════════════════════════════════════════════════════════════
+   The story is 14:07 on a Monday. Engine's supervisor has been silent 14 min
+   while still holding its slot. Ingestion is halted on the same defect three
+   times. An unregistered codex process is running in ws9 with no slot and no
+   session id. Two decisions sit in the inbox.                              */
+const CX=1275, CY=630;                     /* the foreman sits at the origin */
+const S={
+  frozen:false, focus:null, hover:null, t:0, tickPhase:0, sweeps:[], min0:14*60+7, wall0:Date.now(),
+  comps:[
+    {id:"api",name:"api",sup:"sup·api",supModel:"claude opus",x:1275,y:320,
+     total:22,built:14,landed:11,plaus:2,vel:2.1,eta:"~4h left",state:"",R:82,
+     mx:1275,my:478,malign:"c",
+     ck:[["done","routes registered straight from the ledger schema"],
+         ["done","a write from an unknown session id is refused"],
+         ["done","job dispatch returns the worktree path"],
+         ["done","checkpoint read is the first act after relaunch"],
+         ["plaus","inbox resolve endpoint stamps the owner act"],
+         ["plaus","quota meter adapter reads the 5h window"],
+         ["open","digest endpoint serves the 14:00 paragraph"],
+         ["open","freeze refuses launches with a 409"]],
+     berths:[{a:215,side:"l"},{a:270,side:"c"},{a:325,side:"r"}],
+     jobs:[{n:"inbox-resolve-endpoint",m:"muse",w:"wt/api-31",min:6,to:25,b:0},
+           {n:"ledger-write-guard",m:"muse",w:"wt/api-32",min:17,to:30,b:1},
+           {n:"openapi-drift-check",m:"grok 4.6",w:"wt/api-33",min:2,to:20,b:2}]},
+
+    {id:"corpus",name:"corpus",sup:"sup·corpus",supModel:"claude opus",x:1739,y:550,
+     total:31,built:22,landed:19,plaus:1,vel:3.0,eta:"~3h left",state:"",R:88,
+     mx:1623,my:585,malign:"r",
+     ck:[["done","labels carry the reader and the moment of reading"],
+         ["done","second read disagrees on 4% of rows"],
+         ["done","label writes are refused without a reader id"],
+         ["plaus","dump export matches the ledger schema"],
+         ["open","sampling plan written on the component"]],
+     berths:[{a:300,side:"r"},{a:30,side:"r"}],
+     jobs:[{n:"label-second-read",m:"muse",w:"wt/corp-18",min:9,to:30,b:0}]},
+
+    {id:"reaper",name:"reaper",sup:"sup·reaper",supModel:"claude opus",x:1620,y:900,
+     total:12,built:3,landed:1,plaus:1,vel:0,eta:"waiting on you",state:"idle",R:70,
+     mx:1560,my:750,malign:"r",
+     ck:[["done","dead session leaves the roster in one tick"],
+         ["plaus","orphan worktree is detected, not removed"],
+         ["open","sweep runs on the collector clock"],
+         ["open","dead worktrees swept after two ticks"]],
+     berths:[{a:310,side:"r"},{a:0,side:"r"}],
+     jobs:[]},
+
+    {id:"ingestion",name:"ingestion",sup:"sup·ingestion",supModel:"claude opus",x:936,y:849,
+     total:18,built:9,landed:9,plaus:1,vel:0,eta:"dispatching stopped",state:"halt",R:76,
+     mx:1050,my:830,malign:"l",defect:"webhook destination",defects:3,
+     ck:[["done","source registry reads from the component ledger"],
+         ["done","replay is idempotent on a duplicate id"],
+         ["plaus","webhook destination resolves from config"],
+         ["open","backfill window is bounded"]],
+     berths:[{a:135,side:"l"}], jobs:[]},
+
+    {id:"engine",name:"engine",sup:"sup·engine",supModel:"claude opus",x:811,y:550,
+     total:24,built:15,landed:12,plaus:1,vel:0,eta:"stalled",state:"silent",R:84,
+     mx:760,my:310,malign:"l",silentFor:14,
+     ck:[["done","routing table read from the slot ledger"],
+         ["done","launch refuses a job with no worktree"],
+         ["done","session id minted before the process starts"],
+         ["plaus","timeout kills the child group, not the leader"],
+         ["open","frozen state survives a collector restart"],
+         ["open","relaunch replays the checkpoint"]],
+     berths:[{a:190,side:"c"},{a:315,side:"c"}], jobs:[]},
+
+    {id:"merge-desk",name:"merge-desk",sup:"merge desk",supModel:"claude opus",x:1808,y:1150,
+     total:9,built:7,landed:7,plaus:1,vel:1.1,eta:"~1h left",state:"gate",R:64,
+     short:"merge",mx:1808,my:1010,malign:"c",
+     ck:[["done","one queue for the whole swarm"],
+         ["done","every landing writes one merge ledger line"],
+         ["plaus","review rounds bounded at two"],
+         ["open","branch handoff frees the component"]],
+     berths:[], jobs:[]}
+  ],
+  /* the review gate: a rail the finished work has to cross to become landed */
+  gate:{y:1150, x0:590, x1:1990, qx:1060, qStep:40,
+    queue:[{c:"corpus",n:"label-index-rebuild"},{c:"api",n:"session-registry-read"},{c:"corpus",n:"dump-export-shape"}],
+    stations:[
+      {x:1230,name:"review·ledger-write-guard",m:"codex astra",w:"wt/merge-q",min:3,to:15,p:.42,item:{c:"api",n:"ledger-write-guard"}},
+      {x:1490,name:"review·label-second-read",m:"codex astra",w:"wt/merge-r",min:1,to:15,p:.12,item:{c:"corpus",n:"label-second-read"}}
+    ], landX:1670},
+  /* the process nobody launched: off the lattice, untethered, jittering */
+  rogue:{x:1962,y:236,alive:true,pid:41180,ws:9,jitter:0},
+  models:[
+    {id:"opus", name:"claude opus", role:"orchestrator · supervisors", run:4,grant:4, pct:41,
+     reset:"resets 17:00", dur:"avg supervisor 2h 41m · p90 4h 05m"},
+    {id:"astra",name:"codex astra", role:"reviewers",                  run:2,grant:2, pct:62,
+     reset:"resets 19:00", dur:"avg review 6 min · p90 13 min"},
+    {id:"grok", name:"grok 4.6",    role:"workers · fallback reviews", run:1,grant:2, pct:null,
+     proxy:"3.4 jobs/h", dur:"avg job 17 min · p90 31 min"},
+    {id:"muse", name:"muse",        role:"workers",                    run:3,grant:3, pct:null,
+     proxy:"5.1 jobs/h", dur:"avg job 14 min · p90 27 min"}
+  ],
+  alerts:[
+    {id:"a1",tone:"red",target:"engine",act:"relaunch",born:14,
+     t:"engine supervisor silent 14 min, still holding its opus slot",
+     m:"no jobs dispatched since 13:53 · last write 13:51"},
+    {id:"a2",tone:"orange",target:"rogue",act:"kill",born:3,
+     t:"unregistered codex process in ws9 — no slot, no session id",
+     m:"pid 41180 · 2 files written outside every worktree"}
+  ],
+  inbox:[
+    {id:"i1",kind:"MONEY",from:"orchestrator",born:23,
+     q:"Buy 2M extra Codex tokens so the review pool keeps two reviewers overnight?",
+     v:"recommends no",
+     r:"Grok 4.6 covers reviews until Monday at 3.4 jobs/h, and the Codex 5h window resets at 19:00. Nothing on the plan needs a second reviewer before the merge desk drains.",
+     btns:[["approve buy","acc"],["decline",""],["answer",""]]},
+    {id:"i2",kind:"SCOPE",from:"sup·reaper",born:6,
+     q:"Ship the reaper without the dead-worktree sweep?",
+     v:"recommends yes",
+     r:"The sweep is 40 minutes of work and nothing downstream reads stale worktrees. Cutting it drops reaper to 10 items and frees the second grok slot for the component sitting idle.",
+     btns:[["approve cut","acc"],["decline",""],["answer",""]]}
+  ]
+};
+const byId=id=>S.comps.find(c=>c.id===id);
+const JOBPOOL=[["session-registry-read","read the live roster out of the session registry"],
+  ["quota-meter-adapter","read the 5h window off the vendor meter"],
+  ["checkpoint-restore","replay a supervisor checkpoint on relaunch"],
+  ["slot-refusal-path","refuse a launch that has no slot to take"],
+  ["stall-rule-timer","raise a stall the moment a supervisor goes quiet"],
+  ["worktree-allocator","hand every job its own worktree, never a shared one"],
+  ["verdict-file-parser","read the reviewer's verdict file into the ledger"],
+  ["roster-diff","diff the observed processes against the declared roster"],
+  ["tick-budget-guard","keep one collector tick inside its 2s budget"]];
+
+/* ══ the plan ═════════════════════════════════════════════════════════════
+   What each supervisor intends to do next. A job is planned once its spec is
+   written, queued once it is waiting on a slot, running once it holds one.
+   The lane under each body shows that order; `q` opens it for the whole swarm. */
+const PLAN={
+  api:{started:"11:02",proj:"~18:10",ttl:12,
+    queued:[{n:"digest-endpoint",m:"muse",waited:3,
+             spec:"serve the 14:00 digest paragraph over http"}],
+    planned:[{n:"freeze-409-path",spec:"refuse a launch with a 409 while dispatch is frozen"},
+             {n:"owner-act-stamp",spec:"stamp the owner on every inbox resolution"}]},
+  corpus:{started:"09:40",proj:"~17:20",ttl:9,
+    queued:[{n:"sampling-plan",m:"grok 4.6",waited:7,
+             spec:"write the sampling plan onto the component ledger"}],
+    planned:[{n:"dump-export-shape",spec:"prove the dump export matches the ledger schema"}]},
+  reaper:{started:"12:55",proj:"~16:40",ttl:21,
+    queued:[{n:"sweep-on-collector-clock",m:"muse",waited:12,
+             spec:"run the sweep on the collector clock, not a timer of its own"}],
+    planned:[{n:"orphan-quarantine",spec:"quarantine an orphan worktree instead of removing it"}]},
+  ingestion:{started:"10:18",proj:"held",ttl:16,
+    queued:[],
+    planned:[{n:"webhook-destination-fix",spec:"resolve the webhook destination from config, once"},
+             {n:"backfill-window-bound",spec:"bound the backfill window at both ends"}]},
+  engine:{started:"08:30",proj:"held",ttl:14,
+    queued:[{n:"frozen-state-restart",m:"muse",waited:14,
+             spec:"carry the frozen state across a collector restart"},
+            {n:"checkpoint-replay",m:"grok 4.6",waited:14,
+             spec:"replay the checkpoint as the first act after relaunch"}],
+    planned:[]},
+  "merge-desk":{started:"13:10",proj:"~15:05",ttl:6,queued:[],planned:[],
+    laneNote:"its queue is the gate"}
+};
+Object.keys(PLAN).forEach(id=>Object.assign(byId(id),PLAN[id]));
+
+/* what each running job is actually doing, and who put it there */
+const SPECS={
+  "inbox-resolve-endpoint":"resolve an inbox decision and stamp it as an owner act",
+  "ledger-write-guard":"refuse a ledger write from an unknown session id",
+  "openapi-drift-check":"catch drift between the routes and the published schema",
+  "label-second-read":"second-read the label corpus and record the disagreement"
+};
+
+/* per-component and per-job runtime fields the picture reads every frame */
+S.comps.forEach(c=>{
+  c.phase=Math.random()*TAU; c.heat=0; c.flash=new Float32Array(c.total);
+  c.ignite=0; c.landFlash=0;
+  c.queued=c.queued||[]; c.planned=c.planned||[];
+  c.jobs.forEach(j=>{
+    j.beat=Math.random()*TAU; j.act=0;
+    j.spec=j.spec||SPECS[j.n]||"work the spec on the component ledger";
+    j.by=j.by||c.sup; j.at=j.at||"13:50";
+    j.last=j.last||"wrote 2 files in "+j.w; j.lastAgo=j.lastAgo==null?4:j.lastAgo;
+    j.f1m=j.f1m==null?3+Math.floor(Math.random()*6):j.f1m;
+  });
+});
+S.gate.stations.forEach((st,i)=>{
+  st.by="merge desk"; st.at="14:04"; st.lastAgo=3; st.f1m=2+i;
+  st.last="read "+(3+i)+" files in "+st.w;
+});
+
+/* ══ keys ═════════════════════════════════════════════════════════════════
+   The panel is worked from the keyboard. Things that are always there get one
+   key, printed on them. Things that come and go — jobs, reviewers, alerts,
+   inbox actions — get a two-letter hint assigned the moment they appear and
+   printed on their own label, so the key is never something to remember.   */
+const COMPKEY={api:"a",corpus:"c",reaper:"r",ingestion:"i",engine:"e","merge-desk":"m"};
+S.comps.forEach(c=>c.key=COMPKEY[c.id]);
+const HINTLETTERS="asdfghjkl".split("");
+const HINTS={j:[],k:[],z:[],x:[]};   /* j jobs · k reviewers · z alerts · x inbox */
+Object.keys(HINTS).forEach(p=>HINTS[p]=HINTLETTERS.map(l=>p+l));
+const taken=new Set();
+function takeHint(prefix){
+  const h=HINTS[prefix].find(x=>!taken.has(x));
+  if(h) taken.add(h);
+  return h||prefix+"?";
+}
+function freeHint(h){ taken.delete(h); }
+S.comps.forEach(c=>c.jobs.forEach(j=>j.key=takeHint("j")));
+S.gate.stations.forEach(st=>st.key=takeHint("k"));
+S.alerts.forEach(a=>a.key=takeHint("z"));
+S.inbox.forEach(it=>it.keys=it.btns.map(()=>takeHint("x")));
+S.pending="";      /* the half-typed hint */
+S.sel=null;        /* {kind:"comp"|"job"|"rev", id, cid} — focused thing */
+S.overlay=null;    /* "queue" | "help" | null */
+
+/* ══ canvas ═══════════════════════════════════════════════════════════════ */
+const cv=$("#sky"), ctx=cv.getContext("2d");
+ctx.lineJoin="round"; ctx.lineCap="round";
+const F=(sz,w)=>`${w?w+" ":""}${sz}px ui-monospace,SFMono-Regular,Menlo,Consolas,monospace`;
+
+function txt(s,x,y,o){
+  o=o||{};
+  ctx.font=F(o.sz||13);
+  ctx.textAlign=o.align||"left"; ctx.textBaseline="alphabetic";
+  if("letterSpacing" in ctx) ctx.letterSpacing=o.ls||"0px";
+  ctx.fillStyle=rgba(o.col||C.foreground,o.a==null?1:o.a);
+  ctx.fillText(s,x,y);
+  if("letterSpacing" in ctx) ctx.letterSpacing="0px";
+}
+function measure(s,sz,ls){
+  ctx.font=F(sz); if("letterSpacing" in ctx) ctx.letterSpacing=ls||"0px";
+  const w=ctx.measureText(s).width;
+  if("letterSpacing" in ctx) ctx.letterSpacing="0px";
+  return w;
+}
+function rrect(x,y,w,h,r){
+  ctx.beginPath();
+  ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r);
+  ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+}
+/* cached radial-gradient sprites: bloom without shadowBlur */
+const sprites=new Map();
+function glowSprite(hex,r){
+  const k=hex+"|"+r; let s=sprites.get(k);
+  if(!s){
+    s=document.createElement("canvas"); s.width=s.height=r*2;
+    const g=s.getContext("2d"), gr=g.createRadialGradient(r,r,0,r,r,r);
+    gr.addColorStop(0,rgba(hex,.95)); gr.addColorStop(.22,rgba(hex,.42));
+    gr.addColorStop(.55,rgba(hex,.13)); gr.addColorStop(1,rgba(hex,0));
+    g.fillStyle=gr; g.fillRect(0,0,r*2,r*2); sprites.set(k,s);
+  }
+  return s;
+}
+function bloom(x,y,r,hex,a){
+  if(a<=0.004) return;
+  ctx.globalCompositeOperation="lighter"; ctx.globalAlpha=Math.min(1,a);
+  ctx.drawImage(glowSprite(hex,r),x-r,y-r);
+  ctx.globalAlpha=1; ctx.globalCompositeOperation="source-over";
+}
+
+/* ── the static field: grid, backlog stars, the ring the hubs sit on ────── */
+const bg=document.createElement("canvas"); bg.width=2560; bg.height=1440;
+(function paintField(){
+  const g=bg.getContext("2d");
+  const rad=g.createRadialGradient(CX,CY,60,CX,CY,1250);
+  rad.addColorStop(0,C.dark_background); rad.addColorStop(.55,"#1c2226"); rad.addColorStop(1,C.darker_background);
+  g.fillStyle=rad; g.fillRect(0,0,2560,1440);
+  /* the backlog: one faint star per unbuilt item in the whole project, scattered */
+  let seed=20260908;
+  const rr=()=>((seed=(seed*1103515245+12345)&0x7fffffff)/0x7fffffff);
+  for(let i=0;i<420;i++){
+    const a=rr()*TAU, d=180+rr()*rr()*1120;
+    const x=CX+Math.cos(a)*d*1.32, y=CY+Math.sin(a)*d*.86;
+    if(x<0||x>2560||y<0||y>1440) continue;
+    g.fillStyle=rgba(C.light_foreground,.03+rr()*.09);
+    g.fillRect(x,y,rr()>.9?2:1,rr()>.9?2:1);
+  }
+  /* polar graticule: three ellipses at the hub radii, spokes every 15° */
+  g.strokeStyle=rgba(C.muted,.16); g.lineWidth=1;
+  [[300,190],[480,310],[700,450],[930,600]].forEach(([rx,ry])=>{
+    g.beginPath(); g.ellipse(CX,CY,rx,ry,0,0,TAU); g.stroke();
+  });
+  g.strokeStyle=rgba(C.muted,.09);
+  for(let i=0;i<24;i++){
+    const a=i*TAU/24;
+    g.beginPath(); g.moveTo(CX+Math.cos(a)*140,CY+Math.sin(a)*90);
+    g.lineTo(CX+Math.cos(a)*1400,CY+Math.sin(a)*900); g.stroke();
+  }
+  /* the merge rail */
+  const G=S.gate;
+  g.strokeStyle=rgba(C.muted,.5); g.lineWidth=1;
+  g.beginPath(); g.moveTo(G.x0,G.y); g.lineTo(G.x1,G.y); g.stroke();
+  g.strokeStyle=rgba(C.muted,.34);
+  for(let x=G.x0;x<=G.x1;x+=19){ g.beginPath(); g.moveTo(x,G.y-5); g.lineTo(x,G.y+5); g.stroke(); }
+})();
+
+/* film grain, generated once — no network, no asset */
+(function grain(){
+  const n=document.createElement("canvas"); n.width=n.height=140;
+  const g=n.getContext("2d"), im=g.createImageData(140,140);
+  for(let i=0;i<im.data.length;i+=4){
+    const v=Math.random()*255|0;
+    im.data[i]=im.data[i+1]=im.data[i+2]=v; im.data[i+3]=26;
+  }
+  g.putImageData(im,0,0);
+  $("#grain").style.backgroundImage="url("+n.toDataURL()+")";
+})();
+
+/* ══ motes: every packet of work that physically moves ═══════════════════ */
+const motes=[];
+function mote(o){
+  if(calm){ if(o.arrive) o.arrive(); return; }
+  o.t=0; o.sp=o.sp||1.6; o.size=o.size||2.6; o.trail=o.trail||10; motes.push(o);
+}
+function moteAt(m,u){
+  const v=1-u;
+  return [v*v*m.x0+2*v*u*m.cx+u*u*m.x1, v*v*m.y0+2*v*u*m.cy+u*u*m.y1];
+}
+function arc(x0,y0,x1,y1,bend){
+  const mx=(x0+x1)/2, my=(y0+y1)/2, dx=x1-x0, dy=y1-y0;
+  return [mx-dy*bend, my+dx*bend];
+}
+
+/* ══ the picture ═════════════════════════════════════════════════════════ */
+function ringGeom(c,i){
+  const step=TAU/c.total, gap=Math.min(step*.28,.05);
+  return [c.phase+i*step+gap, c.phase+(i+1)*step-gap];
+}
+function drawComponent(c){
+  const dead=c.state==="silent", halt=c.state==="halt", idle=c.state==="idle";
+  const live=!dead&&!halt;
+  const hue=dead?C.dark_foreground:halt?C.red:idle?C.light_foreground:C.accent;
+  const rOut=c.R, rIn=c.R-19;
+
+  /* mass: the fraction of the component that has actually landed on main.
+     It is drawn as weight — a dense core and a thick accreted shell — so how
+     much of this thing stands is readable across the room, not just how full
+     the ring is. A light component is a hoop; a heavy one is a body.       */
+  const mass=c.landed/c.total;
+
+  /* halo — a component only glows while somebody is writing into it */
+  if(live&&!S.frozen) bloom(c.x,c.y,c.R*3.0,c.id==="merge-desk"?C.green:C.accent,.09+c.heat*.26);
+  if(!dead) bloom(c.x,c.y,c.R*2.2,C.green,.05+mass*.16);
+  if(c.ignite>0) bloom(c.x,c.y,c.R*3.4,C.green,c.ignite*.5);
+  if(c.landFlash>0) bloom(c.x,c.y,c.R*2.2,C.green,c.landFlash*.35);
+
+  /* the accreted shell: its thickness is the landed fraction */
+  ctx.lineWidth=1+mass*9;
+  ctx.strokeStyle=rgba(dead?C.dark_foreground:C.green,dead?.14:.16+mass*.14);
+  ctx.beginPath(); ctx.arc(c.x,c.y,c.R+20+mass*4,0,TAU); ctx.stroke();
+
+  /* the checklist ring: one segment per item on the component's ledger.
+     landed = merged and hard · built = confirmed, soft · plausible = claimed,
+     unverified · the rest is open ground. */
+  for(let i=0;i<c.total;i++){
+    const [a0,a1]=ringGeom(c,i);
+    let col,a,cap=false;
+    if(i<c.landed){ col=dead?C.dark_foreground:C.green; a=dead?.5:.92; cap=!dead; }
+    else if(i<c.built){ col=dead?C.dark_foreground:C.accent; a=dead?.34:.42; }
+    else if(i<c.built+c.plaus){ col=halt?C.red:C.yellow; a=.30; }
+    else { col=C.dark_foreground; a=.30; }
+    const f=c.flash[i];
+    ctx.beginPath();
+    ctx.arc(c.x,c.y,rOut,a0,a1); ctx.arc(c.x,c.y,rIn,a1,a0,true); ctx.closePath();
+    ctx.fillStyle=rgba(col,Math.min(1,a+f*.65)); ctx.fill();
+    if(cap){
+      ctx.beginPath(); ctx.arc(c.x,c.y,rOut+3.5,a0,a1);
+      ctx.lineWidth=2; ctx.strokeStyle=rgba(C.green,.72); ctx.stroke();
+    }
+    if(f>.02){
+      const am=(a0+a1)/2;
+      bloom(c.x+Math.cos(am)*(rOut-9),c.y+Math.sin(am)*(rOut-9),34,col,f*.7);
+    }
+  }
+
+  /* core */
+  const coreR=rIn-11;
+  ctx.beginPath(); ctx.arc(c.x,c.y,coreR,0,TAU);
+  ctx.fillStyle=rgba(C.darker_background,.92); ctx.fill();
+  ctx.lineWidth=1; ctx.strokeStyle=rgba(hue,dead?.35:.55); ctx.stroke();
+  /* the settled mass inside the core, sized by what has landed */
+  const mr=coreR*(.22+.78*mass);
+  const mg=ctx.createRadialGradient(c.x,c.y-mr*.3,0,c.x,c.y,mr);
+  mg.addColorStop(0,rgba(dead?C.dark_foreground:C.green,dead?.10:.26));
+  mg.addColorStop(1,rgba(dead?C.dark_foreground:C.green,dead?.04:.07));
+  ctx.fillStyle=mg; ctx.beginPath(); ctx.arc(c.x,c.y,mr,0,TAU); ctx.fill();
+  ctx.lineWidth=1; ctx.strokeStyle=rgba(dead?C.dark_foreground:C.green,dead?.16:.34);
+  ctx.stroke();
+  const nameCol=dead?C.dark_foreground:halt?C.red:C.foreground;
+  const nm=c.short||c.name;
+  const fit=Math.min(17,(coreR*2-12)/(nm.length*.62));
+  txt(nm,c.x,c.y+fit*.35,{sz:fit,align:"center",ls:".08em",col:nameCol});
+
+  /* halted: a clamp across the ring, and the defect that put it there */
+  if(halt){
+    ctx.lineWidth=5; ctx.strokeStyle=rgba(C.red,.8);
+    ctx.beginPath(); ctx.arc(c.x,c.y,rOut+34,-2.55,-1.75); ctx.stroke();
+    ctx.beginPath(); ctx.arc(c.x,c.y,rOut+34,.59,1.39); ctx.stroke();
+    bloom(c.x,c.y,c.R*2.4,C.red,.10);
+  }
+  if(dead){
+    ctx.lineWidth=2; ctx.strokeStyle=rgba(C.red,.55);
+    ctx.beginPath();
+    ctx.moveTo(c.x-rOut*.72,c.y-rOut*.72); ctx.lineTo(c.x+rOut*.72,c.y+rOut*.72); ctx.stroke();
+  }
+
+  /* rotor marks: the ring turns at the component's own velocity, so the marks
+     are long on a churning component, short on a drifting one, absent on a
+     stalled one. The picture reads its speed even in a still screenshot. */
+  if(c.vel>0&&!S.frozen){
+    const len=Math.min(.46,.09+c.vel*.11);
+    for(let k=0;k<3;k++){
+      const a=c.phase*1.9+k*TAU/3;
+      for(let s=0;s<4;s++){
+        ctx.lineWidth=2.4-s*.4;
+        ctx.strokeStyle=rgba(C.accent,(.5-s*.11)*.8);
+        ctx.beginPath();
+        ctx.arc(c.x,c.y,rOut+11,a-len*(s+1)/4,a-len*s/4); ctx.stroke();
+      }
+    }
+  }
+  /* reticle when an alert on the left is focused */
+  if(S.focus===c.id||isActive("comp",c.id)){
+    const rr=c.R+44+(S.focus===c.id?Math.sin(S.t*3)*3:0);
+    ctx.lineWidth=1.6; ctx.strokeStyle=rgba(S.focus===c.id?C.red:C.accent,.9);
+    for(let k=0;k<4;k++){
+      const a=k*TAU/4+.39;
+      ctx.beginPath(); ctx.arc(c.x,c.y,rr,a,a+.42); ctx.stroke();
+    }
+    bloom(c.x,c.y,c.R*2.6,S.focus===c.id?C.red:C.accent,.12);
+  }
+  drawCompMeta(c);
+}
+
+/* the key chip: the Omarchy menu convention, printed on the thing itself so
+   the key is never something the owner has to remember */
+function chip(x,y,key,align){
+  const armed=S.pending&&key.indexOf(S.pending)===0;
+  const w=measure(key,10,".1em")+11, h=15;
+  const bx=align==="r"?x-w:x, by=y-h;
+  ctx.fillStyle=rgba(armed?C.accent:C.darker_background,armed?.22:.9);
+  rrect(bx,by,w,h,2); ctx.fill();
+  ctx.lineWidth=1; ctx.strokeStyle=rgba(armed?C.accent:C.muted,armed?1:.85); ctx.stroke();
+  txt(key,bx+w/2,by+11,{sz:10,align:"center",ls:".1em",
+    col:armed?C.accent:C.light_foreground,a:armed?1:.9});
+  return w;
+}
+function plate(x,y,align,lines,accent,pad,opt){
+  pad=pad||10; opt=opt||{};
+  let w=0, h=0;
+  lines.forEach(l=>{ w=Math.max(w,measure(l.s,l.sz,l.ls)); h+=l.sz+(l.gap==null?6:l.gap); });
+  const bw=w+pad*2+(accent?4:0), bh=h+pad*.8;
+  let bx=align==="l"?x:align==="r"?x-bw:x-bw/2, by=y-bh/2;
+  /* a floating panel is clamped into the canvas safe area so it never slides
+     under the HUD columns or off the screen */
+  if(opt.clamp){ bx=clamp(bx,506,2054-bw); by=clamp(by,66,1206-bh); }
+  ctx.fillStyle=rgba(C.darker_background,opt.solid?.94:.74); rrect(bx,by,bw,bh,2); ctx.fill();
+  ctx.lineWidth=1; ctx.strokeStyle=rgba(opt.hot?C.accent:C.selection,opt.hot?.9:.85); ctx.stroke();
+  const right=align==="r"&&!opt.left;
+  if(opt.key) chip(align==="r"?bx+bw:bx,by-3,opt.key,align==="r"?"r":"l");
+  if(accent){ ctx.fillStyle=rgba(accent,.9); ctx.fillRect(right?bx+bw-2:bx,by+3,2,bh-6); }
+  let ty=by+pad*.4;
+  lines.forEach(l=>{
+    ty+=l.sz;
+    const tx=right?bx+bw-pad-(accent?2:0):bx+pad+(accent?3:0);
+    txt(l.s,tx,ty,{sz:l.sz,col:l.col,a:l.a,align:right?"right":"left",ls:l.ls});
+    ty+=(l.gap==null?6:l.gap);
+  });
+  return [bx,by,bw,bh];
+}
+
+/* the supervisor's plate sits between its component and the foreman, on the
+   spoke: identity, ownership and countable progress in one block. */
+function drawCompMeta(c){
+  const dead=c.state==="silent", halt=c.state==="halt";
+  const L=[
+    {s:c.sup+"  ·  "+c.supModel,sz:12.5,col:dead?C.dark_foreground:C.foreground,ls:".02em"},
+    {s:c.landed+" landed   "+c.built+" built   "+c.total+" items",sz:11.5,col:C.light_foreground,a:.9}
+  ];
+  if(dead) L.push({s:"SILENT "+c.silentFor+"m · slot held · "+sinceStart(c)+" in",sz:11.5,col:C.red,ls:".04em"});
+  else if(halt) L.push({s:"HALTED · "+c.defect+" ×"+c.defects,sz:11.5,col:C.red,ls:".04em"});
+  else if(c.state==="idle") L.push({s:"0 jobs · "+c.eta+" · "+sinceStart(c)+" in",sz:11.5,col:C.yellow});
+  else L.push({s:c.vel.toFixed(1)+"/h · "+c.eta+" · "+sinceStart(c)+" in",
+               sz:11.5,col:C.light_foreground,a:.9});
+  laneLines(c,L);
+  plate(c.mx,c.my,c.malign,L,dead?C.red:halt?C.red:mi(c.supModel),10,
+    {key:c.key,hot:isActive("comp",c.id)});
+}
+/* how long this component has been building */
+function sinceStart(c){
+  const h=+c.started.slice(0,2), m=+c.started.slice(3);
+  let d=fmin()-(h*60+m); if(d<0) d+=1440;
+  return (d>=60?Math.floor(d/60)+"h "+String(d%60).padStart(2,"0")+"m":d+"m");
+}
+/* ── the lane: what this supervisor intends to do next ─────────────────────
+   planned (spec written) → queued (waiting on a slot, and for how long) →
+   running (out in a berth). The head of the lane rides on the plate; `q`
+   opens the same order for the whole swarm.                              */
+function laneLines(c,L){
+  if(c.id==="merge-desk"){
+    L.push({s:"next  its queue is the gate itself",sz:11,col:C.light_foreground,a:.7});
+    return;
+  }
+  const head=c.queued[0]||c.planned[0];
+  const cut=n=>n.length>20?n.slice(0,19)+"…":n;
+  if(!head) L.push({s:c.state==="halt"?"next  nothing may be dispatched":"next  nothing planned",
+    sz:11,col:c.state==="halt"?C.red:C.dark_foreground});
+  else if(c.queued[0]) L.push({s:"next  "+cut(head.n)+" · "+head.m+" "+head.waited+"m",
+    sz:11,col:mi(head.m),a:.95});
+  else L.push({s:"next  "+cut(head.n)+" · planned",sz:11,col:C.light_foreground,a:.75});
+  L.push({s:"lane  "+c.queued.length+" queued · "+c.planned.length+" planned · "+c.ttl+"m/item",
+    sz:10.5,col:C.light_foreground,a:.6});
+}
+
+function berthPos(c,b){
+  const a=b.a*Math.PI/180, r=c.R+52;
+  return [c.x+Math.cos(a)*r, c.y+Math.sin(a)*r];
+}
+function drawJob(c,j){
+  const b=c.berths[j.b]; if(!b) return;
+  const [gx,gy]=berthPos(c,b);
+  const col=mc(j.m), ink=mi(j.m), blk=isBlack(j.m);
+  const breath=calm||S.frozen?1:1+Math.sin(j.beat)*.055*(0.4+j.act);
+  /* tether: the job is physically attached to the component it works on */
+  const ex=c.x+(gx-c.x)*(c.R/Math.hypot(gx-c.x,gy-c.y));
+  const ey=c.y+(gy-c.y)*(c.R/Math.hypot(gx-c.x,gy-c.y));
+  ctx.lineWidth=1; ctx.strokeStyle=rgba(ink,.18+j.act*.5);
+  ctx.beginPath(); ctx.moveTo(gx,gy); ctx.lineTo(ex,ey); ctx.stroke();
+
+  bloom(gx,gy,52,ink,(blk?.10:.22)+j.act*(blk?.28:.55));
+  /* glyph: the vendor's own colour. grok is black, so it is drawn as a black
+     body inside a pale edge — it reads as black and still reads at all. */
+  ctx.save(); ctx.translate(gx,gy); ctx.rotate(Math.PI/4); ctx.scale(breath,breath);
+  ctx.fillStyle=rgba(col,blk?1:.95); rrect(-7,-7,14,14,2); ctx.fill();
+  if(blk){ ctx.lineWidth=1.6; ctx.strokeStyle=rgba(C.model_grok_ink,.92);
+           rrect(-7.5,-7.5,15,15,2); ctx.stroke(); }
+  ctx.restore();
+  /* timeout arc: elapsed against the job's own ceiling */
+  const p=clamp(j.min/j.to,0,1);
+  const tc=p>.9?C.red:p>.7?C.yellow:ink;
+  ctx.lineWidth=2;
+  ctx.strokeStyle=rgba(C.muted,.55);
+  ctx.beginPath(); ctx.arc(gx,gy,16,0,TAU); ctx.stroke();
+  ctx.strokeStyle=rgba(tc,.95);
+  ctx.beginPath(); ctx.arc(gx,gy,16,-Math.PI/2,-Math.PI/2+TAU*p); ctx.stroke();
+
+  /* side is where the plate sits relative to the glyph; plate() aligns by edge */
+  const side=b.side, al=side==="l"?"r":side==="r"?"l":"c";
+  const px=side==="l"?gx-26:side==="r"?gx+26:gx;
+  const py=side==="c"?gy-46:gy;
+  plate(px,py,al,[
+    {s:j.n,sz:13,col:C.foreground,ls:".01em"},
+    {s:j.m+" · "+j.w,sz:11,col:ink,a:.92},
+    {s:j.min+"/"+j.to+"m"+(p>.7?"  ·  timeout near":""),sz:11,col:p>.7?tc:C.light_foreground,a:.88}
+  ],ink,10,{key:j.key,hot:isActive("job",j.key)});
+}
+/* an empty berth held open by the freeze */
+function drawHeldBerth(c,b){
+  const [gx,gy]=berthPos(c,b);
+  ctx.setLineDash([3,4]); ctx.lineWidth=1; ctx.strokeStyle=rgba(C.dark_foreground,.85);
+  ctx.beginPath(); ctx.arc(gx,gy,13,0,TAU); ctx.stroke(); ctx.setLineDash([]);
+  txt("berth held empty",gx+(b.side==="l"?-20:20),gy+4,{sz:10.5,col:C.dark_foreground,
+    align:b.side==="l"?"right":"left"});
+}
+
+/* ── the foreman: origin, and the only session he ever talks to ─────────── */
+function drawForeman(){
+  const fz=S.frozen;
+  const col=fz?C.red:C.accent;
+  const pulse=S.tickPhase;
+  bloom(CX,CY,270,col,fz?.12:.18+(1-pulse)*.14);
+  /* spokes to every supervisor: the hierarchy, drawn as literal structure */
+  S.comps.forEach(c=>{
+    const dead=c.state==="silent", halt=c.state==="halt";
+    const d=Math.hypot(c.x-CX,c.y-CY), ux=(c.x-CX)/d, uy=(c.y-CY)/d;
+    ctx.lineWidth=1;
+    ctx.strokeStyle=rgba(fz?C.red:dead?C.red:halt?C.red:C.accent, fz?.10:dead?.18:halt?.20:.20+c.heat*.3);
+    ctx.beginPath();
+    ctx.moveTo(CX+ux*96,CY+uy*96); ctx.lineTo(c.x-ux*(c.R+4),c.y-uy*(c.R+4));
+    ctx.stroke();
+    if(dead){ /* the line to a silent supervisor is broken */
+      ctx.strokeStyle=rgba(C.darker_background,1); ctx.lineWidth=3;
+      const m=.55;
+      ctx.beginPath(); ctx.moveTo(CX+(c.x-CX)*m-ux*11,CY+(c.y-CY)*m-uy*11);
+      ctx.lineTo(CX+(c.x-CX)*m+ux*11,CY+(c.y-CY)*m+uy*11); ctx.stroke();
+    }
+  });
+  /* the collector's 2s tick, sweeping the whole field */
+  S.sweeps.forEach(s=>{
+    const r=s.t*1500;
+    ctx.lineWidth=1.4; ctx.strokeStyle=rgba(fz?C.red:C.accent,(1-s.t)*.16);
+    ctx.beginPath(); ctx.ellipse(CX,CY,r,r*.66,0,0,TAU); ctx.stroke();
+  });
+  /* core: three counter-set rings, one per layer of the hierarchy */
+  ctx.lineWidth=1;
+  [[92,.28],[74,.42]].forEach(([r,a])=>{
+    ctx.strokeStyle=rgba(col,a); ctx.beginPath(); ctx.arc(CX,CY,r,0,TAU); ctx.stroke();
+  });
+  const k=1+(1-pulse)*.05;
+  ctx.save(); ctx.translate(CX,CY); ctx.scale(k,k);
+  ctx.beginPath();
+  for(let i=0;i<6;i++){ const a=i*TAU/6-Math.PI/2;
+    const x=Math.cos(a)*54,y=Math.sin(a)*54; i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+  ctx.closePath();
+  ctx.fillStyle=rgba(C.darker_background,.95); ctx.fill();
+  ctx.lineWidth=1.6; ctx.strokeStyle=rgba(col,.85); ctx.stroke();
+  ctx.beginPath();
+  for(let i=0;i<6;i++){ const a=i*TAU/6-Math.PI/2;
+    const x=Math.cos(a)*34,y=Math.sin(a)*34; i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+  ctx.closePath();
+  ctx.strokeStyle=rgba(col,.35+(1-pulse)*.5); ctx.stroke();
+  ctx.restore();
+  /* one bearing marker per supervisor, on the foreman's rim: it brightens with
+     whatever that component is doing, so the origin shows who is talking */
+  S.comps.forEach(c=>{
+    const a=Math.atan2(c.y-CY,c.x-CX);
+    const dead=c.state==="silent", halt=c.state==="halt";
+    ctx.lineWidth=3; ctx.lineCap="butt";
+    ctx.strokeStyle=rgba(fz?C.red:dead||halt?C.red:C.accent,.28+(dead||halt?.5:c.heat*.7));
+    ctx.beginPath(); ctx.arc(CX,CY,92,a-.055,a+.055); ctx.stroke();
+    ctx.lineCap="round";
+  });
+  txt(fz?"FROZEN":"fable",CX,CY+5,{sz:14,align:"center",ls:".14em",col:fz?C.red:C.foreground});
+  txt("foreman",CX-118,CY-4,{sz:15,align:"right",ls:".22em",col:fz?C.red:C.accent});
+  txt("orchestrator · fable",CX-118,CY+17,
+    {sz:11,align:"right",col:C.light_foreground,a:.72});
+  txt("the only session you talk to",CX-118,CY+34,
+    {sz:11,align:"right",col:C.light_foreground,a:.55});
+}
+
+/* the standing route every finished branch takes: component → queue → review
+   → main → back onto the component as a hardened item. Drawn faint so the
+   loop is legible before a single mote moves along it. */
+function drawFlows(){
+  const G=S.gate;
+  ctx.setLineDash([2,9]); ctx.lineWidth=1;
+  S.comps.forEach(c=>{
+    if(c.id==="merge-desk"||c.state==="silent"||c.state==="halt") return;
+    const [bx,by]=arc(c.x,c.y+c.R,G.qx,G.y,.20);
+    ctx.strokeStyle=rgba(C.light_foreground,.10);
+    ctx.beginPath(); ctx.moveTo(c.x,c.y+c.R); ctx.quadraticCurveTo(bx,by,G.qx,G.y); ctx.stroke();
+    const [rx,ry]=arc(G.landX,G.y,c.x,c.y+c.R,-.22);
+    ctx.strokeStyle=rgba(C.green,.10);
+    ctx.beginPath(); ctx.moveTo(G.landX,G.y); ctx.quadraticCurveTo(rx,ry,c.x,c.y+c.R); ctx.stroke();
+  });
+  ctx.setLineDash([]);
+}
+
+/* ── the review gate: nothing becomes landed without crossing it ───────── */
+function drawGate(){
+  const G=S.gate, fz=S.frozen;
+  txt("REVIEW GATE",G.x0,G.y-52,{sz:12,col:C.light_foreground,a:.7,ls:".26em"});
+  txt("no branch becomes landed without crossing it",G.x0,G.y-32,
+    {sz:10.5,col:C.light_foreground,a:.45});
+  txt("queue "+G.queue.length,G.x0,G.y+30,
+    {sz:12,col:G.queue.length>4?C.yellow:C.light_foreground,a:.95});
+  txt("two rounds max",(G.stations[0].x+G.stations[1].x)/2,G.y-52,
+    {sz:10.5,align:"center",col:C.light_foreground,a:.5,ls:".08em"});
+  /* queued branches, stacked back from the mouth of the gate */
+  G.queue.forEach((q,i)=>{
+    const x=G.qx-i*G.qStep, c=byId(q.c);
+    ctx.fillStyle=rgba(C.light_foreground,.6-i*.05);
+    ctx.beginPath(); ctx.moveTo(x,G.y-10); ctx.lineTo(x+10,G.y); ctx.lineTo(x,G.y+10);
+    ctx.lineTo(x-10,G.y); ctx.closePath(); ctx.fill();
+    if(i===0){
+      plate(x,G.y-58,"c",[{s:q.n,sz:11.5,col:C.foreground},
+        {s:"from "+q.c+" · next in",sz:10.5,col:C.light_foreground,a:.8}],
+        c?mi(c.supModel):C.muted,7);
+    }
+  });
+  /* reviewer stations */
+  G.stations.forEach(st=>{
+    const col=mc(st.m), ink=mi(st.m), busy=!!st.item;
+    bloom(st.x,G.y,70,busy?ink:C.muted,busy?.20:.05);
+    ctx.beginPath();
+    for(let i=0;i<6;i++){ const a=i*TAU/6;
+      const x=st.x+Math.cos(a)*24,y=G.y+Math.sin(a)*24; i?ctx.lineTo(x,y):ctx.moveTo(x,y); }
+    ctx.closePath();
+    ctx.fillStyle=rgba(busy&&isBlack(st.m)?C.model_grok:C.darker_background,.94); ctx.fill();
+    ctx.lineWidth=1.4; ctx.strokeStyle=rgba(busy?ink:C.muted,.9); ctx.stroke();
+    if(busy){
+      ctx.lineWidth=3; ctx.strokeStyle=rgba(ink,.95);
+      ctx.beginPath(); ctx.arc(st.x,G.y,31,-Math.PI/2,-Math.PI/2+TAU*clamp(st.p,0,1)); ctx.stroke();
+      ctx.lineWidth=3; ctx.strokeStyle=rgba(C.muted,.35);
+      ctx.beginPath(); ctx.arc(st.x,G.y,31,-Math.PI/2+TAU*clamp(st.p,0,1),TAU*1.5-Math.PI/2); ctx.stroke();
+      plate(st.x,G.y+80,"c",[
+        {s:st.name,sz:12,col:C.foreground},
+        {s:st.m+" · "+st.w,sz:10.5,col:ink,a:.92},
+        {s:"round 1 · "+st.min+"/"+st.to+"m · from "+st.item.c,sz:10.5,col:C.light_foreground,a:.85}
+      ],ink,8,{key:st.key,hot:isActive("rev",st.key)});
+    } else {
+      txt("free",st.x,G.y+48,{sz:10.5,align:"center",col:C.dark_foreground});
+      chip(st.x-12,G.y+72,st.key,"l");
+    }
+  });
+  /* the landing slit: a column of light the passing branch goes through */
+  bloom(G.landX,G.y,120,C.green,fz?.05:.16);
+  ctx.lineWidth=2.5; ctx.strokeStyle=rgba(fz?C.muted:C.green,.85);
+  ctx.beginPath(); ctx.moveTo(G.landX,G.y-44); ctx.lineTo(G.landX,G.y+44); ctx.stroke();
+  [-1,1].forEach(s=>{
+    ctx.lineWidth=1; ctx.strokeStyle=rgba(fz?C.muted:C.green,.4);
+    ctx.beginPath(); ctx.moveTo(G.landX+s*9,G.y-30); ctx.lineTo(G.landX+s*9,G.y+30); ctx.stroke();
+  });
+  txt("landed → main",G.landX,G.y+64,{sz:11.5,align:"center",col:fz?C.muted:C.green,a:.9,ls:".06em"});
+}
+
+/* the unregistered process: no spoke, no tether, no name of its own */
+function drawRogue(){
+  const r=S.rogue; if(!r.alive) return;
+  const jx=r.x+Math.sin(S.t*11.3)*r.jitter, jy=r.y+Math.cos(S.t*9.7)*r.jitter;
+  bloom(jx,jy,70,C.red,.22);
+  ctx.setLineDash([4,3]); ctx.lineWidth=1.4; ctx.strokeStyle=rgba(C.red,.85);
+  ctx.strokeRect(jx-13,jy-13,26,26); ctx.setLineDash([]);
+  ctx.fillStyle=rgba(C.red,.85); ctx.fillRect(jx-4,jy-4,8,8);
+  plate(jx-24,jy,"r",[
+    {s:"?codex · ws"+r.ws,sz:12.5,col:C.red},
+    {s:"pid "+r.pid+" · no slot · no session id",sz:10.5,col:C.light_foreground,a:.9},
+    {s:"unregistered — not on the roster",sz:10.5,col:C.red,a:.9}
+  ],C.red,8);
+}
+
+/* ── the card ══════════════════════════════════════════════════════════════
+   Hover or focus anything with a name — a supervisor, a job, a reviewer — and
+   it says what it is doing now, when it was last heard from, how long it has
+   run against its ceiling, what it touched in the last minute, and who put it
+   there. Same card from the mouse and from the keyboard.                   */
+function isActive(kind,id){ const a=S.sel||S.hover; return !!a&&a.kind===kind&&a.id===id; }
+function jobByKey(k){
+  for(const c of S.comps) for(const j of c.jobs) if(j.key===k) return [c,j];
+  return null;
+}
+const ago=s=>s<60?s+"s ago":Math.floor(s/60)+"m ago";
+
+function cardLines(a){
+  if(a.kind==="comp"){
+    const c=byId(a.id); if(!c) return null;
+    const L=[{s:c.name+"  ·  component",sz:13.5,col:C.foreground,ls:".05em"},
+      {s:c.sup+" · "+c.supModel+" · dispatched by foreman",sz:11,col:mi(c.supModel),a:.95},
+      {s:"started "+c.started+" · "+sinceStart(c)+" in · projected "+c.proj,
+       sz:11,col:C.light_foreground,a:.85},
+      {s:c.landed+" landed · "+c.built+" built · "+c.total+" items · one item lands every "+c.ttl+"m",
+       sz:11,col:C.light_foreground,a:.85,gap:10}];
+    c.ck.forEach(([st,t])=>L.push({
+      s:(st==="done"?"✓ CONFIRMED  ":st==="plaus"?"· PLAUSIBLE  ":"○ open       ")+t,
+      sz:11.5,col:st==="done"?C.green:st==="plaus"?C.yellow:C.light_foreground,
+      a:st==="open"?.75:1,gap:5}));
+    const rest=c.total-c.ck.length;
+    if(rest>0) L.push({s:"+"+rest+" more on the component ledger",sz:11,col:C.dark_foreground,gap:10});
+    L.push({s:"lane · "+c.jobs.length+" running · "+c.queued.length+" queued · "+c.planned.length+" planned",
+      sz:11,col:C.light_foreground,a:.6,ls:".08em",gap:5});
+    c.queued.forEach(q=>L.push({s:"queued   "+q.n+" · "+q.m+" · waited "+q.waited+"m",
+      sz:11,col:mi(q.m),a:.95,gap:4}));
+    c.planned.forEach(q=>L.push({s:"planned  "+q.n,sz:11,col:C.light_foreground,a:.7,gap:4}));
+    return [c.x,c.y,L,c.key,0,(c.y<CY?1:-1)*(c.R+92)];
+  }
+  if(a.kind==="job"){
+    const f=jobByKey(a.id); if(!f) return null;
+    const [c,j]=f, b=c.berths[j.b]; if(!b) return null;
+    const [gx,gy]=berthPos(c,b), p=clamp(j.min/j.to,0,1);
+    return [gx,gy,[
+      {s:j.n+"  ·  job",sz:13.5,col:C.foreground,ls:".05em"},
+      {s:"doing  "+j.spec,sz:11.5,col:C.light_foreground,a:.95},
+      {s:j.m+" · "+j.w+" · working on "+c.name,sz:11,col:mi(j.m),a:.95},
+      {s:"dispatched by "+j.by+" at "+j.at,sz:11,col:C.light_foreground,a:.8},
+      {s:"elapsed "+j.min+"m of "+j.to+"m · "+(j.to-j.min)+"m before the timeout kills it",
+       sz:11,col:p>.7?(p>.9?C.red:C.yellow):C.light_foreground,a:.9},
+      {s:"last observed "+ago(j.lastAgo)+" · "+j.last,sz:11,col:C.light_foreground,a:.8},
+      {s:j.f1m+" files touched in the last minute",sz:11,col:C.light_foreground,a:.8}
+    ],j.key,(gx-c.x)/Math.hypot(gx-c.x,gy-c.y)*150,(gy-c.y)/Math.hypot(gx-c.x,gy-c.y)*150];
+  }
+  const st=S.gate.stations.find(x=>x.key===a.id); if(!st) return null;
+  const L=[{s:(st.item?st.name:"reviewer berth")+"  ·  reviewer",sz:13.5,col:C.foreground,ls:".05em"}];
+  if(st.item){
+    L.push({s:"doing  round 1 of 2 on "+st.item.n+", handed over by "+st.item.c,
+            sz:11.5,col:C.light_foreground,a:.95});
+    L.push({s:st.m+" · "+st.w+" · pulled off the queue at "+st.at,sz:11,col:mi(st.m),a:.95});
+    L.push({s:"elapsed "+st.min+"m of "+st.to+"m · "+Math.round(st.p*100)+"% read",
+            sz:11,col:C.light_foreground,a:.9});
+    L.push({s:"last observed "+ago(st.lastAgo)+" · "+st.last,sz:11,col:C.light_foreground,a:.8});
+    L.push({s:st.f1m+" files touched in the last minute",sz:11,col:C.light_foreground,a:.8});
+  } else {
+    L.push({s:st.m+" · free · next branch off the queue lands here",
+            sz:11.5,col:mi(st.m),a:.95});
+    L.push({s:S.gate.queue.length+" waiting · "+
+            (S.models.find(m=>m.name===st.m)||{dur:""}).dur,sz:11,col:C.light_foreground,a:.8});
+  }
+  return [st.x,S.gate.y,L,st.key,0,170];
+}
+function drawCard(){
+  const a=S.sel||S.hover; if(!a) return;
+  const r=cardLines(a); if(!r) return;
+  const [x,y,L,key,dx,dy]=r;
+  /* the card opens away from the thing it describes, never over it */
+  plate(x+dx,y+dy,"c",L,S.sel?C.accent:C.light_foreground,13,
+    {left:true,clamp:true,solid:true,key:key});
+}
+
+function drawMotes(){
+  ctx.globalCompositeOperation="lighter";
+  motes.forEach(m=>{
+    const u=m.ease===false?m.t:1-(1-m.t)*(1-m.t);
+    for(let k=0;k<m.trail;k++){
+      const uu=u-k*.017; if(uu<0) break;
+      const [x,y]=moteAt(m,uu);
+      const a=(1-k/m.trail)*(m.a||1)*(m.fade?1-m.t:1);
+      ctx.fillStyle=rgba(m.col,a*.85);
+      const s=m.size*(1-k/m.trail*.6);
+      ctx.beginPath(); ctx.arc(x,y,s,0,TAU); ctx.fill();
+    }
+    const [hx,hy]=moteAt(m,u);
+    ctx.globalAlpha=.55; ctx.drawImage(glowSprite(m.col,26),hx-26,hy-26); ctx.globalAlpha=1;
+  });
+  ctx.globalCompositeOperation="source-over";
+}
+
+function drawFreezeBand(){
+  if(!S.frozen) return;
+  ctx.fillStyle=rgba(C.red,.035); ctx.fillRect(0,0,2560,1440);
+  ctx.save(); ctx.translate(772,130);
+  ctx.fillStyle=rgba(C.darker_background,.85);
+  const w=measure("DISPATCH FROZEN",22,".4em")+64;
+  rrect(-w/2,-24,w,48,2); ctx.fill();
+  ctx.lineWidth=1; ctx.strokeStyle=rgba(C.red,.6); ctx.stroke();
+  ctx.restore();
+  txt("DISPATCH FROZEN",772,138,{sz:22,align:"center",ls:".4em",col:C.red});
+  txt("no launch may take a slot · running jobs finish",
+    772,172,{sz:11.5,align:"center",col:C.light_foreground,a:.85});
+}
+
+function draw(){
+  ctx.drawImage(bg,0,0);
+  drawFlows();
+  drawForeman();
+  drawGate();
+  S.comps.forEach(c=>{
+    drawComponent(c);
+    c.jobs.forEach(j=>drawJob(c,j));
+    if(S.frozen) c.berths.forEach((b,i)=>{ if(!c.jobs.some(j=>j.b===i)) drawHeldBerth(c,b); });
+  });
+  drawRogue();
+  drawMotes();
+  drawCard();
+  drawFreezeBand();
+}
+
+/* ══ clock, per the story ════════════════════════════════════════════════ */
+const fmin=()=>S.min0+Math.floor((Date.now()-S.wall0)/60000);
+const stamp=()=>String(Math.floor(fmin()/60)%24).padStart(2,"0")+":"+String(fmin()%60).padStart(2,"0");
+const stampS=()=>stamp()+":"+String(Math.floor(Date.now()/1000)%60).padStart(2,"0");
+
+/* ══ the collector ledger, bottom of screen ══════════════════════════════ */
+function log(kind,cls,html){
+  const f=$("#feed"), d=el("div");
+  d.innerHTML=`<span class="ts">${stampS()}</span><span class="kd ${cls}">${kind}</span><span>${html}</span>`;
+  f.appendChild(d);
+  while(f.children.length>6) f.removeChild(f.firstChild);
+  $("#srLive").textContent=d.textContent;
+}
+
+/* ══ events — nothing animates that did not happen ═══════════════════════ */
+function liveJobs(){ const o=[]; S.comps.forEach(c=>c.jobs.forEach(j=>o.push([c,j]))); return o; }
+
+function evFileWrite(){
+  const p=rnd(liveJobs()); if(!p) return;
+  const [c,j]=p, b=c.berths[j.b]; if(!b) return;
+  const [gx,gy]=berthPos(c,b);
+  const n=1+Math.floor(Math.random()*3);
+  j.act=Math.min(1,j.act+.45); c.heat=Math.min(1,c.heat+.30);
+  j.last="wrote "+n+" file"+(n===1?"":"s")+" in "+j.w; j.lastAgo=0; j.f1m+=n;
+  for(let k=0;k<n;k++){
+    const seg=Math.min(c.total-1,c.built+Math.floor(Math.random()*(c.plaus+2)));
+    const [a0,a1]=ringGeom(c,seg), am=(a0+a1)/2;
+    const tx=c.x+Math.cos(am)*(c.R-9), ty=c.y+Math.sin(am)*(c.R-9);
+    const [bx,by]=arc(gx,gy,tx,ty,.18);
+    mote({x0:gx,y0:gy,x1:tx,y1:ty,cx:bx,cy:by,col:mi(j.m),sp:2.1+Math.random()*.7,size:2.4,
+      arrive(){ c.flash[seg]=1; }});
+  }
+  log("write","wr",`<b>${j.n}</b> wrote ${n} file${n===1?"":"s"} in ${j.w} <span style="opacity:.6">→ ${c.name}</span>`);
+}
+
+function evCommit(){
+  const p=rnd(liveJobs()); if(!p) return;
+  const [c,j]=p;
+  if(c.built<c.total-c.plaus){ c.built++; c.flash[c.built-1]=1; }
+  const h=Math.random().toString(16).slice(2,9);
+  log("commit","wr",`<b>${j.w}</b> head ${h} <span style="opacity:.6">· ${c.name} now ${c.built} built of ${c.total}</span>`);
+  refreshMass();
+}
+
+function evHeartbeat(){
+  const c=rnd(S.comps.filter(x=>x.state===""||x.state==="gate"));
+  if(c) c.heat=Math.min(1,c.heat+.10);
+  log("observed","obs",`${c?c.sup:"collector"} alive · cpu ${(8+Math.random()*70).toFixed(1)}s · rss ${(300+Math.random()*500)|0}M`);
+}
+
+/* a job returns: its branch leaves the component and falls to the review gate */
+function evJobFinished(){
+  const cand=liveJobs().filter(([c])=>c.state===""||c.state==="idle");
+  if(!cand.length) return;
+  const [c,j]=rnd(cand);
+  const b=c.berths[j.b], [gx,gy]=berthPos(c,b);
+  if(c.built<c.total-c.plaus){ c.built++; c.flash[c.built-1]=1; }
+  const G=S.gate, tx=G.qx-G.queue.length*G.qStep;
+  const [bx,by]=arc(gx,gy,tx,G.y,.22);
+  mote({x0:gx,y0:gy,x1:tx,y1:G.y,cx:bx,cy:by,col:C.light_foreground,sp:.85,size:3.4,trail:16,
+    arrive(){ G.queue.push({c:c.id,n:j.n}); refreshStatus(); }});
+  log("returned","mg",`<b>${j.n}</b> returned · branch handed to the merge desk from ${c.name}`);
+  /* the slot turns over: the berth is refilled unless the owner froze dispatch */
+  const idx=c.jobs.indexOf(j);
+  setTimeout(()=>{
+    if(idx<0) return;
+    c.jobs.splice(c.jobs.indexOf(j),1); freeHint(j.key);
+    if(S.sel&&S.sel.kind==="job"&&S.sel.id===j.key){ S.sel=null; refreshKeyline(); }
+    if(S.frozen){
+      log("frozen","ow",`slot released by <b>${j.n}</b> · no replacement dispatched`);
+      const m=S.models.find(x=>x.name===j.m); if(m) m.run=Math.max(0,m.run-1);
+      renderModels(); refreshStatus();
+    } else dispatch(c,j.m,j.b);
+  },1500);
+  refreshMass();
+}
+
+/* dispatch travels: foreman → supervisor → the berth the job will work at */
+function dispatch(c,model,berth){
+  /* a freed slot goes to the head of this supervisor's own queue if it has
+     one; only an empty queue falls back to the next spec off the ledger, and
+     the lane behind it shifts up one place. */
+  let name,spec,waited=0;
+  const qi=c.queued.findIndex(q=>q.m===model);
+  const q=qi>=0?c.queued.splice(qi,1)[0]:(qi<0&&c.queued.length?c.queued.shift():null);
+  if(q){ name=q.n; spec=q.spec; waited=q.waited; model=q.m; }
+  else { const pick=rnd(JOBPOOL); name=pick[0]; spec=pick[1]; }
+  if(c.planned.length&&c.queued.length<2){
+    const p=c.planned.shift();
+    c.queued.push({n:p.n,spec:p.spec,m:rnd(["muse","grok 4.6"]),waited:0});
+    log("planned","dp",`${c.sup} queued <b>${p.n}</b> · spec written, waiting on a slot`);
+  }
+  const wt=c.id==="api"?"wt/api-":c.id==="corpus"?"wt/corp-":c.id==="reaper"?"wt/reap-":"wt/"+c.id.slice(0,4)+"-";
+  const job={n:name,m:model,w:wt+(30+Math.floor(Math.random()*40)),min:0,to:rnd([20,25,30]),
+    b:berth,beat:Math.random()*TAU,act:0,key:takeHint("j"),
+    spec:spec,by:c.sup,at:stamp(),last:"registered · no writes yet",lastAgo:0,f1m:0,waited:waited};
+  const d=Math.hypot(c.x-CX,c.y-CY), ux=(c.x-CX)/d, uy=(c.y-CY)/d;
+  const col=mi(model);
+  const [b1x,b1y]=arc(CX+ux*96,CY+uy*96,c.x,c.y,.10);
+  mote({x0:CX+ux*96,y0:CY+uy*96,x1:c.x,y1:c.y,cx:b1x,cy:b1y,col:C.accent,sp:1.5,size:3.6,trail:18,
+    arrive(){
+      c.ignite=Math.max(c.ignite,.6);
+      const b=c.berths[berth]; if(!b){ c.jobs.push(job); return; }
+      const [gx,gy]=berthPos(c,b);
+      const [b2x,b2y]=arc(c.x,c.y,gx,gy,.2);
+      mote({x0:c.x,y0:c.y,x1:gx,y1:gy,cx:b2x,cy:b2y,col:col,sp:3,size:3.2,trail:12,
+        arrive(){ c.jobs.push(job); }});
+    }});
+  log("dispatch","dp",`${c.sup} → <b>${job.n}</b> · ${model} · ${job.w} · timeout ${job.to}m`+
+    (waited?` · waited ${waited}m on a slot`:""));
+  refreshStatus();
+}
+
+/* the gate advances on the collector's observation, not on a decorative timer */
+function stepGate(){
+  const G=S.gate;
+  G.stations.forEach(st=>{
+    if(!st.item) return;
+    st.p+=.11+Math.random()*.07;
+    if(st.p<1) return;
+    /* verdict */
+    const pass=Math.random()<.84;
+    const c=byId(st.item.c), it=st.item;
+    st.item=null; st.p=0;
+    if(!c) return;
+    if(pass){
+      const [bx,by]=arc(st.x,G.y,G.landX,G.y,0);
+      mote({x0:st.x,y0:G.y,x1:G.landX,y1:G.y,cx:bx,cy:by,col:C.green,sp:2.4,size:3.2,
+        arrive(){
+          const seg=Math.min(c.total-1,c.landed);
+          const [a0,a1]=ringGeom(c,seg), am=(a0+a1)/2;
+          const tx=c.x+Math.cos(am)*(c.R-9), ty=c.y+Math.sin(am)*(c.R-9);
+          const [b2x,b2y]=arc(G.landX,G.y,tx,ty,-.24);
+          mote({x0:G.landX,y0:G.y,x1:tx,y1:ty,cx:b2x,cy:b2y,col:C.green,sp:.95,size:3,trail:18,
+            arrive(){
+              if(c.landed<c.built) c.landed++;
+              c.flash[seg]=1; c.landFlash=1; refreshMass();
+            }});
+        }});
+      log("landed","mg",`<b>${it.n}</b> passed ${st.m} · merged to main · ${c.name} hardens one item`);
+    } else {
+      const [bx,by]=arc(st.x,G.y,c.x,c.y,-.2);
+      mote({x0:st.x,y0:G.y,x1:c.x,y1:c.y,cx:bx,cy:by,col:C.red,sp:1.1,size:3,trail:14,
+        arrive(){ c.heat=Math.min(1,c.heat+.4); }});
+      log("rejected","an",`<b>${it.n}</b> failed ${st.m} · round 2 back to ${c.sup}`);
+    }
+    refreshStatus();
+  });
+  /* pull the next branch off the queue into a free reviewer */
+  G.stations.forEach(st=>{
+    if(st.item||!G.queue.length||S.frozen) return;
+    const q=G.queue.shift(), c=byId(q.c);
+    st.item=q; st.p=0; st.min=0; st.name="review·"+q.n;
+    const x=G.qx;
+    mote({x0:x,y0:G.y,x1:st.x,y1:G.y,cx:(x+st.x)/2,cy:G.y-30,col:mi(st.m),sp:2.2,size:3});
+    log("review","qu",`${st.m} took <b>${q.n}</b> from ${c?c.name:q.c} · round 1 of 2`);
+    refreshStatus();
+  });
+}
+
+function evQuota(){
+  const m=rnd([S.models[0],S.models[1]]);
+  if(m.pct==null) return;
+  m.pct=Math.min(99,m.pct+(Math.random()<.8?1:0));
+  renderModels();
+  if(m.pct===80) log("quota","qu",`<b>${m.name}</b> crossed the 80% mark of its 5h window`);
+}
+
+function evAnomaly(){
+  if(!S.rogue.alive) return;
+  S.rogue.jitter=3;
+  log("anomaly","an",`ws${S.rogue.ws} pid ${S.rogue.pid} wrote outside every registered worktree`);
+}
+
+const EVENTS=[[evFileWrite,54],[evHeartbeat,13],[evCommit,8],[evJobFinished,9],[evQuota,7],[evAnomaly,4],[stepGate,5]];
+let evTimer=null;
+function fire(){
+  let r=Math.random()*100;
+  for(const [fn,w] of EVENTS){ if((r-=w)<0){ try{fn();}catch(e){} break; } }
+  /* reduced motion still gets the event stream, slower, with no travel */
+  evTimer=setTimeout(fire,calm?2400+Math.random()*1600:620+Math.random()*760);
+}
+
+/* the collector's own clock: 2 s, and it drives the sweep and the gate */
+setInterval(()=>{
+  S.sweeps.push({t:0});
+  const p=$("#tPulse"); p.classList.add("on"); setTimeout(()=>p.classList.remove("on"),190);
+  S.tickPhase=0;
+  stepGate();
+  S.gate.stations.forEach(st=>{
+    if(st.item) st.min=Math.min(st.to,st.min+(Math.random()<.5?1:0));
+    st.lastAgo+=2;
+  });
+  S.comps.forEach(c=>c.jobs.forEach(j=>j.lastAgo+=2));
+},2000);
+
+/* the story clock: ages, elapsed times, the digest line */
+setInterval(()=>{
+  S.alerts.forEach(a=>{ a.born++; if(a.target==="engine"){ const c=byId("engine"); if(c.state==="silent") c.silentFor++; } });
+  S.inbox.forEach(i=>i.born++);
+  S.comps.forEach(c=>{
+    c.jobs.forEach(j=>{ j.min=Math.min(j.to,j.min+1); j.f1m=Math.max(0,Math.round(j.f1m*.4)); });
+    /* a job waiting on a slot is waiting in plain sight */
+    c.queued.forEach(q=>q.waited++);
+  });
+  $("#tClock").textContent=stamp();
+  renderAlerts(); renderInbox(); renderModels();
+},60000);
+
+/* ══ frame loop ═══════════════════════════════════════════════════════════ */
+let last=performance.now();
+function frame(now){
+  const dt=Math.min(.05,(now-last)/1000); last=now;
+  S.t+=dt;
+  /* state decays whatever the motion preference: a flash is information */
+  S.comps.forEach(c=>{
+    if(!calm&&!S.frozen) c.phase+=c.vel*0.0022*dt*60;  /* velocity turns the ring */
+    c.heat=Math.max(0,c.heat-dt*.55);
+    c.ignite=Math.max(0,c.ignite-dt*1.1);
+    c.landFlash=Math.max(0,c.landFlash-dt*1.6);
+    for(let i=0;i<c.total;i++) if(c.flash[i]>0) c.flash[i]=Math.max(0,c.flash[i]-dt*2.6);
+    c.jobs.forEach(j=>{ if(!calm) j.beat+=dt*(1.6+j.act*3.4); j.act=Math.max(0,j.act-dt*.7); });
+  });
+  if(!calm){
+    S.rogue.jitter=Math.max(0,S.rogue.jitter-dt*3);
+    S.tickPhase=Math.min(1,S.tickPhase+dt*3.2);
+    for(let i=S.sweeps.length-1;i>=0;i--){ S.sweeps[i].t+=dt*.85; if(S.sweeps[i].t>=1) S.sweeps.splice(i,1); }
+    for(let i=motes.length-1;i>=0;i--){
+      const m=motes[i]; m.t+=dt*m.sp;
+      if(m.t>=1){ if(m.arrive) m.arrive(); motes.splice(i,1); }
+    }
+  }
+  draw();
+  requestAnimationFrame(frame);
+}
+
+/* ══ HUD ══════════════════════════════════════════════════════════════════ */
+function renderAlerts(){
+  const w=$("#alerts"); w.innerHTML="";
+  if(!S.alerts.length){
+    const d=el("div","alert ok");
+    d.innerHTML=`<span class="body"><span class="t">nothing floating</span>
+      <span class="m">observed state matches the declared roster</span></span>`;
+    w.appendChild(d);
+  }
+  S.alerts.forEach(a=>{
+    const d=el("div","alert"+(a.tone==="orange"?" orange":"")); d.id="al-"+a.id;
+    d.innerHTML=`<span class="body"><span class="t">${a.t}</span>
+      <span class="m"><span class="loc">→ ${a.target==="rogue"?"ws9 · pid 41180":"sup·"+a.target}</span>
+      <span class="sep">·</span><span data-age="${a.id}">${a.born}m ago</span>
+      <span class="sep">·</span><span>${a.tone==="red"?"burning a slot":"outside the roster"}</span></span></span>`;
+    const row=el("span","btnrow act");
+    row.appendChild(el("span","kc",a.key));
+    const b=el("button","btn dgr",a.act);
+    b.onclick=()=>resolveAlert(a,b,d);
+    row.appendChild(b); d.appendChild(row);
+    const on=()=>S.focus=a.target, off=()=>{ if(S.focus===a.target) S.focus=null; };
+    d.addEventListener("mouseenter",on); d.addEventListener("mouseleave",off);
+    b.addEventListener("focus",on); b.addEventListener("blur",off);
+    w.appendChild(d);
+  });
+  $("#alN").textContent=S.alerts.length?S.alerts.length+" floating":"clear";
+  $("#tAlerts").textContent=S.alerts.length?S.alerts.length+" alert"+(S.alerts.length===1?"":"s"):"no alerts";
+  $("#tAlerts").className=S.alerts.length?"bad":"";
+}
+
+function resolveAlert(a,btn,node){
+  btn.disabled=true; S.focus=a.target;
+  const t=node.querySelector(".t");
+  if(a.id==="a1"){
+    t.textContent="relaunching sup·engine from its checkpoint…";
+    log("owner","ow",`you relaunched <b>sup·engine</b> · same opus slot, checkpoint replayed`);
+    const c=byId("engine"), d=Math.hypot(c.x-CX,c.y-CY), ux=(c.x-CX)/d, uy=(c.y-CY)/d;
+    const [bx,by]=arc(CX+ux*96,CY+uy*96,c.x,c.y,.1);
+    mote({x0:CX+ux*96,y0:CY+uy*96,x1:c.x,y1:c.y,cx:bx,cy:by,col:C.green,sp:.9,size:5,trail:24,
+      arrive(){
+        c.state=""; c.vel=1.6; c.eta="~5h left"; c.ignite=1; c.heat=1;
+        c.mx=760; c.my=310;
+        log("relaunch","mg",`<b>sup·engine</b> alive · re-read 24 checklist items · waiting on a worker slot`);
+        setTimeout(()=>{ if(!S.frozen) dispatch(c,"muse",0); },1400);
+        refreshStatus();
+      }});
+    setTimeout(()=>{
+      node.classList.add("ok");
+      t.textContent="sup·engine relaunched · checkpoint replayed, ring turning again";
+      node.querySelector(".loc").textContent="→ sup·engine";
+    },1200);
+  } else {
+    t.textContent="killing pid 41180…";
+    log("owner","ow",`you killed <b>pid 41180</b> in ws9 · slot ledger unchanged, it never held one`);
+    const r=S.rogue;
+    for(let i=0;i<26;i++){
+      const a2=Math.random()*TAU, dd=60+Math.random()*140;
+      mote({x0:r.x,y0:r.y,x1:r.x+Math.cos(a2)*dd,y1:r.y+Math.sin(a2)*dd,
+        cx:r.x+Math.cos(a2)*dd*.5,cy:r.y+Math.sin(a2)*dd*.5,col:C.red,sp:1.1+Math.random(),
+        size:2.2,trail:6,fade:true,ease:false});
+    }
+    r.alive=false;
+    setTimeout(()=>{
+      node.classList.add("ok");
+      t.textContent="pid 41180 killed · 2 stray files quarantined";
+      node.querySelector(".loc").textContent="→ ws9 clear";
+    },900);
+  }
+  setTimeout(()=>{
+    node.classList.add("gone");
+    setTimeout(()=>{ freeHint(a.key); S.alerts=S.alerts.filter(x=>x!==a); S.focus=null;
+      renderAlerts(); refreshKeyline(); },380);
+  },3200);
+}
+
+function renderInbox(){
+  const w=$("#inbox"); w.innerHTML="";
+  if(!S.inbox.length){
+    const d=el("div","dec done");
+    d.innerHTML=`<div class="head"><span>CLEAR</span><span class="from">nothing needs you</span></div>
+      <div class="q" style="font-size:13px">Every open question is one an agent is allowed to answer.</div>`;
+    w.appendChild(d);
+  }
+  S.inbox.forEach(it=>{
+    const d=el("div","dec"); d.id="in-"+it.id;
+    d.innerHTML=`<div class="head"><span>${it.kind}</span><span class="from">from ${it.from}</span></div>
+      <div class="q">${it.q}</div>
+      <div class="rec"><span class="lead">foreman </span><b>${it.v}</b> — ${it.r}</div>`;
+    const f=el("div","foot");
+    it.btns.forEach(([label,cls],i)=>{
+      const row=el("span","btnrow");
+      row.appendChild(el("span","kc",it.keys[i]));
+      const b=el("button","btn "+cls,label); b.onclick=()=>answer(it,d,label);
+      row.appendChild(b); f.appendChild(row);
+    });
+    f.appendChild(el("span","age","waited "+it.born+" min"));
+    d.appendChild(f); w.appendChild(d);
+  });
+  const n=S.inbox.length;
+  $("#inN").textContent=n?n+" decision"+(n===1?"":"s"):"clear";
+  $("#tWait").textContent=n?n+" waiting on you":"nothing waiting on you";
+  $("#tWait").className=n?"warn":"";
+}
+
+function answer(it,node,label){
+  node.querySelectorAll("button").forEach(b=>b.disabled=true);
+  node.classList.add("done");
+  const took=label.indexOf("approve")===0;
+  node.querySelector(".rec").innerHTML=
+    `<span class="lead">recorded </span><b>${label}</b> — stamped as an owner act at ${stamp()}, and a standing rule on ${it.from} from here on.`;
+  log("owner","ow",`you answered <b>${it.from}</b> · ${label}`);
+
+  if(it.id==="i1"&&took){
+    const m=S.models.find(x=>x.id==="astra");
+    m.pct=Math.round(m.pct/2); m.grant=3; m.reset="resets 19:00 · window doubled";
+    renderModels();
+    log("quota","qu",`codex window doubled · <b>${m.pct}%</b> used, third reviewer slot granted`);
+  }
+  if(it.id==="i2"&&took){
+    /* the scope cut is visible on the picture: two ring segments disappear and
+       the freed grok slot puts a worker on the component that had none */
+    const r=byId("reaper");
+    r.total=10; r.flash=new Float32Array(10); r.vel=1.8; r.eta="~2h left"; r.state="";
+    r.landFlash=1;
+    refreshMass();
+    log("scope","ow",`reaper cut to <b>10 items</b> · dead-worktree sweep dropped`);
+    setTimeout(()=>{
+      if(S.frozen) return;
+      const g=S.models.find(x=>x.id==="grok"); g.run=Math.min(g.grant,g.run+1); renderModels();
+      dispatch(r,"grok 4.6",0);
+    },900);
+  }
+  setTimeout(()=>{
+    node.classList.add("gone");
+    setTimeout(()=>{ it.keys.forEach(freeHint); S.inbox=S.inbox.filter(x=>x!==it);
+      renderInbox(); refreshKeyline(); },400);
+  },2400);
+}
+
+function renderModels(){
+  const w=$("#models"); w.innerHTML="";
+  S.models.forEach(m=>{
+    const col=mc(m.name), ink=mi(m.name), blk=isBlack(m.name);
+    const r=el("div","mrow");
+    let pips="";
+    for(let i=0;i<m.grant;i++) pips+=`<span class="pip${i<m.run?" on":""}"${
+      blk&&i<m.run?` style="background:${col};border-color:${ink}"`:""}></span>`;
+    const q=queueDepth(m.name);
+    let meter;
+    if(m.pct==null){
+      meter=`<div class="nometer"></div>
+        <div class="mmeta"><span>no meter published</span>
+        <span class="r">proxied by <span class="pct">${m.proxy}</span></span></div>`;
+    }else{
+      const cls=m.pct>=100?" crit":m.pct>=80?" warn":"";
+      meter=`<div class="meter"><span class="fill${cls}" style="width:${Math.min(100,m.pct)}%"></span>
+          <span class="tick" style="left:80%"><b>80</b></span>
+          <span class="tick" style="left:calc(100% - 1px)"><b>100</b></span></div>
+        <div class="mmeta"><span class="pct">${m.pct}%</span><span>of the 5h window</span>
+        <span class="r">${m.reset}</span></div>`;
+    }
+    r.innerHTML=`<span class="swatch" style="background:${col}${
+        blk?";border:1px solid "+ink:""}"></span>
+      <span>
+        <span class="l1"><span class="nm">${m.name}</span><span class="role">${m.role}</span>
+          <span class="slots" style="color:${ink}"><span class="pips">${pips}</span>
+            <span style="color:var(--light_foreground)"><b>${m.run}</b>/${m.grant}</span></span></span>
+        ${meter}
+        <div class="mmeta"><span>${m.dur}</span>
+          <span class="r" style="color:${q?"var(--yellow)":"var(--light_foreground)"}">${
+            q?q+" waiting on this slot":"nothing waiting"}</span></div>
+      </span>`;
+    w.appendChild(r);
+  });
+  const run=S.models.reduce((a,m)=>a+m.run,0), gr=S.models.reduce((a,m)=>a+m.grant,0);
+  $("#tSlots").textContent=run+"/"+gr;
+  $("#swN").textContent=run+" of "+gr+" slots held";
+  if(S.overlay==="queue") renderQueueView();
+}
+
+/* ══ the swarm queue ══════════════════════════════════════════════════════
+   Every planned and queued job in one list, so slot pressure is a number the
+   owner can read rather than something he has to infer from idle bodies.  */
+function queueDepth(model){
+  return S.comps.reduce((n,c)=>n+c.queued.filter(q=>q.m===model).length,0);
+}
+function renderQueueView(){
+  const rows=[];
+  S.comps.forEach(c=>{
+    c.queued.forEach(q=>rows.push({c,q,state:"queued"}));
+    c.planned.forEach(q=>rows.push({c,q,state:"planned"}));
+  });
+  rows.sort((a,b)=>(a.state==="queued"?0:1)-(b.state==="queued"?0:1)||
+                   (b.q.waited||0)-(a.q.waited||0));
+  let html=`<table><thead><tr><th>job</th><th>component</th><th>state</th>
+    <th>waits on</th><th>waited</th><th>spec</th></tr></thead><tbody>`;
+  rows.forEach(r=>{
+    const q=r.q, qd=r.state==="queued";
+    html+=`<tr class="${qd?"":"plan"}">
+      <td class="n">${q.n}</td>
+      <td><span class="kc">${r.c.key}</span> ${r.c.name}</td>
+      <td style="color:${qd?"var(--yellow)":"var(--light_foreground)"}">${r.state}</td>
+      <td>${qd?`<span class="swatch" style="background:${mc(q.m)}${
+            isBlack(q.m)?";border:1px solid "+mi(q.m):""}"></span>${q.m} slot`
+          :"a slot, once one is asked for"}</td>
+      <td class="${qd&&q.waited>=10?"w":""}">${qd?q.waited+" min":"—"}</td>
+      <td>${q.spec}</td></tr>`;
+  });
+  if(!rows.length) html+=`<tr><td colspan="6">nothing planned or queued · every spec is running</td></tr>`;
+  html+="</tbody></table>";
+
+  html+=`<div class="press">`;
+  S.models.forEach(m=>{
+    const d=queueDepth(m.name), cap=Math.max(m.grant,d,1);
+    html+=`<div class="p">
+      <div class="pn"><span class="swatch" style="background:${mc(m.name)}${
+        isBlack(m.name)?";border:1px solid "+mi(m.name):""}"></span>${m.name}</div>
+      <div class="pb"><i style="width:${Math.min(100,d/cap*100)}%;background:${
+        d>m.grant?"var(--red)":d?"var(--yellow)":"var(--muted)"}"></i></div>
+      <div class="px">${m.run}/${m.grant} held · ${d} waiting · ${m.dur}</div></div>`;
+  });
+  html+=`</div>`;
+  $("#qvBody").innerHTML=html;
+}
+
+function refreshMass(){
+  const t=S.comps.reduce((a,c)=>a+c.total,0);
+  const b=S.comps.reduce((a,c)=>a+c.built,0);
+  const l=S.comps.reduce((a,c)=>a+c.landed,0);
+  const p=S.comps.reduce((a,c)=>a+c.plaus,0);
+  $("#mBuilt").textContent=b; $("#mTotal").textContent=t; $("#mLanded").textContent=l;
+  $("#mOpen").textContent=t-b-p; $("#mPl").textContent=p;
+  $("#mBarB").style.width=(b/t*100)+"%"; $("#mBarL").style.width=(l/t*100)+"%";
+  refreshStatus();
+}
+function refreshStatus(){
+  const jobs=S.comps.reduce((a,c)=>a+c.jobs.length,0)+S.gate.stations.filter(s=>s.item).length;
+  $("#tJobs").textContent=jobs;
+  const busy=S.gate.stations.filter(s=>s.item).length;
+  $("#sMerge").textContent=`merge queue ${S.gate.queue.length} · ${busy} of ${S.gate.stations.length} reviewers busy`;
+  $("#sObs").textContent=`observing ${S.comps.length} worktrees, ${S.models.reduce((a,m)=>a+m.run,0)} processes`;
+}
+
+/* ── freeze: the owner's hand on the whole system ──────────────────────── */
+$("#frzBtn").onclick=()=>{
+  S.frozen=!S.frozen;
+  $("#stage").classList.toggle("frozen",S.frozen);
+  $("#frzState").textContent=S.frozen?"dispatch frozen":"dispatch running";
+  const jobs=S.comps.reduce((a,c)=>a+c.jobs.length,0);
+  $("#frzSub").textContent=S.frozen
+    ? `0 slots may be taken · ${jobs} job${jobs===1?"":"s"} finishing · frozen at ${stamp()}`
+    : "launches may take slots · 10 sessions registered";
+  $("#frzBtn").textContent=S.frozen?"THAW":"FREEZE";
+  if(S.frozen){
+    S.sweeps.push({t:0});
+    log("owner","ow",`you froze dispatch at <b>${stamp()}</b> · every berth that empties stays empty`);
+  } else {
+    log("owner","ow",`you thawed dispatch · supervisors may take slots again`);
+    S.comps.filter(c=>c.state===""&&c.berths.length>c.jobs.length).slice(0,2)
+      .forEach((c,i)=>setTimeout(()=>{
+        const free=c.berths.findIndex((b,k)=>!c.jobs.some(j=>j.b===k));
+        if(free>=0) dispatch(c,rnd(["muse","grok 4.6"]),free);
+      },500+i*900));
+  }
+};
+
+/* ── the mouse says the same thing the keyboard says ───────────────────── */
+function hitTest(x,y){
+  for(const st of S.gate.stations) if(Math.hypot(x-st.x,y-S.gate.y)<34) return {kind:"rev",id:st.key};
+  for(const c of S.comps) for(const j of c.jobs){
+    const b=c.berths[j.b]; if(!b) continue;
+    const [gx,gy]=berthPos(c,b);
+    if(Math.hypot(x-gx,y-gy)<22) return {kind:"job",id:j.key};
+  }
+  for(const c of S.comps) if(Math.hypot(x-c.x,y-c.y)<c.R+10) return {kind:"comp",id:c.id};
+  return null;
+}
+cv.addEventListener("mousemove",e=>{
+  const r=cv.getBoundingClientRect();
+  S.hover=hitTest((e.clientX-r.left)/r.width*2560,(e.clientY-r.top)/r.height*1440);
+  cv.style.cursor=S.hover?"crosshair":"default";
+});
+cv.addEventListener("mouseleave",()=>{ S.hover=null; });
+cv.addEventListener("click",e=>{
+  const r=cv.getBoundingClientRect();
+  const h=hitTest((e.clientX-r.left)/r.width*2560,(e.clientY-r.top)/r.height*1440);
+  S.sel=h; refreshKeyline();
+});
+
+/* ══ keyboard ═════════════════════════════════════════════════════════════
+   One key for anything that is always there, a printed two-letter hint for
+   anything that came and went. Esc backs out one level at a time.         */
+function focusThing(t){ S.sel=t; refreshKeyline(); }
+function activateHint(h){
+  if(jobByKey(h)) return focusThing({kind:"job",id:h});
+  const st=S.gate.stations.find(x=>x.key===h);
+  if(st) return focusThing({kind:"rev",id:h});
+  const al=S.alerts.find(a=>a.key===h);
+  if(al){ const b=document.querySelector("#al-"+al.id+" .act .btn"); if(b&&!b.disabled) b.click(); return; }
+  for(const it of S.inbox){
+    const i=it.keys.indexOf(h);
+    if(i>=0){ const b=document.querySelectorAll("#in-"+it.id+" .foot .btnrow .btn")[i];
+              if(b&&!b.disabled) b.click(); return; }
+  }
+}
+function setOverlay(o){
+  S.overlay=o;
+  $("#queueView").hidden=o!=="queue";
+  $("#help").hidden=o!=="help";
+  if(o==="queue") renderQueueView();
+  refreshKeyline();
+}
+function refreshKeyline(){
+  const k=$("#keyline");
+  if(S.pending){ k.textContent="key  "+S.pending+"_"; k.className="armed"; }
+  else if(S.sel){ k.textContent="focused  "+S.sel.id+"  ·  esc to back out"; k.className=""; }
+  else if(S.overlay){ k.textContent=S.overlay+"  ·  esc to close"; k.className=""; }
+  else { k.textContent="press ? for keys"; k.className="dim"; }
+  document.querySelectorAll(".kc").forEach(n=>
+    n.classList.toggle("hot",!!S.pending&&n.textContent.indexOf(S.pending)===0));
+}
+addEventListener("keydown",e=>{
+  if(e.metaKey||e.ctrlKey||e.altKey) return;
+  const k=e.key;
+  if(k==="Escape"){
+    e.preventDefault();
+    if(S.pending) S.pending="";
+    else if(S.overlay) setOverlay(null);
+    else if(S.sel) S.sel=null;
+    else $("#stage").classList.toggle("watch");
+    refreshKeyline(); return;
+  }
+  if(S.pending){
+    e.preventDefault();
+    const h=S.pending+k; S.pending="";
+    activateHint(h); refreshKeyline(); return;
+  }
+  if(k==="?"){ e.preventDefault(); setOverlay(S.overlay==="help"?null:"help"); return; }
+  if(HINTS[k]){ e.preventDefault(); S.pending=k; refreshKeyline(); return; }
+  if(k==="q"){ e.preventDefault(); setOverlay(S.overlay==="queue"?null:"queue"); return; }
+  if(k==="f"){ e.preventDefault(); $("#frzBtn").click(); return; }
+  if(k==="w"){ e.preventDefault(); $("#stage").classList.toggle("watch"); return; }
+  const c=S.comps.find(x=>x.key===k);
+  if(c){ e.preventDefault(); focusThing({kind:"comp",id:c.id}); }
+});
+
+/* the mock is a 2560×1440 screen; fit it to whatever window opens it */
+function fit(){
+  $("#stage").style.setProperty("--s",Math.min(innerWidth/2560,innerHeight/1440).toFixed(4));
+}
+addEventListener("resize",fit); fit();
+
+/* ── boot ─────────────────────────────────────────────────────────────── */
+renderAlerts(); renderInbox(); renderModels(); refreshMass(); refreshKeyline();
+$("#tClock").textContent=stamp();
+log("observed","obs",`collector attached · 6 components, 10 registered sessions, 1 unregistered`);
+log("stall","an",`<b>sup·engine</b> silent 14m · 0 jobs active, 1 opus slot held`);
+log("halt","an",`<b>ingestion</b> halted under rule 10 · webhook destination ×3`);
+log("write","wr",`<b>ledger-write-guard</b> wrote 3 files in wt/api-32 <span style="opacity:.6">→ api</span>`);
+log("review","qu",`codex astra took <b>ledger-write-guard</b> from api · round 1 of 2`);
+requestAnimationFrame(frame);
+fire();
+</script>
+</body>
+</html>

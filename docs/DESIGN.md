@@ -26,19 +26,77 @@ visibility structural.
 - **Every memory has a named reader and a named moment of reading.** No vector store, no free-form
   "lessons" that agents write and nobody reads.
 
-## Objects
+## Entities
 
-| Object | What it is | Written by |
+### Actors — things with intent
+| Actor | Count | Does |
 |---|---|---|
-| **Component** | A lane of the product with a countable done-when: a checklist whose items include "merged" and "measured". Owned by one supervisor. | Orchestrator creates; supervisor maintains the checklist |
-| **Job** | The atom. Spec + worktree + one worker + timeout → one artifact. Nothing exists below a job. | Supervisor dispatches via `launch-job` |
-| **Session** | A running agent: role, model, workspace, slot, launched-by. Id minted by the runtime. | Launch scripts and collector only |
-| **Rulings ledger** | Append-only, scoped swarm or component. Injected into every spec by the launch scripts; read first on every launch and relaunch. | Owner, orchestrator, supervisors |
-| **Roster + slot ledger** | Who runs, with what, where, holding which slot, last observed activity. | Runtime only (launch scripts, collector). Sessions never write it |
-| **Checkpoint** | Per session: doing, next, held, open questions. Collector derives the observed part; the session adds the declared part. `relaunch` reads it. | Collector + the session |
-| **Ledger entries** | Per component: checkpoint, finding, evidence (CONFIRMED / PLAUSIBLE), question + answer. Stamped with the writing session. | Supervisors, orchestrator |
-| **Merge ledger** | One line per landed change: what, why, which review, which head. | Merge desk |
-| **Inbox** | The owner's. Money, irreversible acts, product scope. Each item carries a recommendation and its age. | Orchestrator, supervisors |
+| Owner | 1 | Orders components (the plan), answers the inbox, writes rules, freezes |
+| Foreman | 1 | Creates components, assigns supervisors, grants slots, answers supervisors |
+| Supervisor | 1 per component | Turns the done-when into tasks, plans and dispatches jobs, verifies returns, owns quality |
+| Merge desk | 1 | A supervisor with no component: consumes the merge queue, lands branches, writes the merge ledger. Never reviews |
+| Worker | 1 per running job | Headless; takes one job of a kind its pool allows |
+| Collector | 1 daemon | Observes, computes, relaunches; never intends |
+
+### Pools
+One pool per model (Codex, Grok, Muse, Opus), each a plugin directory: slots, allowed job kinds, cannot-take
+topics, default timeout, launch script, the skill that tells a supervisor how to spec a job for it, meter
+source. A job requests a pool. The Opus pool is supervisors only and takes no jobs. Adding a pool is a directory.
+
+### Work — the containment tree
+```
+Project ⊃ Component ⊃ Task ⊃ Job
+```
+- **Component**: the owner's unit of scope. Order (the plan), a done-when sentence, one supervisor.
+- **Task**: one countable item of the done-when; the unit of progress. Written by the supervisor with a title
+  and how to verify it — no verification, no task.
+- **Job**: one dispatch to one worker, serving exactly one task. Kinds: `implement`, `review`, `merge`,
+  `research`, `verify`. Carries spec, pool, worktree, timeout, verify command, slot, timestamps, artifact, verdict.
+  Reviews are optional: the supervisor dispatches one or two review jobs only when it judges them worthwhile.
+
+### Records — append-only, each with a named reader and a named moment of reading
+| Record | Scope | Reader / moment |
+|---|---|---|
+| Rulings ledger | swarm or component | injected into every spec at launch; read first on every relaunch |
+| Roster + slot ledger | runtime-owned; sessions never write it | launcher on every launch; collector every tick |
+| Checkpoint | per session (doing, next, held, open questions); observed part by collector, declared part by session | `relaunch` |
+| Findings | on a task or component | supervisor at the next plan re-look |
+| Evidence | on a task state change, CONFIRMED (re-ran, proof attached) or PLAUSIBLE | whoever confirms or lands the task |
+| Merge ledger | one line per landing: what, why, which review if any, which head, which target branch (feature, dev, main — normal git practice) | task state; duration metrics |
+| Inbox | question + recommendation + answer; money, irreversible, scope only | owner |
+| Events | the collector's raw observed stream | collector; metrics |
+
+### Lifecycles
+- Task: `open → active → built (supervisor CONFIRMED by re-running) → landed (a merge ledger line names it)`;
+  drops back on a failed review. A returned-but-unverified job shows on its task with its age.
+- Job: `planned (spec written) → queued (waiting for a slot) → running → returned (artifact + finish marker)
+  → verified | failed`. Failed twice → a finding on the task, not a third job.
+- Session: `minted → running → exited | stalled | killed`.
+
+### Queues — each has a depth, an oldest-wait, and one named consumer
+| Queue | Holds | Consumer |
+|---|---|---|
+| Task backlog (per component) | open tasks with no job planned | supervisor |
+| Job lane (per component) | planned jobs | supervisor |
+| Slot queue (per pool) | queued jobs waiting for a slot | launcher |
+| Merge queue | branches handed to the merge desk | merge desk |
+| Inbox | questions | owner |
+| Anomalies | discrepancies | collector, then foreman |
+
+A stalled queue points at exactly one role.
+
+### Admission — when a thing is drawn
+A thing appears on the page the moment its ledger line exists with its required fields; the fields are the
+contract. Component: name, order, supervisor, done-when → an empty ring marked planning. Task: title,
+verification → a segment. Job: kind, task, pool, spec, timeout, verify command → in the lane; slot minted →
+in a berth. Session: minted id → on the roster; in the process table without one → intruder. Planning done
+anywhere else enters through the same CLI; there is no second path.
+
+### Metrics — derived every tick, never stored
+From timestamps on ledger lines and the event stream the collector computes, into one observed snapshot: per
+component built / landed / velocity / projected finish; per job wait, run, verify-wait; per pool avg and p90
+duration, slots held, queue depth; per supervisor silence and unverified returns; per queue depth and oldest.
+One source, one computation, so no two surfaces disagree.
 
 ## Roles
 
