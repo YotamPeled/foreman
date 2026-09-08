@@ -659,7 +659,14 @@ def cmd_launch(args: argparse.Namespace) -> int:
                 kind=args.kind, role=args.role,
                 spec_path=os.path.abspath(args.spec), session=session_id,
                 worktree=worktree, branch=branch, log=log_path,
-                timeout=timeout, state="running",
+                timeout=timeout,
+                # The units the job was launched to do. They were parsed,
+                # validated and written into the job file, and then left
+                # off this record, so `job verify` added nothing to its
+                # task and no task could ever reach `built` through the
+                # runtime. Found by carrying one real job end to end.
+                units=units,
+                state="running",
                 started_at=store.utcnow_iso(),
             )
             store.append_ledger(paths.front_jobs_path(args.front),
