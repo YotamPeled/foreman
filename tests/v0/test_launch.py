@@ -600,7 +600,7 @@ def test_launch_records_process_group(env, fake_pool, capsys):
     record = _roster_sessions()[sid]
     assert record["pid"] == os.getpid()
     assert record["pgid"] == record["pid"]
-    assert muse_pool.inner_command(make_ctx(env)).startswith("setsid ")
+    assert muse_pool.inner_command(make_ctx(env)).startswith("setsid --wait ")
 
 
 @pytest.mark.parametrize("name", ["FOREMAN-JOB.md", "FOREMAN-ROLE.md"])

@@ -351,7 +351,9 @@ def cmd_launch(args: argparse.Namespace) -> int:
     branch = args.branch or f"foreman/{session_id}"
     target = args.base or default_base(repo)
     worktree = os.path.abspath(
-        args.worktree or os.path.join(os.path.dirname(repo), f"{os.path.basename(repo.rstrip('/'))}-{session_id}")
+        # Worktrees live under the state directory, not beside the repo:
+        # a swarm must not litter the directory its repository sits in.
+        args.worktree or str(paths.state_dir() / "worktrees" / session_id)
     )
     log_path = os.path.abspath(
         args.log or str(paths.session_log_path(session_id)))

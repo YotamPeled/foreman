@@ -5,7 +5,7 @@ leader writes its own pid first, then runs the vendor CLI with the finish
 marker ``### finished rc=$?`` inside the redirected stream (a marker echoed
 after the pipe never reaches the log), tee'd to the session log::
 
-    setsid bash -c 'echo $$ > <pid file>; { <vendor ...>; echo "### finished rc=$?"; } 2>&1 | tee <log>'
+    setsid --wait bash -c 'echo $$ > <pid file>; { <vendor ...>; echo "### finished rc=$?"; } 2>&1 | tee <log>'
 
 ``observe`` recognises completion only as a line of its own reading
 ``### finished rc=<n>``: a spec quoting the marker, or prose mentioning it,
@@ -82,7 +82,13 @@ def wrap_inner(vendor_argv: list[str], *, pid_path: Path | str,
         "{ " + vendor + '; echo "### finished rc=$?"; '
         "} 2>&1 | tee " + shlex.quote(str(log_path))
     )
-    return "setsid bash -c " + shlex.quote(worker)
+    # setsid --wait, never plain setsid: the headless spawn is a
+    # transient systemd unit with --collect, and plain setsid forks and
+    # lets its parent exit at once, so systemd sees the unit's main
+    # process finish and tears the cgroup down with the worker inside it.
+    # Proven 2026-09-08: the pid file was never written and the job never
+    # ran; with --wait the same command runs to completion.
+    return "setsid --wait bash -c " + shlex.quote(worker)
 
 
 def wrap_outer(session_id: str | None, inner: str, *,

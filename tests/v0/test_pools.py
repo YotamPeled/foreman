@@ -143,7 +143,7 @@ def test_grok_wrapper_writes_pid_and_marker_to_log(env, monkeypatch):
     ctx.log_path.parent.mkdir(parents=True, exist_ok=True)
     write_stub(env / "bin", "grok", "echo vendor-output\nexit 3\n", monkeypatch)
     inner = grok_pool.inner_command(ctx)
-    assert inner.startswith("setsid ")
+    assert inner.startswith("setsid --wait ")
     assert "### finished rc=$?" in inner
     assert inner.index("### finished rc=$?") < inner.index("| tee")
     subprocess.run(["bash", "-c", inner], check=True,
@@ -201,7 +201,7 @@ def test_claude_wrapper_feeds_spec_and_transcribes(env, monkeypatch):
                "exit 5\n",
                monkeypatch)
     inner = claude_pool.inner_command(ctx)
-    assert inner.startswith("setsid ")
+    assert inner.startswith("setsid --wait ")
     assert f"< {ctx.job_path}" in inner
     assert inner.index("### finished rc=$?") < inner.index("| tee")
     subprocess.run(["bash", "-c", inner], check=True,
@@ -453,3 +453,16 @@ def test_a_configured_launcher_alone_opens_no_window(env, monkeypatch, pool,
     assert headless[0] == "systemd-run"
     watched = module.outer_argv(make_ctx(env, pool=pool, window=True))
     assert watched[0] == "test-launcher"
+
+
+def test_headless_spawn_survives_its_own_systemd_unit(env):
+    """Plain setsid dies inside a transient --collect unit; --wait does not.
+
+    setsid forks and lets its parent exit immediately, so systemd sees the
+    unit's main process finish and collects the cgroup with the worker
+    still in it: the pid file is never written and the job never runs.
+    """
+    inner = muse_pool.inner_command(make_ctx(env, pool="muse"))
+    assert inner.startswith("setsid --wait bash -c ")
+    argv = muse_pool.outer_argv(make_ctx(env, pool="muse"))
+    assert argv[0] == "systemd-run" and "--collect" in argv
