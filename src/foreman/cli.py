@@ -35,9 +35,6 @@ def build_parser() -> argparse.ArgumentParser:
         if callable(add_arguments):
             add_arguments(sub)
         sub.set_defaults(_handler=handler)
-        add_arguments = getattr(handler, "add_arguments", None)
-        if callable(add_arguments):
-            add_arguments(sub)
     return parser
 
 
@@ -50,7 +47,3 @@ def main(argv: list[str] | None = None) -> int:
 
     args = build_parser().parse_args(argv)
     return args._handler(args)
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())
