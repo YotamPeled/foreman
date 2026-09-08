@@ -15,12 +15,20 @@ Working:
     Label the atlas roads — ready · units 0/5 · after: Draw the atlas map
     Bind the atlas book — landed · units 4/4
       muse job verified 2h ago
+    want: (not recorded)
+    REMAINING (2): Draw the atlas map, Label the atlas roads
+    ESTIMATE: about 2d (1 job in last 24h)
+    Blocked on you (1): Buy the map tile subscription for the atlas work? (money, 14m)
   beacon — supervisor attached · tasks 0 landed, 1 built, 2 total · doing now: Reading the light measurements (26m ago)
     doing now — Reading the light measurements · 26m ago
     progress — 0/2 tasks
     Light the beacon — built · units 6/6
       astra job returned 40m ago
     Guard the beacon — waiting · units 0/2 · after: Light the beacon
+    want: (not recorded)
+    REMAINING (2): Light the beacon, Guard the beacon
+    ESTIMATE: about 2d (1 job in last 24h)
+    Blocked on you (1): Extend the beacon work to cover the harbor light? (scope, 2h)
 Job queue:
   atlas: Label the atlas roads waits for muse (waiting 6m)
   beacon: Guard the beacon waits for muse (waiting 3m)
@@ -30,3 +38,4 @@ Merge queue:
 Capacity:
   grok: 1/1 held
   muse: 1/5 held
+Overall: 2 of 2 fronts moving (0 done), nearest finish about 2d (atlas); needs you: 2 items, olde...
