@@ -1,0 +1,139 @@
+name      = "runtime-v1"
+order     = 1
+want      = """
+Foreman operates the way the design says for a real front: a brief goes in, a supervisor is summoned by
+script with its budget, its workers and reviewers run against that budget, and progress shows per task on
+the screen. The five gaps found after v0: no `front add`, supervisors not summoned or rostered, no
+capacity enforcement, no progress verbs, no Codex adapter.
+"""
+done-when = "The panel front (briefs/panel/brief.toml) is added with `foreman front add`, its supervisor is summoned by `foreman launch supervisor panel` and appears on the roster, a launch beyond its allocation or a pool cap is refused by name, an Astra review job runs through `foreman launch` and is on the roster, and `foreman status` shows the panel front's tasks with units and states that moved through `job verify` and `task built` — all CONFIRMED by running it."
+land-on   = "main"
+reviews   = "on request"
+after     = ["runtime"]
+prefer    = 10
+
+[allocation]
+muse  = 5
+opus  = 1
+astra = 1
+grok  = 1
+
+[[task]]
+title   = "front add from a brief"
+core    = true
+scope   = """
+WHAT: `foreman front add <dir>` parses <dir>/brief.toml per DESIGN.md §4.2, validates per §4.3 (every
+violation named at once), writes the front, its tasks (with scope, verify, size, after, timeout) and its
+allocation to the ledger under fronts/<name>/, sets task states (waiting/ready by `after`), and puts the
+front in the front queue. `foreman front list|prefer|close`. `foreman status` shows the front with its
+done-when, tasks with state and units, and the allocation as `held/ceiling` per role.
+INPUTS: DESIGN.md §4, §5.1, §13; briefs/panel/brief.toml and briefs/runtime-v1/brief.toml as fixtures
+(both must validate); a set of invalid briefs with expected refusal text.
+OUTPUTS: the verbs; entity changes; status changes; tests.
+OUT OF SCOPE: admission logic beyond `after` and the queue order; monitors.
+"""
+verify  = "python -m pytest tests -q && foreman front add briefs/panel --dry-run"
+size    = 1
+after   = []
+
+[[task]]
+title   = "summon supervisors by script and roster them"
+core    = true
+scope   = """
+WHAT: `foreman launch supervisor <front>` generates a supervisor role prompt from a template (who you are,
+which front with its tasks and done-when verbatim, who you report to, what you report and when, your
+allocation, your tools = the exact foreman verbs a supervisor may call, the rulings injected, the
+environment contract), mints and rosters the session, and starts an INTERACTIVE Claude Code session in a
+window on a given workspace (v0 ruling: supervisors interactive) using the proven launch shape in
+~/.claude/skills/opus-supervisor (session id, model claude-opus-5, autocompact 40, trust dialogs
+pre-answered, sleep 120 at exit). `foreman register` for a session started outside Foreman (the foreman
+itself). `relaunch` for a supervisor: fresh role prompt plus its last checkpoint replayed, `--resume`.
+The collector's "supervisor silent" anomaly must fire for a rostered supervisor.
+INPUTS: DESIGN.md §3, §12; ~/.claude/skills/opus-supervisor/{SKILL.md,launch-supervisor.sh};
+~/.claude/skills/muse-workers/launch-window.sh (reuse, never reimplement window placement).
+OUTPUTS: the verbs; templates/supervisor.md; a dry-run test that renders the prompt for the panel front
+and asserts every section; a launch test with a fake `claude`.
+OUT OF SCOPE: headless supervisors; MCP.
+"""
+verify  = "python -m pytest tests -q && foreman launch supervisor panel --workspace 6 --dry-run"
+size    = 1
+after   = ["front add from a brief"]
+
+[[task]]
+title   = "capacity: pool caps and front allocations enforced"
+core    = true
+scope   = """
+WHAT: ~/.config/foreman/foreman.toml with pool caps (opus supervisors, opus workers, muse, astra, grok),
+defaults shipped in the package and copied on first run (Omarchy doctrine: packaged default, user override,
+broken file → defaults). `foreman launch` for a job checks, in order: not frozen; the front's allocation
+ceiling for that role (held < ceiling); the pool cap (held < cap); refuses by name otherwise, stating held,
+ceiling and cap. Slot grants recorded in slots.jsonl on launch and released on return/kill; "held" is
+derived from open grants. First come first served, no reservations. `foreman cap <pool> <n>` (owner).
+`foreman status` Capacity block: per pool `held/cap`, per front `held/ceiling` per role, and per pool the
+number of jobs waiting for a slot.
+INPUTS: DESIGN.md §3 Foreman, §5.3, §9 rule 12, §13.
+OUTPUTS: config loading; the checks; slots ledger; status; tests for every refusal and for release on
+return and on kill.
+OUT OF SCOPE: a job queue that auto-dispatches when a slot frees (the supervisor retries); priorities.
+"""
+verify  = "python -m pytest tests -q"
+size    = 1
+after   = ["front add from a brief"]
+
+[[task]]
+title   = "progress verbs"
+scope   = """
+WHAT: supervisor verbs per DESIGN.md §12: `job verify <job> --confirmed --command … --output …` (records
+evidence, marks the job verified, adds its units to the task), `job fail <job> --finding …`, `task built
+<task>` (all units verified; refused otherwise), `task landed <task> --head …` (until a merge desk exists,
+the supervisor records the landing), `finding`, `evidence`. Every verb refuses unless the caller is the
+front's supervisor (FOREMAN_SESSION on the roster with that role). Status shows units and states.
+INPUTS: §5.1, §5.4, §12, §14 flow 2.
+OUTPUTS: the verbs; tests driving flow 2 through the CLI alone on a fixture front.
+OUT OF SCOPE: monitors/measure; merge desk.
+"""
+verify  = "python -m pytest tests -q"
+size    = 1
+after   = ["front add from a brief"]
+
+[[task]]
+title   = "codex adapter for Astra reviews"
+scope   = """
+WHAT: a `codex` pool adapter on the shared wrapper: `codex exec` headless at reasoning effort medium with
+the model gpt-6-astra, cwd trusted in ~/.codex/config.toml (done by the adapter for the worktree), output
+file for the verdict JSON, rollout path for observe, `/status`-equivalent meter if reachable else exit 3.
+A review job's spec template carries the verdict schema. Role `astra` maps to this pool.
+INPUTS: ~/.claude/skills/opus-supervisor/SKILL.md (Astra section), pools/_common.py, grok.py.
+OUTPUTS: pools/codex.py; a smoke test that runs one trivial review through `foreman launch astra codex`.
+OUT OF SCOPE: Codex as supervisor.
+"""
+verify  = "python -m pytest tests -q -m smoke"
+size    = 1
+after   = ["capacity: pool caps and front allocations enforced"]
+
+[[task]]
+title   = "the proof: panel front admitted, summoned, budgeted, reviewed, progressing"
+scope   = """
+WHAT: the done-when, run by the supervisor: `foreman front add briefs/panel`; `foreman launch supervisor
+panel --workspace 6 --dry-run` (and once for real, then the session ended); launches beyond the allocation
+and beyond a cap refused by name; one Astra review job through `foreman launch`; `job verify` and `task
+built` on a fixture task; `foreman status` showing all of it. Output recorded CONFIRMED in the checkpoint.
+INPUTS: everything above.
+OUTPUTS: the record; README "running v1".
+OUT OF SCOPE: running the panel front for real (that is the next front).
+"""
+verify  = "foreman status | grep -c 'panel'"
+size    = 1
+after   = ["summon supervisors by script and roster them", "capacity: pool caps and front allocations enforced", "progress verbs", "codex adapter for Astra reviews"]
+
+[[monitor]]
+question = "how many of the five gaps are closed with a test?"
+measure  = "foreman-verify gaps --count"
+unit     = "gaps"
+of       = 5
+every    = "landing"
+
+[[rule]]
+text = "Every worker and reviewer for this front is launched through `foreman launch` — v0 is used to build v1."
+[[rule]]
+text = "Python 3.12 stdlib + tomllib; one package; every verb reachable as CLI and as a library call; the text status golden test must keep passing with additions appended, never reshaped."
