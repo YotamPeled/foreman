@@ -93,9 +93,10 @@ def test_grok_argv_is_the_proven_shape(env, effort):
         "-m", "grok-4.6",
         "--reasoning-effort", effort,
         "--permission-mode", "bypassPermissions",
-        "--deny", "foreman__*",
-        "--deny", "boxes__*",
+        "--deny", "MCPTool(foreman__*)",
+        "--deny", "MCPTool(boxes__*)",
         "--disable-web-search",
+        "--output-format", "json",
         "--cwd", str(ctx.worktree),
     ]
 
@@ -110,17 +111,18 @@ def test_grok_launch_always_denies_swarm_tools(env, kind):
     """
     argv = grok_pool.grok_argv(make_ctx(env, kind=kind))
     denies = denies_of(argv)
-    assert "foreman__*" in denies
-    assert "boxes__*" in denies
+    assert "MCPTool(foreman__*)" in denies
+    assert "MCPTool(boxes__*)" in denies
 
 
 def test_grok_reviewer_denies_writes(env):
     """A reviewer without the three write denials can write: no sandbox
     or permission-mode flag stops it, only these denials do."""
     implement = denies_of(grok_pool.grok_argv(make_ctx(env, kind="implement")))
-    assert implement == ["foreman__*", "boxes__*"]
+    assert implement == ["MCPTool(foreman__*)", "MCPTool(boxes__*)"]
     review = denies_of(grok_pool.grok_argv(make_ctx(env, kind="review")))
-    assert review == ["foreman__*", "boxes__*", "Write", "Edit", "Bash"]
+    assert review == ["MCPTool(foreman__*)", "MCPTool(boxes__*)",
+                        "Write", "Edit", "Bash"]
 
 
 def test_grok_kind_selects_reviewer_in_printed_command(env):
@@ -143,7 +145,7 @@ def test_grok_wrapper_writes_pid_and_marker_to_log(env, monkeypatch):
     ctx.log_path.parent.mkdir(parents=True, exist_ok=True)
     write_stub(env / "bin", "grok", "echo vendor-output\nexit 3\n", monkeypatch)
     inner = grok_pool.inner_command(ctx)
-    assert inner.startswith("setsid --wait ")
+    assert inner.startswith("bash -c ")
     assert "### finished rc=$?" in inner
     assert inner.index("### finished rc=$?") < inner.index("| tee")
     subprocess.run(["bash", "-c", inner], check=True,
@@ -187,6 +189,7 @@ def test_claude_argv_denies_swarm_tools_with_bare_binary(env):
         "--model", claude_pool.model_for(ctx.session.role),
         "--dangerously-skip-permissions",
         "--disallowedTools", "mcp__foreman__* mcp__boxes__*",
+        "--add-dir", str(ctx.worktree),
     ]
     assert "/" not in argv[0]
 
@@ -201,7 +204,8 @@ def test_claude_worker_names_model_directory_and_permission_mode(env):
     inner = claude_pool.inner_command(ctx)
     assert "--model claude-opus-5" in inner
     assert "--dangerously-skip-permissions" in inner
-    assert f"cd {ctx.worktree} &&" in inner
+    assert f"--working-directory={ctx.worktree}" in " ".join(
+        claude_pool.outer_argv(ctx))
     assert claude_pool.model_for("opus") == "claude-opus-5"
     assert claude_pool.model_for("") == claude_pool.MODEL
 
@@ -221,7 +225,7 @@ def test_claude_wrapper_feeds_spec_and_transcribes(env, monkeypatch):
                "exit 5\n",
                monkeypatch)
     inner = claude_pool.inner_command(ctx)
-    assert inner.startswith("setsid --wait ")
+    assert inner.startswith("bash -c ")
     assert f"< {ctx.job_path}" in inner
     assert inner.index("### finished rc=$?") < inner.index("| tee")
     subprocess.run(["bash", "-c", inner], check=True,
@@ -440,7 +444,8 @@ def test_muse_adapter_unchanged_shape(env):
         "muse", "exec",
         "--model", "muse-spark-1.3-contributor",
         "--reasoning-effort", "high",
-        "--yolo",
+        "--approval-mode", "never",
+        "--json",
         "--workspace", str(ctx.worktree),
         "--prompt-file", str(ctx.job_path),
     ]
@@ -476,13 +481,14 @@ def test_a_configured_launcher_alone_opens_no_window(env, monkeypatch, pool,
 
 
 def test_headless_spawn_survives_its_own_systemd_unit(env):
-    """Plain setsid dies inside a transient --collect unit; --wait does not.
-
-    setsid forks and lets its parent exit immediately, so systemd sees the
-    unit's main process finish and collects the cgroup with the worker
-    still in it: the pid file is never written and the job never runs.
+    """The worker shell is the unit's main process (--service-type=exec),
+    so unit lifetime is job lifetime with no setsid workaround; and the
+    unit is never collected, so a finished unit still answers its exit
+    status instead of reading as success.
     """
     inner = muse_pool.inner_command(make_ctx(env, pool="muse"))
-    assert inner.startswith("setsid --wait bash -c ")
+    assert inner.startswith("bash -c ")
+    assert "setsid" not in inner
     argv = muse_pool.outer_argv(make_ctx(env, pool="muse"))
-    assert argv[0] == "systemd-run" and "--collect" in argv
+    assert argv[0] == "systemd-run" and "--collect" not in argv
+    assert "--service-type=exec" in argv
