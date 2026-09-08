@@ -549,14 +549,19 @@ def _tick_inner(moment: datetime, now_iso: str,
     cstate = _load_state()
     baselines = cstate["sessions"]
 
+    # Anomalies this tick opened (not merely reasserted): each fires one
+    # on-alert hook after the state writes below are durable.
+    opened: list[tuple[str, str, str]] = []
+
     def note_open(kind: str, subject: str, detail: str,
-                 asserted: set) -> None:
+                  asserted: set) -> None:
         asserted.add((kind, subject))
         if (kind, subject) not in open_now:
             entry = store.append_ledger(
                 paths.anomalies_path(),
                 _anomaly_line(kind, subject, now_iso, detail))
             open_now[(kind, subject)] = entry
+            opened.append((kind, subject, detail))
 
     asserted: set[tuple[str, str]] = set()
     _check_collector_staleness(cstate, now_iso, note_open, asserted)
@@ -954,6 +959,14 @@ def _tick_inner(moment: datetime, now_iso: str,
         "monitors": monitors_view,
     }
     store.write_snapshot(paths.observed_path(), observed_payload)
+    if opened:
+        # Hooks observe after the writes are durable, never inside them:
+        # a failing hook prints and the tick's records stand either way.
+        from . import hooks as _hooks
+
+        for kind, subject, detail in opened:
+            _hooks.fire("on-alert", {"kind": kind, "subject": subject,
+                                     "detail": detail})
     return observed_payload
 
 

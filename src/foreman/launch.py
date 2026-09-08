@@ -64,7 +64,7 @@ import tomllib
 import uuid
 from pathlib import Path
 
-from . import caller, capacity, cli, fronts, ids, paths, procs, store
+from . import caller, capacity, cli, fronts, hooks, ids, paths, procs, store
 from .caller import FOREMAN, MERGE_DESK, SUPERVISOR
 from .cli import subcommand
 from . import entities
@@ -764,6 +764,12 @@ def cmd_launch(args: argparse.Namespace) -> int:
     print(f"log: {log_path}")
     print(f"pid: {pid if pid is not None else '(not started --dry-run)'}")
     print(f"command: {command}")
+    if not args.dry_run:
+        # After the roster write is durable: hooks observe, never gate.
+        hooks.fire("on-launch", {
+            "session": session_id, "role": args.role, "pool": args.pool,
+            "front": args.front, "job": args.job, "worktree": worktree,
+            "branch": branch})
     return 0
 
 
@@ -1005,10 +1011,13 @@ def import_verb_modules() -> None:
     """
     from . import collector as _collector  # noqa: F401
     from . import config as _config  # noqa: F401
+    from . import doctor as _doctor  # noqa: F401
     from . import fronts as _fronts  # noqa: F401
+    from . import hooks as _hooks  # noqa: F401
     from . import mcp as _mcp  # noqa: F401
     from . import measure as _measure  # noqa: F401
     from . import merge as _merge  # noqa: F401
+    from . import migrate as _migrate  # noqa: F401
     from . import pool as _pool  # noqa: F401
     from . import progress as _progress  # noqa: F401
     from . import status as _status  # noqa: F401
@@ -1770,6 +1779,8 @@ def launch_supervisor_main(args: argparse.Namespace,
     _print_supervisor(session_id, vendor_id, role_prompt, workspace, pid,
                       argv, inner, front=front, branch=branch,
                       mcp_config=mcp_module.mcp_config_path(session_id))
+    hooks.fire("on-launch", {"session": session_id, "role": "supervisor",
+                             "front": front, "branch": branch})
     return 0
 
 
@@ -2043,6 +2054,7 @@ def launch_merge_desk_main(args: argparse.Namespace,
     _record_running(session_id, pid, starttime)
     _print_supervisor(session_id, vendor_id, role_prompt, workspace, pid,
                       argv_, inner, branch=branch)
+    hooks.fire("on-launch", {"session": session_id, "role": "merge-desk"})
     return 0
 
 
@@ -2324,6 +2336,9 @@ def cmd_relaunch(args: argparse.Namespace) -> int:
     _print_supervisor(session_id, vendor_id, role_prompt, workspace, pid,
                       argv, inner, front=front, branch=branch,
                       mcp_config=mcp_module.mcp_config_path(session_id))
+    hooks.fire("on-launch", {"session": session_id, "role": "supervisor",
+                             "front": front, "branch": branch,
+                             "replaces": old_id})
     return 0
 
 

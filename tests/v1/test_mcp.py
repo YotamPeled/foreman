@@ -39,15 +39,15 @@ PANEL_BRIEF = ROOT / "briefs" / "panel"
 #: here, not derived: the drift being caught is exactly the server
 #: disagreeing with the table.
 SUPERVISOR_TOOLS = frozenset({
-    "ask", "checkpoint", "evidence", "finding", "front_take", "job_fail",
-    "job_verify", "launch", "measure", "merge_request", "register",
-    "relaunch", "rule", "status", "task_built", "task_landed", "task_reset",
-    "version",
+    "ask", "checkpoint", "doctor", "evidence", "finding", "front_take",
+    "job_fail", "job_verify", "launch", "measure", "merge_request",
+    "register", "relaunch", "rule", "status", "task_built", "task_landed",
+    "task_reset", "version",
 })
 #: The foreman role's own row: answers and rules, never front or job verbs.
 FOREMAN_TOOLS = frozenset({
-    "answer", "checkpoint", "front_allocate", "inbox", "launch", "register",
-    "relaunch", "rule", "status", "version",
+    "answer", "checkpoint", "doctor", "front_allocate", "inbox", "launch",
+    "register", "relaunch", "rule", "status", "version",
 })
 #: A worker holds no verb, so only the gateless one survives.
 WORKER_TOOLS = frozenset({"version"})
@@ -148,7 +148,10 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     assert "mcp" not in names
     assert SUPERVISOR_TOOLS | FOREMAN_TOOLS | {"front_add", "cap",
                                               "collector"} <= names
-    assert len(names) == 34
+    # 34 before the doctor/hooks/migrations job: doctor, freeze, thaw,
+    # hook_install, hook_list, migrate. Counted, not derived, so a verb
+    # added without intent fails here.
+    assert len(names) == 40
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):
