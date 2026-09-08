@@ -10,6 +10,8 @@ time, so a passing suite means each refusal names its rule.
 
 from __future__ import annotations
 
+import subprocess
+import tomllib
 from pathlib import Path
 
 import pytest
@@ -74,6 +76,15 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("FOREMAN_CONFIG", str(tmp_path / "config"))
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv(SESSION_ENV, raising=False)
+    # `front add` refuses a `land-on` branch it cannot find, so every brief
+    # written under tmp_path lives in a throwaway repository with a `main`
+    # branch; the branch test that needs no repository builds its own dir.
+    subprocess.run(["git", "init", "-b", "main", "-q", str(tmp_path)],
+                   check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "-c",
+                    "user.email=test@example.invalid", "-c",
+                    "user.name=foreman-test", "commit", "-q", "--allow-empty",
+                    "-m", "init"], check=True)
     return tmp_path
 
 
@@ -143,6 +154,44 @@ def test_panel_and_runtime_v1_briefs_validate_and_add(env, capsys):
     assert (second["units_done"], second["units_total"]) == (0, 7)
 
     assert len(store.read_ledger(paths.front_tasks_path("runtime-v1"))) == 6
+    _assert_task_contract(PANEL_BRIEF, "panel")
+    _assert_task_contract(RUNTIME_BRIEF, "runtime-v1")
+
+
+def _assert_task_contract(brief_dir: Path, front: str) -> None:
+    """Every stored task keeps the brief's worker contract verbatim.
+
+    A task that loses its scope, its verify command, its size, its
+    predecessors or its timeout still counts and orders correctly, so only an
+    exact comparison against the brief file catches the loss.
+    """
+    data = tomllib.loads((brief_dir / "brief.toml").read_bytes().decode(
+        "utf-8"))
+    expected = {entry["title"]: entry for entry in data["task"]}
+    stored = {task["title"]: task for task in store.read_ledger(
+        paths.front_tasks_path(front))}
+    assert set(stored) == set(expected)
+    for title, entry in expected.items():
+        task = stored[title]
+        assert task["scope"] == entry["scope"], title
+        assert task["verify"] == entry["verify"], title
+        assert task["size"] == entry["size"], title
+        assert task["units_total"] == entry["size"], title
+        assert task["after"] == entry.get("after", []), title
+        assert task["timeout"] == entry.get("timeout", ""), title
+        assert task["land_on"] == entry.get("land-on", data["land-on"]), title
+
+
+def test_add_keeps_task_timeout(env):
+    """A task's timeout reaches the ledger: dropping it defaults every task
+    to the pool timeout, which no count or state assertion catches."""
+    text = VALID_BRIEF.format(name="opts").replace(
+        "size = 3", 'size = 3\ntimeout = "20m"')
+    add_ok(write_brief(env, "opts", text))
+    tasks = {task["title"]: task for task in store.read_ledger(
+        paths.front_tasks_path("opts"))}
+    assert tasks["first work"]["timeout"] == "20m"
+    assert tasks["second work"]["timeout"] == ""
 
 
 def test_add_copies_brief_and_plan(env):
@@ -234,6 +283,77 @@ def test_monitor_without_measure_is_refused(env, capsys):
     add_refused(capsys, brief_dir, "measure")
 
 
+def test_monitor_without_unit_is_refused(env, capsys):
+    brief_dir = write_brief(env, "nounit", VALID_BRIEF.format(
+        name="nounit").replace('unit = "things"\n', ""))
+    add_refused(capsys, brief_dir, "unit")
+    assert not paths.front_record_path("nounit").exists()
+
+
+def test_monitor_without_every_is_refused(env, capsys):
+    brief_dir = write_brief(env, "noevery", VALID_BRIEF.format(
+        name="noevery").replace('every = "landing"\n', ""))
+    add_refused(capsys, brief_dir, "every")
+    assert not paths.front_record_path("noevery").exists()
+
+
+def test_monitor_with_unparseable_alert_is_refused(env, capsys):
+    text = VALID_BRIEF.format(name="badalert").replace(
+        'every = "landing"', 'every = "landing"\nalert = "nonsense"')
+    add_refused(capsys, write_brief(env, "badalert", text), "alert")
+    assert not paths.front_record_path("badalert").exists()
+
+
+def test_monitor_comparison_alerts_add(env):
+    """Alerts that parse — a comparison and a number — are admitted."""
+    for index, alert in enumerate(["< 0.80", ">= 5", "!= 0", "> 120"]):
+        name = f"alertok{index}"
+        text = VALID_BRIEF.format(name=name).replace(
+            'every = "landing"', f'every = "landing"\nalert = "{alert}"')
+        add_ok(write_brief(env, name, text))
+
+
+def test_monitor_defects_join_one_refusal(env, capsys):
+    """A monitor wrong three ways joins the single refusal: the owner fixes
+    the monitor in one round, and a task defect alongside still names both."""
+    text = VALID_BRIEF.format(name="badmonitor")
+    text = text.replace('unit = "things"\n', "")
+    text = text.replace('every = "landing"\n', "")
+    text = text.replace('verify = "make check first"', 'verify = ""')
+    text = text.replace("[[monitor]]", '[[monitor]]\nalert = "nonsense"')
+    add_refused(capsys, write_brief(env, "badmonitor", text),
+                "unit", "every", "alert", "verify")
+    assert not paths.front_record_path("badmonitor").exists()
+
+
+def test_malformed_task_after_is_refused_with_other_violations(env, capsys):
+    """A dependency that is not a string is a refusal, not a traceback: the
+    bad entry is named alongside every other violation in the same message."""
+    text = VALID_BRIEF.format(name="badaftertype")
+    text = text.replace('after = ["first work"]', 'after = [["first work"]]')
+    text = text.replace('verify = "make check second"', 'verify = ""')
+    add_refused(capsys, write_brief(env, "badaftertype", text),
+                "after", "verify")
+    assert not paths.front_record_path("badaftertype").exists()
+
+
+def test_land_on_unknown_branch_is_refused(env, capsys):
+    brief_dir = write_brief(env, "badbranch", VALID_BRIEF.format(
+        name="badbranch").replace('land-on   = "main"',
+                                 'land-on   = "review-no-such-branch-92817"'))
+    add_refused(capsys, brief_dir, "land-on", "review-no-such-branch-92817")
+    assert not paths.front_record_path("badbranch").exists()
+
+
+def test_land_on_outside_any_repository_is_refused(env, capsys,
+                                                  tmp_path_factory):
+    """A brief directory git cannot place gets a refusal naming that, rather
+    than a silent pass on a branch nobody checked."""
+    brief_dir = write_brief(tmp_path_factory.mktemp("nogit"), "outside")
+    add_refused(capsys, brief_dir, "land-on", "not inside a git repository")
+    assert not paths.front_record_path("outside").exists()
+
+
 def test_missing_brief_file_is_refused(env, capsys):
     rc = fronts.front_add_main(str(env / "absent"))
     _, err = capsys.readouterr()
@@ -284,26 +404,46 @@ def _tree(root: Path) -> list[str]:
                   for path in root.rglob("*"))
 
 
+def _tree_bytes(root: Path) -> dict[str, bytes]:
+    """Every file under root by relative name, with its exact bytes."""
+    if not root.exists():
+        return {}
+    return {str(path.relative_to(root)): path.read_bytes()
+            for path in sorted(root.rglob("*")) if path.is_file()}
+
+
 def test_dry_run_writes_nothing(env, monkeypatch, capsys):
-    """--dry-run validates and prints what it would write while the state and
-    config listings stay byte-identical: no directory, no file, no copy."""
+    """--dry-run validates and prints what it would write while a populated
+    state and config stay identical: same entries and same bytes per file.
+    A dry run that corrupts an existing file fails here, not just one that
+    creates files under empty directories."""
     monkeypatch.chdir(ROOT)
-    before = (_tree(env / "state"), _tree(env / "config"))
+    add_ok(write_brief(env, "seeded"))
+    capsys.readouterr()
+    before = ((_tree(env / "state"), _tree(env / "config")),
+              (_tree_bytes(env / "state"), _tree_bytes(env / "config")))
     assert cli.main(["front", "add", "briefs/panel", "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert "would write" in out
     assert "panel" in out
-    assert (_tree(env / "state"), _tree(env / "config")) == before
+    assert ((_tree(env / "state"), _tree(env / "config")),
+            (_tree_bytes(env / "state"), _tree_bytes(env / "config"))) == before
 
 
 def test_prefer_appends_a_revised_copy(env, capsys):
     """Preferring grows the ledger by one line and the fold carries the new
-    value under the same record id, monitors included."""
+    value under the same record id, monitors included. Rewriting the earlier
+    lines while appending fails here: the file must open with exactly the
+    bytes it held before the call."""
     add_ok(write_brief(env, "pref"))
     capsys.readouterr()
+    before_bytes = paths.front_record_path("pref").read_bytes()
     before = store.read_ledger(paths.front_record_path("pref"))
     assert fronts.front_prefer_main("pref", "7") == 0
     assert capsys.readouterr().out.strip() == "pref prefer 7"
+    after_bytes = paths.front_record_path("pref").read_bytes()
+    assert after_bytes.startswith(before_bytes)
+    assert len(after_bytes) > len(before_bytes)
     after = store.read_ledger(paths.front_record_path("pref"))
     assert len(after) == len(before) + 1
     folded = store.fold_by_id(after)[0]
@@ -328,12 +468,17 @@ def test_prefer_refusals(env, capsys):
 
 def test_close_appends_done(env, capsys):
     """Closing grows the ledger by one line and the fold reads done; closing
-    what was never added names the front instead."""
+    what was never added names the front instead. As with prefer, a rewrite
+    of the earlier lines fails here through the byte prefix."""
     add_ok(write_brief(env, "closing"))
     capsys.readouterr()
+    before_bytes = paths.front_record_path("closing").read_bytes()
     before = store.read_ledger(paths.front_record_path("closing"))
     assert fronts.front_close_main("closing") == 0
     assert capsys.readouterr().out.strip() == "closing closed"
+    after_bytes = paths.front_record_path("closing").read_bytes()
+    assert after_bytes.startswith(before_bytes)
+    assert len(after_bytes) > len(before_bytes)
     after = store.read_ledger(paths.front_record_path("closing"))
     assert len(after) == len(before) + 1
     folded = store.fold_by_id(after)[0]
@@ -371,13 +516,18 @@ def _grant(front: str, role: str, released: bool) -> dict:
 
 def test_status_shows_done_when_and_allocation(env, capsys, monkeypatch):
     """Working shows the front's done-when under its name and held/ceiling per
-    role. Held counts open slot grants only: one open plus one released grant
-    for muse reads 1, not 2."""
+    role. Held folds last-wins per grant id: an open grant superseded by its
+    own released copy counts 0, so that pair plus one separate open grant
+    reads 1. Counting ledger lines instead of folded grants reads 2 here."""
     monkeypatch.chdir(ROOT)
     assert cli.main(["front", "add", "briefs/panel"]) == 0
     capsys.readouterr()
+    superseded = _grant("panel", "muse", False)
+    store.append_ledger(paths.slots_path(), superseded)
+    store.append_ledger(paths.slots_path(),
+                        {**superseded,
+                         "released_at": "2026-09-08T11:59:00+00:00"})
     store.append_ledger(paths.slots_path(), _grant("panel", "muse", False))
-    store.append_ledger(paths.slots_path(), _grant("panel", "muse", True))
     assert cli.main(["status"]) == 0
     out = capsys.readouterr().out
     assert "Super+M shows the \u00a713 blocks live from a running collector" \
