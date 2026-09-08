@@ -1,13 +1,17 @@
 import QtQuick
 import qs.Commons
+import "." as Ui
 
 // The mock's .card: raised surface, 1px border, 6px radius, 14px/18px
 // padding. tone draws the mock's 4px left bar for red/yellow/green and the
 // dimmed look for dim; plain has no bar.
 //
-// Theme note: the shell exposes one highlight (accent) and one danger
-// colour (urgent), so the mock's yellow and green bars both bind accent
-// and red binds urgent.
+// Theme note: the shell's Color singleton carries no green and no yellow,
+// so the mock's red, yellow and green bars bind the status colours on
+// Palette, which holds the mock's values. Tone names are unchanged.
+// Reached as Ui.Palette through a self-import: QtQuick exports its own
+// Palette type, so the bare name does not reach our singleton.
+
 //
 // Contract for the other layout jobs and for panel --blocks: put the
 // card's title in a Text with objectName "title". --blocks counts Cards
@@ -43,7 +47,7 @@ Rectangle {
       bottom: parent.bottom
     }
     radius: 2
-    color: root.tone === "red" ? Color.urgent : Color.accent
+    color: root.tone === "red" ? Ui.Palette.bad : root.tone === "yellow" ? Ui.Palette.warn : Ui.Palette.ok
   }
 
   Column {

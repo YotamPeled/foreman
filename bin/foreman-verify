@@ -201,6 +201,30 @@ EXPECTED_PANEL_PROBLEMS = [
     " time, the supervisor must write what changed before dispatching again",
 ]
 
+#: The Working block against the mock fixture, in the model's order (the
+#: front directories sort alphabetically, so api comes before corpus).
+#: One card per working front plus the merge desk card; each entry is the
+#: card title, its tone, its task-row count, and its monitors line.
+#: Hand-derived from the fixture bytes: tones from the front condition
+#: (moving / stalled-supervisor / halted / idle), task counts from
+#: tasks.jsonl (every task gets a row; fronts with nothing running show
+#: the muted sentence instead, so zero rows), monitors from
+#: measurements.jsonl (last line per monitor, in first-seen order).
+EXPECTED_PANEL_WORKING = [
+    ("api", "green", 6,
+     "metrics: routes served from the ledger 11/14 · schema drift 0"),
+    ("corpus", "green", 7,
+     "metrics: apps collected 412/600 · labels double-read 184/600"
+     " · label agreement 0.91"),
+    ("engine", "red", 0,
+     "metrics: slots returned after a restart 0/4"),
+    ("ingestion", "red", 0,
+     "metrics: duplicate landings 3"),
+    ("reaper", "dim", 0,
+     "metrics: processes left behind 0"),
+    ("merge desk", "plain", 0, ""),
+]
+
 #: The slots the panel renders, in Panel.qml's order. needsYou and
 #: problems arrived with the shell job; the rest land with the other
 #: layout jobs and are reported, not asserted, until they do.
@@ -536,6 +560,7 @@ def run_panel_harness(state_dir: Path) -> dict:
                 "cards": int(match.group(3)),
                 "titles": titles,
                 "empty": empty,
+                "details": shown.get("details", []),
             }
     if "HARNESS-DONE" not in output:
         raise Failure("panel harness: did not finish; output was:\n"
@@ -611,6 +636,26 @@ def check_panel_strict(renders: dict) -> None:
         if slot["empty"]:
             raise Failure("blocks: %s: empty voice shows beside %d card(s)"
                           % (name, slot["cards"]))
+
+    slot = renders["working"]
+    if slot["status"] != "ready":
+        raise Failure("blocks: working: not rendered (%s)" % slot["status"])
+    expected_titles = [title for title, _, _, _ in EXPECTED_PANEL_WORKING]
+    if slot["cards"] != len(expected_titles) or slot["titles"] != expected_titles:
+        raise Failure("blocks: working: got %d card(s) %r, the fixture holds"
+                      " %d with %r"
+                      % (slot["cards"], slot["titles"],
+                         len(expected_titles), expected_titles))
+    if slot["empty"]:
+        raise Failure("blocks: working: empty voice shows beside %d card(s)"
+                      % slot["cards"])
+    details = slot.get("details", [])
+    got = [(card.get("title", ""), card.get("tone", ""),
+            card.get("tasks", -1), card.get("monitors", ""))
+           for card in details]
+    if got != EXPECTED_PANEL_WORKING:
+        raise Failure("blocks: working: got %r, the fixture holds %r"
+                      % (got, EXPECTED_PANEL_WORKING))
 
 
 NOT_IMPLEMENTED = {

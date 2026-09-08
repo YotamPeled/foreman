@@ -7,3 +7,4 @@ MeterBar 1.0 MeterBar.qml
 PanelHeader 1.0 PanelHeader.qml
 NeedsYouBlock 1.0 NeedsYouBlock.qml
 ProblemsBlock 1.0 ProblemsBlock.qml
+WorkingBlock 1.0 WorkingBlock.qml

@@ -73,12 +73,26 @@ ShellRoot {
     harness.holders = next
   }
 
+  // Per-card detail for the blocks whose assertions go past titles: a
+  // card opens a record holding its tone, and the Texts inside it fill
+  // that record — objectName "task" counts the task rows, objectName
+  // "monitors" the monitors line. Blocks that mark nothing extra report
+  // zero tasks and no monitors line, so this stays meaningful for every
+  // slot. acc.current always points at the card under the walk.
   function walk(item, acc) {
     if (!item) return
-    if (item.isForemanCard === true && item.visible) acc.cards += 1
+    if (item.isForemanCard === true && item.visible) {
+      acc.cards += 1
+      acc.current = { title: "", tone: item.tone || "plain", tasks: 0, monitors: "" }
+      acc.details.push(acc.current)
+    }
     if (item.visible && typeof item.text === "string") {
-      if (item.objectName === "title") acc.titles.push(item.text)
-      else if (item.objectName === "empty") acc.empty.push(item.text)
+      if (item.objectName === "title") {
+        acc.titles.push(item.text)
+        if (acc.current) acc.current.title = item.text
+      } else if (item.objectName === "empty") acc.empty.push(item.text)
+      else if (item.objectName === "task") { if (acc.current) acc.current.tasks += 1 }
+      else if (item.objectName === "monitors") { if (acc.current) acc.current.monitors = item.text }
     }
     var kids = item.children
     if (kids)
@@ -110,10 +124,11 @@ ShellRoot {
                  + " 0 " + JSON.stringify({ titles: [], empty: [] }))
         continue
       }
-      var acc = { cards: 0, titles: [], empty: [] }
+      var acc = { cards: 0, titles: [], empty: [], details: [], current: null }
       harness.walk(holder.item, acc)
       out.push(harness.slots[i].block + " ready " + acc.cards + " "
-               + JSON.stringify({ titles: acc.titles, empty: acc.empty }))
+               + JSON.stringify({ titles: acc.titles, empty: acc.empty,
+                                  details: acc.details }))
     }
     return out
   }
