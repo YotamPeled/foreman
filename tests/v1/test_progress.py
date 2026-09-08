@@ -136,10 +136,22 @@ def run(monkeypatch, argv, session=None):
 
 
 def write_brief(root: Path, name: str) -> Path:
+    """A brief in a throwaway repository that really has its land-on branch.
+
+    `front add` refuses a land-on branch that does not exist, so a fixture
+    brief needs a repository behind it; a directory with no repository is
+    itself a refusal, which is the point of the check.
+    """
     brief_dir = root / name
     brief_dir.mkdir(parents=True, exist_ok=True)
     (brief_dir / "brief.toml").write_text(
         FLOW_BRIEF.format(name=name), encoding="utf-8")
+    if not (root / ".git").exists():
+        for argv in (["init", "-q", "-b", "main"],
+                     ["-c", "user.email=t@t", "-c", "user.name=t",
+                      "commit", "-q", "--allow-empty", "-m", "root"]):
+            subprocess.run(["git", "-C", str(root), *argv], check=True,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return brief_dir
 
 
