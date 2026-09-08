@@ -1,0 +1,108 @@
+<!doctype html><meta charset="utf-8"><title>foreman — status</title>
+<style>
+:root{--bg:#21272c;--card:#2d353b;--line:#3d484d;--fg:#d3c6aa;--fg2:#9da9a0;--dim:#6b7a7d;--acc:#7fbbb3;--red:#e67e80;--yel:#dbbc7f;--grn:#a7c080;
+--claude:#d97757;--codex:#10a37f;--grok:#e8e8e8;--muse:#6b9fe8}
+html,body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.5 monospace}
+main{max-width:1100px;margin:0 auto;padding:36px 32px 60px}
+header{display:flex;justify-content:space-between;color:var(--fg2);margin-bottom:34px}
+header b{color:var(--acc);font-weight:normal;font-size:20px}
+h2{font-size:13px;letter-spacing:.16em;color:var(--fg2);font-weight:normal;margin:34px 0 10px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:6px;padding:14px 18px;margin-bottom:10px}
+.card.red{border-left:4px solid var(--red)} .card.yel{border-left:4px solid var(--yel)} .card.grn{border-left:4px solid var(--grn)} .card.dim{opacity:.6}
+.row{display:flex;justify-content:space-between;align-items:baseline;gap:20px}
+.title{font-size:19px}
+.sub{color:var(--fg2);margin-top:4px}
+.small{color:var(--dim);font-size:14px}
+.r{color:var(--red)} .y{color:var(--yel)} .g{color:var(--grn)} .a{color:var(--acc)}
+.claude{color:var(--claude)} .codex{color:var(--codex)} .grok{color:var(--grok)} .muse{color:var(--muse)}
+.btn{color:var(--bg);background:var(--fg2);padding:2px 10px;border-radius:4px;font-size:15px;white-space:nowrap}.btn.g{background:var(--grn)}.btn.r{background:var(--red)}
+.key{color:var(--bg);background:var(--acc);padding:0 5px;border-radius:3px;font-size:12px;margin-right:6px;vertical-align:middle}
+.bar{height:8px;background:#181d20;border-radius:4px;margin-top:10px;position:relative;overflow:hidden}
+.bar i{position:absolute;left:0;top:0;bottom:0;background:var(--acc);opacity:.5}.bar b{position:absolute;left:0;top:0;bottom:0;background:var(--grn)}
+ul{list-style:none;margin:10px 0 0;padding:0}li{padding:3px 0;display:flex;gap:14px;align-items:baseline}
+li .st{width:80px;flex:none;font-size:14px}
+.pools{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.pool .n{font-size:19px}.pool .n::before{content:"■ ";}
+footer{margin-top:40px;color:var(--dim);font-size:14px;display:flex;justify-content:space-between}
+</style>
+<main>
+<header><b>foreman</b><span>Monday 14:07</span><span>10 sessions, all registered</span><span>not frozen</span><span>collector alive</span></header>
+
+<h2>NEEDS YOU</h2>
+<div class="card yel"><div class="row"><div class="title">Buy 2M extra Codex tokens so the review pool keeps two reviewers overnight?</div><div><span class="key">a</span><span class="btn g">approve</span> <span class="key">s</span><span class="btn">decline</span></div></div>
+<div class="sub">Foreman recommends <b class="r">no</b> — Grok covers reviews until Monday; Codex resets at 19:00. <span class="small">money · waited 23 min</span></div></div>
+<div class="card yel"><div class="row"><div class="title">Ship the reaper without the dead-worktree sweep?</div><div><span class="key">d</span><span class="btn g">approve</span> <span class="key">g</span><span class="btn">decline</span></div></div>
+<div class="sub">Foreman recommends <b class="g">yes</b> — 40 minutes of work nobody downstream needs. <span class="small">scope · from reaper supervisor · waited 6 min</span></div></div>
+
+<h2>PROBLEMS</h2>
+<div class="card red"><div class="row"><div class="title">Engine supervisor has been silent for 14 minutes with no jobs running</div><div><span class="key">z</span><span class="btn">relaunch</span></div></div><div class="sub small">still holding an Opus slot · last write 13:53</div></div>
+<div class="card red"><div class="row"><div class="title">A Codex process is running that Foreman did not launch</div><div><span class="key">x</span><span class="btn r">kill</span></div></div><div class="sub small">pid 41180, workspace 9, no session id · first seen 3 min ago</div></div>
+<div class="card red"><div class="row"><div class="title">Ingestion is halted: the same defect came back a third time</div></div><div class="sub small">webhook destination · supervisor must write what changed before dispatching again</div></div>
+
+<h2>WORKING</h2>
+
+<div class="card grn"><div class="row"><div class="title">corpus <span class="small">· sup·corpus</span></div><div class="g">19 of 31 landed · 3.0 per hour · ~3 h left</div></div>
+<div class="bar"><i style="width:74%"></i><b style="width:61%"></b></div>
+<ul>
+<li><span class="st g">done</span><span>manifest</span></li>
+<li><span class="st a">running</span><span>second reads — <b>412 of 600</b> · 6 <span class="grok">grok</span> workers</span></li>
+<li><span class="st a">running</span><span>recall statements — 184 of 600 · 4 <span class="muse">muse</span> reading, 1 <span class="grok">grok</span> re-reading · 38 waiting for a re-read</span></li>
+<li><span class="st a">running</span><span>dependencies, first batch · 2 <span class="muse">muse</span> + 1 <span class="grok">grok</span></span></li>
+<li><span class="st small">waiting</span><span class="small">ingest — after both reads finish</span></li>
+<li><span class="st small">waiting</span><span class="small">audit — after ingest</span></li>
+</ul>
+<div class="sub small">metrics: apps collected 412/600 · labels double-read 184 · label agreement 0.91</div></div>
+
+<div class="card grn"><div class="row"><div class="title">api <span class="small">· sup·api</span></div><div class="g">11 of 22 landed · 2.1 per hour · ~4 h left</div></div>
+<div class="bar"><i style="width:64%"></i><b style="width:50%"></b></div>
+<ul>
+<li><span class="st g">done</span><span>ledger write guard — verified 14:02, landing on main</span></li>
+<li><span class="st a">running</span><span>inbox resolve endpoint · <span class="muse">muse</span> · 6 of 25 min</span></li>
+<li><span class="st a">running</span><span>openapi drift check · <span class="grok">grok</span> · 2 of 20 min</span></li>
+<li><span class="st y">queued</span><span>freeze refuses launches · waiting 3 min for a <span class="muse">muse</span> slot</span></li>
+</ul></div>
+
+<div class="card red"><div class="row"><div class="title">engine <span class="small">· sup·engine</span></div><div class="r">12 of 24 landed · stalled</div></div>
+<div class="bar"><i style="width:62%"></i><b style="width:50%"></b></div>
+<div class="sub small">nothing running · supervisor silent (see Problems)</div></div>
+
+<div class="card red"><div class="row"><div class="title">ingestion <span class="small">· sup·ingestion</span></div><div class="r">9 of 18 landed · halted</div></div>
+<div class="bar"><i style="width:50%"></i><b style="width:50%"></b></div>
+<div class="sub small">nothing running · repeated defect (see Problems)</div></div>
+
+<div class="card dim"><div class="row"><div class="title">reaper <span class="small">· sup·reaper</span></div><div>1 of 12 landed · idle</div></div>
+<div class="bar"><i style="width:25%"></i><b style="width:8%"></b></div>
+<div class="sub small">waiting on your answer above (scope)</div></div>
+
+<div class="card"><div class="row"><div class="title">merge desk</div><div>1 branch waiting · last landed 14:03</div></div>
+<div class="sub small">label-index-rebuild → main · 41 of 44 landings clean</div></div>
+
+<h2>TASK QUEUE <span class="small">— planned jobs waiting to run, oldest first</span></h2>
+<div class="card"><ul>
+<li><span class="st y">3 min</span><span>freeze refuses launches · api · needs a <span class="muse">muse</span> slot (3 of 3 busy)</span></li>
+<li><span class="st y">7 min</span><span>sampling plan · corpus · needs a <span class="grok">grok</span> slot (8 of 8 busy)</span></li>
+<li><span class="st y">12 min</span><span>sweep on collector clock · reaper · needs a <span class="muse">muse</span> slot · blocked until you answer the scope question</span></li>
+<li><span class="st y">14 min</span><span>frozen-state restart · engine · needs a <span class="muse">muse</span> slot · blocked: supervisor silent</span></li>
+<li><span class="st small">planned</span><span class="small">digest endpoint · api · spec written, not yet queued</span></li>
+<li><span class="st small">planned</span><span class="small">webhook destination fix · ingestion · spec written, component halted</span></li>
+</ul><div class="sub small">6 waiting · oldest 14 min · muse is the bottleneck (3 waiting on it)</div></div>
+
+<h2>MERGE QUEUE <span class="small">— branches handed to the merge desk</span></h2>
+<div class="card"><ul>
+<li><span class="st a">merging</span><span>session-registry-read · from api → <b>dev</b> · reviewed by codex · started 1 min ago</span></li>
+<li><span class="st y">waiting</span><span>dump-export-shape · from corpus → <b>feat/corpus-export</b> · no review requested · waited 4 min</span></li>
+<li><span class="st g">landed</span><span class="small">label-index-rebuild · corpus → main · 14:03 · reviewed by codex</span></li>
+<li><span class="st g">landed</span><span class="small">routes-from-ledger · api → dev · 13:58 · reviewed by grok</span></li>
+<li><span class="st g">landed</span><span class="small">reader-id-guard · ingestion → main · 13:51 · no review</span></li>
+</ul><div class="sub small">1 merging · 1 waiting · 41 of 44 landings today clean · avg 6 min from handoff to landed</div></div>
+
+<h2>CAPACITY</h2>
+<div class="pools">
+<div class="card pool"><div class="n claude">opus</div><div>4 of 4 slots busy</div><div class="small">41% of 5-hour window · resets 17:00</div><div class="small">supervisors only</div></div>
+<div class="card pool"><div class="n codex">codex</div><div>1 of 2 slots busy</div><div class="small">62% of 5-hour window · resets 19:00</div><div class="small">avg review 6 min</div></div>
+<div class="card pool"><div class="n grok">grok</div><div>8 of 8 slots busy</div><div class="small">no meter · avg job 17 min</div><div class="y">2 jobs waiting for a slot</div></div>
+<div class="card pool"><div class="n muse">muse</div><div>3 of 3 slots busy</div><div class="small">no meter · avg job 14 min</div><div class="y">3 jobs waiting for a slot</div></div>
+</div>
+
+<footer><span><span class="key">F</span>freeze everything &nbsp; <span class="key">?</span>keys &nbsp; <span class="key">esc</span>close</span><span>same text as <code>foreman status</code></span></footer>
+</main>

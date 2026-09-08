@@ -316,7 +316,7 @@ button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
     <div class="status">
       <span>collector tick <span id="sTick">2s</span></span><span class="sep">·</span>
       <span id="sObs">observing 6 worktrees, 10 processes</span><span class="sep">·</span>
-      <span id="sMerge">merge queue 3 · 2 reviewers</span><span class="sep">·</span>
+      <span id="sMerge">3 waiting to merge</span><span class="sep">·</span>
       <span id="sDig">last digest 14:00</span>
       <span class="right">
         <span><span class="kc">q</span> queue</span>
@@ -452,10 +452,9 @@ const S={
          ["plaus","quota meter adapter reads the 5h window"],
          ["open","digest endpoint serves the 14:00 paragraph"],
          ["open","freeze refuses launches with a 409"]],
-     berths:[{a:215,side:"l"},{a:270,side:"c"},{a:325,side:"r"}],
-     jobs:[{n:"inbox-resolve-endpoint",m:"muse",w:"wt/api-31",min:6,to:25,b:0},
-           {n:"ledger-write-guard",m:"muse",w:"wt/api-32",min:17,to:30,b:1},
-           {n:"openapi-drift-check",m:"grok 4.6",w:"wt/api-33",min:2,to:20,b:2}]},
+     jobs:[{n:"inbox-resolve-endpoint",m:"muse",w:"wt/api-31",min:6,to:25,task:"routes"},
+           {n:"ledger-write-guard",m:"muse",w:"wt/api-32",min:17,to:30,task:"guards"},
+           {n:"openapi-drift-check",m:"grok 4.6",w:"wt/api-33",min:2,to:20,task:"guards"}]},
 
     {id:"corpus",target:"main",name:"corpus",sup:"sup·corpus",supModel:"claude opus",x:1739,y:550,
      total:31,built:22,landed:19,plaus:1,vel:3.0,eta:"~3h left",state:"",R:88,
@@ -465,9 +464,8 @@ const S={
          ["done","label writes are refused without a reader id"],
          ["plaus","dump export matches the ledger schema"],
          ["open","sampling plan written on the component"]],
-     berths:[{a:300,side:"r"},{a:30,side:"r"}],
-     jobs:[{n:"label-second-read",m:"muse",w:"wt/corp-18",min:9,to:30,b:0},
-           {n:"review·label-second-read",m:"codex astra",w:"wt/corp-rev",min:4,to:15,b:1,
+     jobs:[{n:"label-second-read",m:"muse",w:"wt/corp-18",min:9,to:30,task:"recall"},
+           {n:"review·label-second-read",m:"codex astra",w:"wt/corp-rev",min:4,to:15,task:"recall",
             spec:"read the second-read branch before it goes to the desk"}]},
 
     {id:"reaper",target:"feat/reaper-sweep",name:"reaper",sup:"sup·reaper",supModel:"claude opus",x:1620,y:900,
@@ -477,7 +475,6 @@ const S={
          ["plaus","orphan worktree is detected, not removed"],
          ["open","sweep runs on the collector clock"],
          ["open","dead worktrees swept after two ticks"]],
-     berths:[{a:310,side:"r"},{a:0,side:"r"}],
      jobs:[]},
 
     {id:"ingestion",target:"feat/ingest-webhook",name:"ingestion",sup:"sup·ingestion",supModel:"claude opus",x:936,y:849,
@@ -487,7 +484,7 @@ const S={
          ["done","replay is idempotent on a duplicate id"],
          ["plaus","webhook destination resolves from config"],
          ["open","backfill window is bounded"]],
-     berths:[{a:135,side:"l"}], jobs:[]},
+     jobs:[]},
 
     {id:"engine",target:"dev",name:"engine",sup:"sup·engine",supModel:"claude opus",x:811,y:550,
      total:24,built:15,landed:12,plaus:1,vel:0,eta:"stalled",state:"silent",R:84,
@@ -498,7 +495,7 @@ const S={
          ["plaus","timeout kills the child group, not the leader"],
          ["open","frozen state survives a collector restart"],
          ["open","relaunch replays the checkpoint"]],
-     berths:[{a:190,side:"c"},{a:315,side:"c"}], jobs:[]},
+     jobs:[]},
 
     {id:"merge-desk",target:"main",name:"merge-desk",sup:"merge desk",supModel:"claude opus",x:1930,y:1050,
      total:9,built:7,landed:7,plaus:1,vel:1.1,eta:"~1h left",state:"gate",R:56,
@@ -507,7 +504,7 @@ const S={
          ["done","every landing writes one merge ledger line"],
          ["plaus","review rounds bounded at two"],
          ["open","branch handoff frees the component"]],
-     berths:[], jobs:[]}
+     jobs:[]}
   ],
   /* The merge desk, not a gate. A supervisor dispatches a review only when it
      judges one worth the slot, so branches arrive reviewed or not and the desk
@@ -556,6 +553,18 @@ const S={
 const byId=id=>S.comps.find(c=>c.id===id);
 /* a cell is a task. Building one grows it out of the ring; landing one hardens
    it. Both are animated, so the count going up is something you see. */
+/* one more unit of a task is done — on the stage that did it when the task is
+   chained, so the second read can visibly trail the first */
+function taskAdd(c,t,stage,n){
+  if(t.stages){
+    const si=stage>=0?stage:0, st=t.stages[si];
+    const capUnits=si===0?t.u:t.stages[si-1].done;
+    st.done=Math.min(capUnits,st.done+n);
+  }else{
+    t.done=Math.min(t.u,t.done+n);
+  }
+  t.flash=1;
+}
 function growCell(c,i){ if(i>=0&&i<c.total){ c.grow[i]=0; c.flash[i]=1; } }
 function build(c){ if(c.built<c.total-c.plaus){ c.built++; growCell(c,c.built-1); return true; } }
 function land(c){ if(c.landed<c.built){ c.landed++; growCell(c,c.landed-1); c.landFlash=1; return true; } }
@@ -607,7 +616,7 @@ const PLAN={
              spec:"replay the checkpoint as the first act after relaunch"}],
     planned:[]},
   "merge-desk":{started:"13:10",proj:"~15:05",ttl:6,queued:[],planned:[],
-    laneNote:"its queue is the gate"}
+    laneNote:"its queue is the lane itself"}
 };
 Object.keys(PLAN).forEach(id=>Object.assign(byId(id),PLAN[id]));
 
@@ -633,6 +642,65 @@ const METRICS={
 
 Object.keys(METRICS).forEach(id=>{ byId(id).metrics=METRICS[id]; });
 
+/* ══ tasks — the unit of work the ring is made of ═════════════════════════
+   A component is a ring of its tasks. Each task takes the share of the ring
+   its checklist weight earns, and fills with its own progress. A task also
+   declares who may work it and how many may work it at once: that maximum is
+   drawn as sockets on the task's arc, so the throttle is a count you can see.
+   A sequential task declares one. A chained task declares its stages in order
+   and draws them as two bands, so units read once and waiting for the second
+   read are the gap between them. A task whose predecessors are unfinished is
+   drawn dim with its sockets closed, so the dependency order reads too.   */
+const TASKS={
+  corpus:[
+    {id:"manifest",n:"manifest",w:4,u:120,done:120,seq:true,
+     pool:[{m:"muse",slots:1}]},
+    {id:"reads2",n:"second reads",w:8,u:600,done:410,
+     pool:[{m:"grok 4.6",slots:6}]},
+    {id:"recall",n:"recall statements",w:7,u:240,
+     stages:[{n:"first read",m:"muse",slots:6,done:168},
+             {n:"second read",m:"grok 4.6",slots:2,done:96}]},
+    {id:"deps",n:"dependencies first batch",w:5,u:80,done:31,
+     pool:[{m:"muse",slots:2},{m:"grok 4.6",slots:1}]},
+    {id:"ingest",n:"ingest",w:4,u:600,done:0,after:["reads2","recall"],
+     pool:[{m:"muse",slots:2}]},
+    {id:"audit",n:"audit",w:3,u:600,done:0,after:["ingest"],
+     pool:[{m:"grok 4.6",slots:2}]}
+  ],
+  api:[
+    {id:"routes",n:"routes from the ledger",w:8,u:38,done:31,
+     pool:[{m:"muse",slots:2}]},
+    {id:"guards",n:"write guards",w:7,u:40,done:26,
+     pool:[{m:"muse",slots:1},{m:"grok 4.6",slots:1}]},
+    {id:"digest",n:"digest endpoint",w:7,u:12,done:2,after:["guards"],
+     pool:[{m:"muse",slots:2}]}
+  ],
+  engine:[
+    {id:"launch",n:"launch path",w:10,u:60,done:44,pool:[{m:"muse",slots:2}]},
+    {id:"kills",n:"timeout and kill",w:8,u:30,done:18,pool:[{m:"grok 4.6",slots:2}]},
+    {id:"replay",n:"checkpoint replay",w:6,u:20,done:4,after:["kills"],seq:true,
+     pool:[{m:"muse",slots:1}]}
+  ],
+  ingestion:[
+    {id:"sources",n:"source registry",w:7,u:120,done:57,pool:[{m:"muse",slots:2}]},
+    {id:"idem",n:"idempotent replay",w:6,u:40,done:40,pool:[{m:"grok 4.6",slots:1}]},
+    {id:"dest",n:"webhook destination",w:5,u:24,done:6,after:["sources"],
+     pool:[{m:"muse",slots:2}]}
+  ],
+  reaper:[
+    {id:"sweep",n:"dead session sweep",w:6,u:60,done:14,pool:[{m:"grok 4.6",slots:2}]},
+    {id:"orphan",n:"orphan worktrees",w:6,u:30,done:3,after:["sweep"],seq:true,
+     pool:[{m:"muse",slots:1}]}
+  ],
+  "merge-desk":[
+    {id:"lane",n:"one lane for the swarm",w:5,u:44,done:41,seq:true,
+     pool:[{m:"claude opus",slots:1}]},
+    {id:"ledger",n:"a ledger line per landing",w:4,u:44,done:41,seq:true,
+     pool:[{m:"claude opus",slots:1}]}
+  ]
+};
+Object.keys(TASKS).forEach(id=>{ byId(id).tasks=TASKS[id]; });
+
 /* what each running job is actually doing, and who put it there */
 const SPECS={
   "inbox-resolve-endpoint":"resolve an inbox decision and stamp it as an owner act",
@@ -641,6 +709,46 @@ const SPECS={
   "label-second-read":"second-read the label corpus and record the disagreement"
 };
 
+/* ── task geometry: the ring is cut into arcs by checklist weight, and each
+   task's declared maximum becomes that many sockets on its own arc ────── */
+const RING0=-Math.PI/2, GAPA=.055;
+function taskProg(t){
+  if(t.stages) return t.stages[t.stages.length-1].done/t.u;
+  return t.done/t.u;
+}
+function taskBlocked(c,t){
+  if(!t.after) return false;
+  return t.after.some(id=>{ const p=c.tasks.find(x=>x.id===id); return !p||taskProg(p)<1; });
+}
+function buildTasks(c){
+  const W=c.tasks.reduce((a,t)=>a+t.w,0);
+  let a=RING0;
+  c.berths=[];
+  c.tasks.forEach((t,ti)=>{
+    const span=TAU*t.w/W;
+    t.a0=a+GAPA/2; t.a1=a+span-GAPA/2; a+=span;
+    t.fillA=taskProg(t);
+    /* one socket per concurrent job the task allows, in stage order */
+    const units=t.stages?t.stages.map((st,si)=>({m:st.m,slots:st.slots,st:si}))
+                        :t.pool.map(p=>({m:p.m,slots:p.slots,st:-1}));
+    t.sockets=[];
+    units.forEach(u=>{ for(let k=0;k<u.slots;k++) t.sockets.push({m:u.m,st:u.st}); });
+    const n=t.sockets.length, r=c.R+12;
+    const step=Math.min((t.a1-t.a0)/(n+.35),13/r);
+    const mid=(t.a0+t.a1)/2;
+    t.sockets.forEach((sk,i)=>{
+      sk.a=mid-(n-1)/2*step+i*step;
+      sk.t=ti;
+      const cs=Math.cos(sk.a);
+      c.berths.push({a:sk.a*180/Math.PI,side:cs>.34?"r":cs<-.34?"l":"c",m:sk.m,t:ti,st:sk.st,sk:sk});
+    });
+  });
+}
+/* how many of a model's sockets are lit right now, anywhere in the swarm */
+function litSockets(model){
+  let n=0; S.comps.forEach(c=>c.jobs.forEach(j=>{ if(j.m===model) n++; })); return n;
+}
+
 /* per-component and per-job runtime fields the picture reads every frame */
 S.comps.forEach(c=>{
   c.phase=Math.random()*TAU; c.heat=0; c.flash=new Float32Array(c.total);
@@ -648,7 +756,25 @@ S.comps.forEach(c=>{
   c.massA=c.landed/c.total;                   /* mass eases toward the truth */
   c.ignite=0; c.landFlash=0; c.wake=0;
   c.queued=c.queued||[]; c.planned=c.planned||[];
+  buildTasks(c);
+  /* the jobs the panel opens on take the sockets their model belongs in */
   c.jobs.forEach(j=>{
+    if(j.b==null){
+      const want=j.task==null?-1:c.tasks.findIndex(t=>t.id===j.task);
+      let k=c.berths.findIndex((b,i)=>b.m===j.m&&!c.jobs.some(o=>o.b===i)&&
+        (want<0||b.t===want)&&!taskBlocked(c,c.tasks[b.t]));
+      if(k<0){ /* a review is dispatched outside the pools; it takes a socket
+                  of its own on the arc it reads */
+        const ti=want>=0?want:Math.max(0,c.tasks.findIndex(t=>!taskBlocked(c,t)&&taskProg(t)<1));
+        const t=c.tasks[ti], a=t.a1-.06;
+        c.berths.push({a:a*180/Math.PI,side:Math.cos(a)>.34?"r":Math.cos(a)<-.34?"l":"c",
+          m:j.m,t:ti,st:-1,rev:true,sk:{a:a,m:j.m,st:-1,t:ti,rev:true}});
+        t.sockets.push(c.berths[c.berths.length-1].sk);
+        k=c.berths.length-1;
+      }
+      j.b=k;
+    }
+    j.task=c.tasks[c.berths[j.b].t].id;
     j.beat=Math.random()*TAU; j.act=0;
     j.spec=j.spec||SPECS[j.n]||"work the spec on the component ledger";
     j.by=j.by||c.sup; j.at=j.at||"13:50";
@@ -786,9 +912,11 @@ function arc(x0,y0,x1,y1,bend){
 /* ══ the picture ═════════════════════════════════════════════════════════ */
 function ringGeom(c,i){
   const step=TAU/c.total, gap=Math.min(step*.28,.05);
-  return [c.phase+i*step+gap, c.phase+(i+1)*step-gap];
+  return [RING0+i*step+gap, RING0+(i+1)*step-gap];
 }
 function drawComponent(c){
+  /* the body is ground a label may not stand on */
+  BOXES.push([c.x-c.R*.88,c.y-c.R*.88,c.R*1.76,c.R*1.76]);
   const dead=c.state==="silent", halt=c.state==="halt", idle=c.state==="idle";
   const live=!dead&&!halt;
   const hue=dead?C.dark_foreground:halt?C.red:idle?C.light_foreground:C.accent;
@@ -809,31 +937,68 @@ function drawComponent(c){
   /* the accreted shell: its thickness is the landed fraction */
   ctx.lineWidth=1+mass*9;
   ctx.strokeStyle=rgba(dead?C.dark_foreground:C.green,dead?.14:.16+mass*.14);
-  ctx.beginPath(); ctx.arc(c.x,c.y,c.R+20+mass*4,0,TAU); ctx.stroke();
+  ctx.beginPath(); ctx.arc(c.x,c.y,c.R+34+mass*4,0,TAU); ctx.stroke();
 
-  /* the checklist ring: one segment per item on the component's ledger.
-     landed = merged and hard · built = confirmed, soft · plausible = claimed,
-     unverified · the rest is open ground. */
+  /* the ring of tasks. Each task owns the slice of the ring its weight on the
+     checklist earns, and fills clockwise with its own progress. A chained task
+     is two bands: the outer is the first read, the inner the second, and the
+     yellow between them is the units read once and waiting.               */
+  const showNames=S.focus===c.id||S.hover&&S.hover.kind==="comp"&&S.hover.id===c.id
+                  ||isActive("comp",c.id);
+  c.tasks.forEach((t,ti)=>{
+    const blocked=taskBlocked(c,t), f=t.fillA;
+    const band=(r0,r1,frac,col,al)=>{
+      ctx.beginPath();
+      ctx.arc(c.x,c.y,r1,t.a0,t.a0+(t.a1-t.a0)*clamp(frac,0,1));
+      ctx.arc(c.x,c.y,r0,t.a0+(t.a1-t.a0)*clamp(frac,0,1),t.a0,true);
+      ctx.closePath(); ctx.fillStyle=rgba(col,al); ctx.fill();
+    };
+    /* the open ground of the task */
+    band(rIn,rOut,1,dead?C.dark_foreground:blocked?C.dark_foreground:C.selection,
+         dead?.16:blocked?.22:.34);
+    if(t.stages){
+      const mid=(rIn+rOut)/2;
+      const s1=t.stages[0].done/t.u, s2=t.stages[1].done/t.u;
+      band(mid+1,rOut,s1,dead?C.dark_foreground:C.accent,dead?.3:.62);
+      band(rIn,mid-1,s2,dead?C.dark_foreground:C.green,dead?.3:.8);
+      /* read once, waiting on the second read */
+      ctx.beginPath();
+      ctx.arc(c.x,c.y,mid-1,t.a0+(t.a1-t.a0)*s2,t.a0+(t.a1-t.a0)*s1);
+      ctx.arc(c.x,c.y,rIn,t.a0+(t.a1-t.a0)*s1,t.a0+(t.a1-t.a0)*s2,true);
+      ctx.closePath(); ctx.fillStyle=rgba(C.yellow,dead?.18:.4); ctx.fill();
+    }else{
+      band(rIn,rOut,f,dead?C.dark_foreground:blocked?C.dark_foreground:
+        f>=1?C.green:halt?C.red:C.accent,dead?.34:blocked?.3:f>=1?.85:.66);
+    }
+    /* the boundary between one task and the next */
+    ctx.lineWidth=1; ctx.strokeStyle=rgba(C.darker_background,.9);
+    [t.a0,t.a1].forEach(a=>{ ctx.beginPath();
+      ctx.moveTo(c.x+Math.cos(a)*(rIn-1),c.y+Math.sin(a)*(rIn-1));
+      ctx.lineTo(c.x+Math.cos(a)*(rOut+1),c.y+Math.sin(a)*(rOut+1)); ctx.stroke(); });
+    if(t.flash>.02){
+      const am=t.a0+(t.a1-t.a0)*clamp(f,0,1);
+      bloom(c.x+Math.cos(am)*(rOut-9),c.y+Math.sin(am)*(rOut-9),36,C.accent,t.flash*.7);
+    }
+    drawSockets(c,t,blocked,dead);
+    if(showNames) taskName(c,t);
+  });
+
+  /* the checklist itself keeps a thin outer rail: landed, built, plausible,
+     open — the count the plate reports, drawn where it can be checked */
   for(let i=0;i<c.total;i++){
     const [a0,a1]=ringGeom(c,i);
-    let col,a,cap=false;
-    if(i<c.landed){ col=dead?C.dark_foreground:C.green; a=dead?.5:.92; cap=!dead; }
-    else if(i<c.built){ col=dead?C.dark_foreground:C.accent; a=dead?.34:.42; }
-    else if(i<c.built+c.plaus){ col=halt?C.red:C.yellow; a=.30; }
-    else { col=C.dark_foreground; a=.30; }
-    const f=c.flash[i], g=c.grow[i];
-    const rTop=rIn+(rOut-rIn)*(g<1?g*g*(3-2*g):1);
-    ctx.beginPath();
-    ctx.arc(c.x,c.y,rTop,a0,a1); ctx.arc(c.x,c.y,rIn,a1,a0,true); ctx.closePath();
-    ctx.fillStyle=rgba(col,Math.min(1,a+f*.65)); ctx.fill();
-    if(g<1) bloom(c.x,c.y+0,0,col,0);
-    if(cap){
-      ctx.beginPath(); ctx.arc(c.x,c.y,rOut+3.5,a0,a1);
-      ctx.lineWidth=2; ctx.strokeStyle=rgba(C.green,.72); ctx.stroke();
-    }
-    if(f>.02){
+    let col,a;
+    if(i<c.landed){ col=dead?C.dark_foreground:C.green; a=dead?.5:.95; }
+    else if(i<c.built){ col=dead?C.dark_foreground:C.accent; a=dead?.3:.6; }
+    else if(i<c.built+c.plaus){ col=halt?C.red:C.yellow; a=.5; }
+    else { col=C.dark_foreground; a=.35; }
+    const fl=c.flash[i], g=c.grow[i], gg=g<1?g*g*(3-2*g):1;
+    ctx.lineWidth=1+2.4*gg;
+    ctx.strokeStyle=rgba(col,Math.min(1,a+fl*.6));
+    ctx.beginPath(); ctx.arc(c.x,c.y,rOut+26,a0,a1); ctx.stroke();
+    if(fl>.02){
       const am=(a0+a1)/2;
-      bloom(c.x+Math.cos(am)*(rOut-9),c.y+Math.sin(am)*(rOut-9),34,col,f*.7);
+      bloom(c.x+Math.cos(am)*(rOut+26),c.y+Math.sin(am)*(rOut+26),30,col,fl*.7);
     }
   }
 
@@ -920,6 +1085,7 @@ function chip(x,y,key,align){
     col:armed?C.accent:C.light_foreground,a:armed?1:.9});
   return w;
 }
+let BOXES=[];
 function plate(x,y,align,lines,accent,pad,opt){
   pad=pad||10; opt=opt||{};
   let w=0, h=0;
@@ -929,8 +1095,21 @@ function plate(x,y,align,lines,accent,pad,opt){
   /* a floating panel is clamped into the canvas safe area so it never slides
      under the HUD columns or off the screen */
   if(opt.clamp){ bx=clamp(bx,506,2054-bw); by=clamp(by,66,1206-bh); }
+  if(opt.avoid){
+    const ux=opt.push?opt.push[0]:0, uy=opt.push?opt.push[1]:-1;
+    const dirs=[[ux,uy],[-uy,ux],[uy,-ux],[-ux,-uy]];
+    const free=(X,Y)=>!BOXES.some(b=>X+bw>b[0]+4&&b[0]+b[2]>X+4&&Y+bh>b[1]+4&&b[1]+b[3]>Y+4);
+    const ox=bx, oy=by; let done=free(bx,by);
+    for(let d=0;d<dirs.length&&!done;d++)
+      for(let k=1;k<=9&&!done;k++){
+        const X=clamp(ox+dirs[d][0]*22*k,506,2054-bw), Y=clamp(oy+dirs[d][1]*22*k,66,1206-bh);
+        if(free(X,Y)){ bx=X; by=Y; done=true; }
+      }
+    if(!done){ bx=clamp(ox,506,2054-bw); by=clamp(oy,66,1206-bh); }
+  }
+  BOXES.push([bx,by,bw,bh]);
   ctx.fillStyle=rgba(C.darker_background,opt.solid?.94:.74); rrect(bx,by,bw,bh,2); ctx.fill();
-  ctx.lineWidth=1; ctx.strokeStyle=rgba(opt.hot?C.accent:C.selection,opt.hot?.9:.85); ctx.stroke();
+  ctx.lineWidth=1; ctx.strokeStyle=rgba(opt.hot?C.accent:C.selection,opt.hot?.9:.5); ctx.stroke();
   const right=align==="r"&&!opt.left;
   if(opt.key) chip(align==="r"?bx+bw:bx,by-3,opt.key,align==="r"?"r":"l");
   if(accent){ ctx.fillStyle=rgba(accent,.9); ctx.fillRect(right?bx+bw-2:bx,by+3,2,bh-6); }
@@ -948,17 +1127,14 @@ function plate(x,y,align,lines,accent,pad,opt){
    spoke: identity, ownership and countable progress in one block. */
 function drawCompMeta(c){
   const dead=c.state==="silent", halt=c.state==="halt";
-  const L=[
-    {s:c.sup+"  ·  "+c.supModel,sz:12.5,col:dead?C.dark_foreground:C.foreground,ls:".02em"},
-    {s:c.landed+" landed   "+c.built+" built   "+c.total+" items",sz:11.5,col:C.light_foreground,a:.9}
-  ];
-  if(dead) L.push({s:"SILENT "+c.silentFor+"m · slot held · "+sinceStart(c)+" in",sz:11.5,col:C.red,ls:".04em"});
+  const L=[{s:c.sup+"  ·  "+c.supModel,sz:12.5,
+            col:dead?C.dark_foreground:C.foreground,ls:".02em"}];
+  if(dead) L.push({s:"SILENT "+c.silentFor+"m · slot held",sz:11.5,col:C.red,ls:".04em"});
   else if(halt) L.push({s:"HALTED · "+c.defect+" ×"+c.defects,sz:11.5,col:C.red,ls:".04em"});
-  else if(c.state==="idle") L.push({s:"0 jobs · "+c.eta+" · "+sinceStart(c)+" in",sz:11.5,col:C.yellow});
-  else L.push({s:c.vel.toFixed(1)+"/h · "+c.eta+" · "+sinceStart(c)+" in",
+  else if(c.state==="idle") L.push({s:"idle · "+c.eta+" · "+c.landed+" of "+c.total,
+    sz:11.5,col:C.yellow});
+  else L.push({s:c.vel.toFixed(1)+"/h · "+c.eta+" · "+c.landed+" of "+c.total,
                sz:11.5,col:C.light_foreground,a:.9});
-  const ml=metricLine(c);
-  if(ml) L.push({s:ml,sz:10.5,col:C.cyan,a:.72});
   laneLines(c,L);
   plate(c.mx,c.my,c.malign,L,dead?C.red:halt?C.red:mi(c.supModel),10,
     {key:c.key,hot:isActive("comp",c.id)});
@@ -975,18 +1151,16 @@ function sinceStart(c){
    opens the same order for the whole swarm.                              */
 function laneLines(c,L){
   if(c.id==="merge-desk"){
-    L.push({s:"next  its queue is the gate itself",sz:11,col:C.light_foreground,a:.7});
+    L.push({s:"next  the head of its own lane",sz:11,col:C.light_foreground,a:.7});
     return;
   }
   const head=c.queued[0]||c.planned[0];
-  const cut=n=>n.length>20?n.slice(0,19)+"…":n;
+  const cut=n=>n.length>22?n.slice(0,21)+"…":n;
   if(!head) L.push({s:c.state==="halt"?"next  nothing may be dispatched":"next  nothing planned",
     sz:11,col:c.state==="halt"?C.red:C.dark_foreground});
-  else if(c.queued[0]) L.push({s:"next  "+cut(head.n)+" · "+head.m+" "+head.waited+"m",
+  else if(c.queued[0]) L.push({s:"next  "+cut(head.n)+" · waited "+head.waited+"m",
     sz:11,col:mi(head.m),a:.95});
   else L.push({s:"next  "+cut(head.n)+" · planned",sz:11,col:C.light_foreground,a:.75});
-  L.push({s:"lane  "+c.queued.length+" queued · "+c.planned.length+" planned · "+c.ttl+"m/item",
-    sz:10.5,col:C.light_foreground,a:.6});
 }
 
 /* ── the measurements, drawn on the body ───────────────────────────────────
@@ -1036,15 +1210,58 @@ function drawMetrics(c,coreR,rIn,dead){
     }
   });
 }
-/* one compact line of readings for the supervisor's plate */
-function metricLine(c){
-  const m=c.metrics&&c.metrics[0]; if(!m) return null;
-  return m.n+"  "+(m.series?m.series[m.series.length-1].toFixed(2):m.v+"/"+m.of);
+
+
+/* sockets: one per job the task allows at once. Lit means a job is in it and
+   it wears that job's model colour; hollow means the task may take another;
+   closed means the task is waiting on a predecessor; and under a freeze the
+   sockets are not drawn at all, because nothing may be launched.          */
+function drawSockets(c,t,blocked,dead){
+  const r=c.R+12;
+  t.sockets.forEach(sk=>{
+    const x=c.x+Math.cos(sk.a)*r, y=c.y+Math.sin(sk.a)*r;
+    const lit=!blocked&&!dead&&c.jobs.some(j=>{ const b=c.berths[j.b]; return b&&b.sk===sk; });
+    const col=mc(sk.m), ink=mi(sk.m);
+    if(lit){
+      bloom(x,y,34,ink,isBlack(sk.m)?.30:.52);
+      ctx.fillStyle=rgba(col,1); ctx.beginPath(); ctx.arc(x,y,4.3,0,TAU); ctx.fill();
+      ctx.lineWidth=1; ctx.strokeStyle=rgba(ink,.9); ctx.stroke();
+    }else if(S.frozen){
+      /* nothing: a frozen swarm has no capacity to show */
+    }else if(blocked||dead){
+      ctx.lineWidth=1; ctx.strokeStyle=rgba(C.dark_foreground,.6);
+      ctx.beginPath(); ctx.arc(x,y,3.2,0,TAU); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(x-2.3,y-2.3); ctx.lineTo(x+2.3,y+2.3); ctx.stroke();
+    }else{
+      ctx.lineWidth=1.4; ctx.strokeStyle=rgba(ink,isBlack(sk.m)?.85:.7);
+      ctx.beginPath(); ctx.arc(x,y,3.6,0,TAU); ctx.stroke();
+    }
+    if(sk.rev){
+      ctx.lineWidth=1; ctx.strokeStyle=rgba(C.model_codex,.7);
+      ctx.beginPath(); ctx.arc(x,y,6.2,0,TAU); ctx.stroke();
+    }
+  });
+}
+/* the task's own name, printed on its arc when the component is looked at */
+function taskName(c,t){
+  const a=(t.a0+t.a1)/2, r=c.R+40;
+  const x=c.x+Math.cos(a)*r, y=c.y+Math.sin(a)*r;
+  const right=Math.cos(a)>=0;
+  txt(t.n,x+(right?6:-6),y+3.5,{sz:10,align:right?"left":"right",
+    col:taskBlocked(c,t)?C.dark_foreground:C.light_foreground,a:.85});
 }
 
+function taskOf(c,j){ const b=c.berths[j.b]; return b?c.tasks[b.t]:c.tasks[0]; }
+/* the job rides out on its socket's bearing, and steps further out if that
+   would leave it standing on a plate or a body */
 function berthPos(c,b){
-  const a=b.a*Math.PI/180, r=c.R+52;
-  return [c.x+Math.cos(a)*r, c.y+Math.sin(a)*r];
+  const a=b.a*Math.PI/180, ca=Math.cos(a), sa=Math.sin(a);
+  for(let k=0;k<5;k++){
+    const r=c.R+46+k*20, x=c.x+ca*r, y=c.y+sa*r;
+    if(k===4||!BOXES.some(q=>x>q[0]-9&&x<q[0]+q[2]+9&&y>q[1]-9&&y<q[1]+q[3]+9))
+      return [x,y];
+  }
 }
 function drawJob(c,j){
   const b=c.berths[j.b]; if(!b) return;
@@ -1052,8 +1269,8 @@ function drawJob(c,j){
   const col=mc(j.m), ink=mi(j.m), blk=isBlack(j.m);
   const breath=calm||S.frozen?1:1+Math.sin(j.beat)*.055*(0.4+j.act);
   /* tether: the job is physically attached to the component it works on */
-  const ex=c.x+(gx-c.x)*(c.R/Math.hypot(gx-c.x,gy-c.y));
-  const ey=c.y+(gy-c.y)*(c.R/Math.hypot(gx-c.x,gy-c.y));
+  const hyp=Math.hypot(gx-c.x,gy-c.y);
+  const ex=c.x+(gx-c.x)*((c.R+12)/hyp), ey=c.y+(gy-c.y)*((c.R+12)/hyp);
   ctx.lineWidth=1; ctx.strokeStyle=rgba(ink,.18+j.act*.5);
   ctx.beginPath(); ctx.moveTo(gx,gy); ctx.lineTo(ex,ey); ctx.stroke();
 
@@ -1070,27 +1287,24 @@ function drawJob(c,j){
   ctx.strokeStyle=rgba(tc,.95);
   ctx.beginPath(); ctx.arc(gx,gy,16,-Math.PI/2,-Math.PI/2+TAU*p); ctx.stroke();
 
-  /* side is where the plate sits relative to the glyph; plate() aligns by edge */
-  const side=b.side, al=side==="l"?"r":side==="r"?"l":"c";
-  const px=side==="l"?gx-26:side==="r"?gx+26:gx;
-  const py=side==="c"?gy-46:gy;
+  /* the label stands off along the same bearing as the socket, and steps out
+     of the way of anything already on the picture */
+  const dh=Math.hypot(gx-CX,gy-CY)||1, ux=(gx-CX)/dh, uy=(gy-CY)/dh;
+  const side=ux>.34?"r":ux<-.34?"l":"c", al=side==="l"?"r":side==="r"?"l":"c";
+  const px=gx+ux*30, py=gy+uy*30+(side==="c"?(uy<0?-14:14):0);
+  ctx.lineWidth=1; ctx.strokeStyle=rgba(ink,.22);
+  ctx.beginPath(); ctx.moveTo(gx+ux*9,gy+uy*9); ctx.lineTo(px,py); ctx.stroke();
   plate(px,py,al,[
     {s:j.n,sz:13,col:C.foreground,ls:".01em"},
-    {s:j.m+" · "+j.w,sz:11,col:ink,a:.92},
-    {s:j.min+"/"+j.to+"m"+(p>.7?"  ·  timeout near":""),sz:11,col:p>.7?tc:C.light_foreground,a:.88}
-  ],ink,10,{key:j.key,hot:isActive("job",j.key),clamp:true});
+    {s:j.w+"  ·  "+j.min+"/"+j.to+"m"+(p>.7?"  ·  timeout near":""),
+     sz:11,col:p>.7?tc:C.light_foreground,a:.9}
+  ],ink,10,{key:j.key,hot:isActive("job",j.key),clamp:true,avoid:true,push:[ux,uy]});
 }
-/* an empty berth held open by the freeze */
-function drawHeldBerth(c,b){
-  const [gx,gy]=berthPos(c,b);
-  ctx.setLineDash([3,4]); ctx.lineWidth=1; ctx.strokeStyle=rgba(C.dark_foreground,.85);
-  ctx.beginPath(); ctx.arc(gx,gy,13,0,TAU); ctx.stroke(); ctx.setLineDash([]);
-  txt("berth held empty",gx+(b.side==="l"?-20:20),gy+4,{sz:10.5,col:C.dark_foreground,
-    align:b.side==="l"?"right":"left"});
-}
+
 
 /* ── the foreman: origin, and the only session he ever talks to ─────────── */
 function drawForeman(){
+  BOXES.push([CX-104,CY-104,208,208]);
   const fz=S.frozen;
   const col=fz?C.red:C.accent;
   const pulse=S.tickPhase;
@@ -1203,8 +1417,8 @@ function drawDesk(){
     else { ctx.beginPath(); ctx.arc(x,D.y,15,-.5,.5); ctx.stroke();
            ctx.beginPath(); ctx.arc(x,D.y,15,Math.PI-.5,Math.PI+.5); ctx.stroke(); }
     if(i===0) plate(Math.min(x,1600),D.y-58,"c",[{s:q.n,sz:11.5,col:C.foreground},
-      {s:"from "+q.c+" · "+(q.reviewed?"reviewed":"no review dispatched")+" · next in",
-       sz:10.5,col:q.reviewed?C.model_codex:C.light_foreground,a:.85}],col,7);
+      {s:"from "+q.c+" · next in",sz:10.5,
+       col:q.reviewed?C.model_codex:C.light_foreground,a:.85}],col,7);
     void col;
   });
   txt(D.queue.length+" waiting to merge",D.x0,D.y+28,
@@ -1310,12 +1524,34 @@ function cardLines(a){
       a:st==="open"?.75:1,gap:5}));
     const rest=c.total-c.ck.length;
     if(rest>0) L.push({s:"+"+rest+" more on the component ledger",sz:11,col:C.dark_foreground,gap:10});
+    if(c.metrics){
+      L.push({s:"measured by · read off the body",sz:11,col:C.light_foreground,a:.6,
+        ls:".08em",gap:5});
+      c.metrics.forEach(m=>L.push({
+        s:m.n+"  "+(m.series?m.series.map(v=>v.toFixed(2)).join(" → "):m.v+" / "+m.of)+
+          "   "+m.st+" "+m.at,
+        sz:11,col:m.st==="CONFIRMED"?C.cyan:C.yellow,a:.95,gap:4}));
+    }
+    L.push({s:"tasks · what the ring is made of",sz:11,col:C.light_foreground,a:.6,
+      ls:".08em",gap:5});
+    c.tasks.forEach(t=>{
+      const blocked=taskBlocked(c,t), n=t.sockets.filter(k=>!k.rev).length;
+      const lit=c.jobs.filter(j=>c.berths[j.b]&&c.berths[j.b].t===c.tasks.indexOf(t)).length;
+      L.push({s:t.n+"  "+Math.round(taskProg(t)*100)+"%  "+
+        (blocked?"waits on "+t.after.map(id=>{
+           const x=c.tasks.find(y=>y.id===id); return x?x.n:id; }).join(" and "):
+         taskProg(t)>=1?"done":
+         t.stages?t.stages.map(st=>st.n+" "+st.slots).join(" → "):
+         lit+"/"+n+" at once · "+t.pool.map(p=>p.m).join(", ")),
+        sz:11,col:blocked?C.dark_foreground:lit?C.foreground:C.light_foreground,a:blocked?.7:.95,gap:4});
+    });
     L.push({s:"lane · "+c.jobs.length+" running · "+c.queued.length+" queued · "+c.planned.length+" planned",
       sz:11,col:C.light_foreground,a:.6,ls:".08em",gap:5});
     c.queued.forEach(q=>L.push({s:"queued   "+q.n+" · "+q.m+" · waited "+q.waited+"m",
       sz:11,col:mi(q.m),a:.95,gap:4}));
     c.planned.forEach(q=>L.push({s:"planned  "+q.n,sz:11,col:C.light_foreground,a:.7,gap:4}));
-    return [c.x,c.y,L,c.key,0,(c.y<CY?1:-1)*(c.R+92)];
+    const ch=L.reduce((a,l)=>a+l.sz+(l.gap==null?6:l.gap),0)+8;
+    return [c.x,c.y,L,c.key,0,(c.y<CY?1:-1)*(c.R+26+ch/2)];
   }
   if(a.kind==="job"){
     const f=jobByKey(a.id); if(!f) return null;
@@ -1325,6 +1561,9 @@ function cardLines(a){
       {s:j.n+"  ·  job",sz:13.5,col:C.foreground,ls:".05em"},
       {s:"doing  "+j.spec,sz:11.5,col:C.light_foreground,a:.95},
       {s:j.m+" · "+j.w+" · working on "+c.name,sz:11,col:mi(j.m),a:.95},
+      {s:"task   "+taskOf(c,j).n+(b.st>=0?" · "+c.tasks[b.t].stages[b.st].n:"")+
+         " · "+(c.tasks[b.t].sockets.filter(k=>!k.rev).length)+" at once",
+       sz:11,col:C.light_foreground,a:.85},
       {s:"dispatched by "+j.by+" at "+j.at,sz:11,col:C.light_foreground,a:.8},
       {s:"elapsed "+j.min+"m of "+j.to+"m · "+(j.to-j.min)+"m before the timeout kills it",
        sz:11,col:p>.7?(p>.9?C.red:C.yellow):C.light_foreground,a:.9},
@@ -1376,15 +1615,15 @@ function drawFreezeBand(){
 }
 
 function draw(){
+  BOXES=[];
   ctx.drawImage(bg,0,0);
   drawFlows();
   drawForeman();
   drawDesk();
   S.comps.forEach(c=>{
     drawComponent(c);
-    c.jobs.forEach(j=>drawJob(c,j));
-    if(S.frozen) c.berths.forEach((b,i)=>{ if(!c.jobs.some(j=>j.b===i)) drawHeldBerth(c,b); });
   });
+  S.comps.forEach(c=>c.jobs.forEach(j=>drawJob(c,j)));
   drawRogue();
   drawMotes();
   drawFlyers();
@@ -1414,28 +1653,36 @@ const FEEDX=572, FEEDY=1196;
 const KINDCOL={wr:C.accent,mg:C.green,an:C.red,qu:C.yellow,dp:C.magenta,ow:C.orange,
                obs:C.light_foreground};
 const flyers=[];
-function event(kind,cls,html,x,y){
+function event(kind,cls,html,x,y,col){
   if(calm||x==null||S.frozen&&cls==="dp"){ log(kind,cls,html); return; }
-  const plain=html.replace(/<[^>]+>/g,"");
-  flyers.push({x0:x,y0:y,t:0,kind:kind,cls:cls,html:html,col:KINDCOL[cls]||C.light_foreground,
-    s:plain.length>54?plain.slice(0,53)+"…":plain});
+  flyers.push({x0:x,y0:y,t:0,kind:kind,cls:cls,html:html,
+    col:col||KINDCOL[cls]||C.light_foreground});
+}
+/* An event is a streak of light in the colour of whoever caused it. It drops
+   out of the constellation into the empty corridor above the feed and runs
+   along it to the head of the ledger, where — and only where — it becomes a
+   sentence. No text ever crosses the picture.                             */
+function flyerAt(f,t){
+  const cx=f.x0+(FEEDX-f.x0)*.22, cy=1152;
+  const v=1-t;
+  return [v*v*f.x0+2*v*t*cx+t*t*FEEDX, v*v*f.y0+2*v*t*cy+t*t*FEEDY];
 }
 function drawFlyers(){
+  ctx.lineCap="round";
   flyers.forEach(f=>{
     const u=1-(1-f.t)*(1-f.t);
-    const cx=(f.x0+FEEDX)/2, cy=Math.max(f.y0,FEEDY)-90;
-    const v=1-u;
-    const x=v*v*f.x0+2*v*u*cx+u*u*FEEDX, y=v*v*f.y0+2*v*u*cy+u*u*FEEDY;
-    const a=Math.min(1,f.t*5)*Math.min(1,(1-f.t)*4+.35);
-    ctx.globalCompositeOperation="lighter";
-    ctx.globalAlpha=a*.5; ctx.drawImage(glowSprite(f.col,30),x-30,y-30); ctx.globalAlpha=1;
-    ctx.globalCompositeOperation="source-over";
-    ctx.fillStyle=rgba(f.col,a); ctx.fillRect(x-4,y-9,3,8);
-    txt(f.s,x+6,y-1,{sz:11.5,col:C.foreground,a:a*.95});
-    if(f.t<.35){
-      ctx.lineWidth=1; ctx.strokeStyle=rgba(f.col,(.35-f.t)*1.6);
-      ctx.beginPath(); ctx.moveTo(f.x0,f.y0); ctx.lineTo(x,y); ctx.stroke();
+    const [x,y]=flyerAt(f,u);
+    const a=Math.min(1,f.t*6)*Math.min(1,(1-f.t)*5+.3);
+    /* the tail: where it was a moment ago */
+    for(let k=1;k<=5;k++){
+      const [px,py]=flyerAt(f,Math.max(0,u-k*.035));
+      ctx.lineWidth=2.6-k*.42;
+      ctx.strokeStyle=rgba(f.col,a*(.5-k*.08));
+      const [qx,qy]=flyerAt(f,Math.max(0,u-(k-1)*.035));
+      ctx.beginPath(); ctx.moveTo(qx,qy); ctx.lineTo(px,py); ctx.stroke();
     }
+    bloom(x,y,26,f.col,a*.5);
+    ctx.fillStyle=rgba(f.col,a); ctx.beginPath(); ctx.arc(x,y,2.1,0,TAU); ctx.fill();
   });
 }
 
@@ -1449,16 +1696,16 @@ function evFileWrite(){
   const n=1+Math.floor(Math.random()*3);
   j.act=Math.min(1,j.act+.45); c.heat=Math.min(1,c.heat+.30);
   j.last="wrote "+n+" file"+(n===1?"":"s")+" in "+j.w; j.lastAgo=0; j.f1m+=n;
+  const T=c.tasks[b.t];
   for(let k=0;k<n;k++){
-    const seg=Math.min(c.total-1,c.built+Math.floor(Math.random()*(c.plaus+2)));
-    const [a0,a1]=ringGeom(c,seg), am=(a0+a1)/2;
+    const am=T.a0+(T.a1-T.a0)*clamp(T.fillA+.02,0,1);
     const tx=c.x+Math.cos(am)*(c.R-9), ty=c.y+Math.sin(am)*(c.R-9);
     const [bx,by]=arc(gx,gy,tx,ty,.18);
     mote({x0:gx,y0:gy,x1:tx,y1:ty,cx:bx,cy:by,col:mi(j.m),sp:2.1+Math.random()*.7,size:2.4,
-      arrive(){ c.flash[seg]=1; }});
+      arrive(){ taskAdd(c,T,b.st,1); }});
   }
   event("write","wr",`<b>${j.n}</b> wrote ${n} file${n===1?"":"s"} in ${j.w}`+
-    ` <span style="opacity:.6">→ ${c.name}</span>`,gx,gy);
+    ` <span style="opacity:.6">→ ${c.name}</span>`,gx,gy,mi(j.m));
 }
 
 function evCommit(){
@@ -1509,6 +1756,11 @@ function evJobFinished(){
 }
 
 /* dispatch travels: foreman → supervisor → the berth the job will work at */
+/* a free socket for this model, on a task that is not waiting on another */
+function freeSocket(c,model){
+  return c.berths.findIndex((b,k)=>(model==null||b.m===model)&&!b.rev&&
+    !c.jobs.some(j=>j.b===k)&&!taskBlocked(c,c.tasks[b.t]));
+}
 function dispatch(c,model,berth){
   /* a freed slot goes to the head of this supervisor's own queue if it has
      one; only an empty queue falls back to the next spec off the ledger, and
@@ -1522,6 +1774,16 @@ function dispatch(c,model,berth){
     const p=c.planned.shift();
     c.queued.push({n:p.n,spec:p.spec,m:rnd(["muse","grok 4.6"]),waited:0});
     event("planned","dp",`${c.sup} queued <b>${p.n}</b> · spec written, waiting on a slot`,c.x,c.y);
+  }
+  /* the socket must belong to the model that is actually going in it, and a
+     task with no free socket is a task nothing can be launched onto */
+  if(berth==null||!c.berths[berth]||c.berths[berth].m!==model||
+     c.jobs.some(j=>j.b===berth)||taskBlocked(c,c.tasks[c.berths[berth].t])){
+    berth=freeSocket(c,model);
+    if(berth<0){
+      c.queued.unshift({n:name,spec:spec,m:model,waited:waited});
+      return;
+    }
   }
   const wt=c.id==="api"?"wt/api-":c.id==="corpus"?"wt/corp-":c.id==="reaper"?"wt/reap-":"wt/"+c.id.slice(0,4)+"-";
   const job={n:name,m:model,w:wt+(30+Math.floor(Math.random()*40)),min:0,to:rnd([20,25,30]),
@@ -1569,7 +1831,7 @@ function fire(){
   evTimer=setTimeout(fire,calm?2400+Math.random()*1600:620+Math.random()*760);
 }
 
-/* the collector's own clock: 2 s, and it drives the sweep and the gate */
+/* the collector's own clock: 2 s, and it drives the sweep and the desk */
 setInterval(()=>{
   S.sweeps.push({t:0});
   const p=$("#tPulse"); p.classList.add("on"); setTimeout(()=>p.classList.remove("on"),190);
@@ -1612,6 +1874,11 @@ function frame(now){
       if(c.flash[i]>0) c.flash[i]=Math.max(0,c.flash[i]-dt*2.6);
       if(c.grow[i]<1) c.grow[i]=Math.min(1,c.grow[i]+dt*1.35);   /* a cell hardens into place */
     }
+    c.tasks.forEach(t=>{
+      const tp=taskProg(t);
+      if(Math.abs(t.fillA-tp)>1e-4) t.fillA+=(tp-t.fillA)*Math.min(1,dt*1.5); else t.fillA=tp;
+      if(t.flash>0) t.flash=Math.max(0,t.flash-dt*2.2);
+    });
     const mt=c.landed/c.total;                                    /* mass follows what landed */
     if(Math.abs(c.massA-mt)>1e-4) c.massA+=(mt-c.massA)*Math.min(1,dt*1.6); else c.massA=mt;
     c.wake=c.wake+(( c.state==="halt"||c.state==="silent"||S.frozen?0:c.vel )-c.wake)*Math.min(1,dt*1.2);
@@ -1756,14 +2023,16 @@ function answer(it,node,label){
     /* the scope cut is visible on the picture: two ring segments disappear and
        the freed grok slot puts a worker on the component that had none */
     const r=byId("reaper");
-    r.total=10; r.flash=new Float32Array(10); r.vel=1.8; r.eta="~2h left"; r.state="";
+    r.total=10; r.flash=new Float32Array(10); r.grow=new Float32Array(10).fill(1);
+    r.tasks[1].w=4; r.tasks[1].u=20; buildTasks(r);
+    r.vel=1.8; r.eta="~2h left"; r.state="";
     r.landFlash=1;
     refreshMass();
     log("scope","ow",`reaper cut to <b>10 items</b> · dead-worktree sweep dropped`);
     setTimeout(()=>{
       if(S.frozen) return;
       const g=S.models.find(x=>x.id==="grok"); g.run=Math.min(g.grant,g.run+1); renderModels();
-      dispatch(r,"grok 4.6",0);
+      dispatch(r,"grok 4.6",freeSocket(r,"grok 4.6"));
     },900);
   }
   setTimeout(()=>{
@@ -1776,6 +2045,8 @@ function answer(it,node,label){
 function renderModels(){
   const w=$("#models"); w.innerHTML="";
   S.models.forEach(m=>{
+    /* one truth: a worker pool's held slots are the sockets lit on the ring */
+    if(m.name!=="claude opus") m.run=litSockets(m.name);
     const col=mc(m.name), ink=mi(m.name), blk=isBlack(m.name);
     const r=el("div","mrow");
     let pips="";
@@ -1890,10 +2161,10 @@ $("#frzBtn").onclick=()=>{
     log("owner","ow",`you froze dispatch at <b>${stamp()}</b> · every berth that empties stays empty`);
   } else {
     log("owner","ow",`you thawed dispatch · supervisors may take slots again`);
-    S.comps.filter(c=>c.state===""&&c.berths.length>c.jobs.length).slice(0,2)
+    S.comps.filter(c=>c.state===""&&freeSocket(c,null)>=0).slice(0,2)
       .forEach((c,i)=>setTimeout(()=>{
-        const free=c.berths.findIndex((b,k)=>!c.jobs.some(j=>j.b===k));
-        if(free>=0) dispatch(c,rnd(["muse","grok 4.6"]),free);
+        const free=freeSocket(c,null);
+        if(free>=0) dispatch(c,c.berths[free].m,free);
       },500+i*900));
   }
 };

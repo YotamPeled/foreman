@@ -87,7 +87,7 @@ Project ⊃ Component ⊃ Task ⊃ Job
 |---|---|---|
 | Task backlog (per component) | open tasks with no job planned | supervisor |
 | Job lane (per component) | planned jobs | supervisor |
-| Slot queue (per pool) | queued jobs waiting for a slot | launcher |
+| Slot queue (per pool) | queued jobs waiting for a slot; first come, first served — no reservations by job kind, no priorities (a priority queue can come later) | launcher |
 | Merge queue | branches handed to the merge desk | merge desk |
 | Inbox | questions | owner |
 | Anomalies | discrepancies | collector, then foreman |
