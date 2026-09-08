@@ -6,7 +6,7 @@ role-scoped tools over the same library, pool plugins with adapters, summoning s
 identities and generate role prompts, a collector daemon that observes and relaunches, and
 `foreman status` printing the panel's text. Everything in docs/DESIGN.md §3–§12 and §14.
 """
-done-when = "A fake swarm (fake pool adapters, fake processes) runs through all seven flows of DESIGN.md §14 end to end, driven only by `foreman` verbs, with every anomaly in §10 provoked and detected, and `foreman status` printing the §13 layout."
+done-when = "Version zero: a real component (the corpus push) runs on the launcher + collector + rulings ledger + inbox + `foreman status`, with every job launched by the launcher, every session on the roster, every anomaly of §10 that occurs detected, and the owner reading status instead of asking. The remaining tasks (MCP, plugin pools, merge, e2e) are admitted only after that."
 land-on   = "main"
 reviews   = "on request"
 after     = []
@@ -17,6 +17,29 @@ muse  = 5
 opus  = 1
 astra = 1
 grok  = 1
+
+[[task]]
+title   = "v0: launcher, collector, rulings, inbox, status"
+core    = true
+scope   = """
+WHAT: the smallest runtime that fixes today's failures. Launcher: `foreman launch <role> <pool> <spec>` mints
+a session id, creates a worktree and a unique log, applies the pool's timeout, injects the rulings ledger and
+the environment contract into the spec, denies worker tools, starts the process, records the session on the
+roster. Collector: every 2 s, process table, worktree mtimes, CPU, finish markers → roster observed fields
+and observed.json; anomalies: supervisor silent, job stalled, job timeout (kill), job tail, intruder,
+unregistered writer; relaunch of a dead supervisor from its checkpoint. Rulings ledger: `foreman rule`
+append + acks. Inbox: `foreman ask` / `foreman answer` on a file. `foreman status`: the §13 text with what
+exists (no monitors yet). `foreman checkpoint`. Refuse unknown session ids.
+INPUTS: docs/DESIGN.md §3, §5, §6, §10, §13; ~/.claude/skills/{muse-workers,grok-workers,opus-supervisor}
+for how each vendor is launched today; the muse adapter first, grok second, claude (headless -p) third.
+OUTPUTS: package `foreman` (Python 3.12, stdlib + tomllib), `foreman` entrypoint, systemd user unit for
+the collector, tests with fake processes for every anomaly, a README section "running v0".
+OUT OF SCOPE: brief validation, MCP, plugin pool directories (adapters are plain modules in v0), merge desk,
+panel, skills, monitors.
+"""
+verify  = "python -m pytest tests/v0 -q && foreman status --fixture tests/v0/fixture"
+size    = 1
+after   = []
 
 [[task]]
 title   = "state directory and ledgers"
@@ -30,7 +53,7 @@ OUT OF SCOPE: the CLI, the collector, any derived number.
 """
 verify  = "python -m pytest tests/store -q"
 size    = 1
-after   = []
+after   = ["v0: launcher, collector, rulings, inbox, status"]
 
 [[task]]
 title   = "brief validation and component add"

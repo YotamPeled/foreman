@@ -1,6 +1,11 @@
 # Foreman — system design
 
-Status: full design, 2026-09-08. Supersedes the earlier piecemeal version. Nothing built yet.
+Status: full design, 2026-09-08, reviewed by the orchestrator that ran the corpus push. Version zero (§16)
+is being built by hand; everything else waits for a real component to have run on it.
+
+**Rulings applied 2026-09-08 evening (owner, in his words):** allocation is a ceiling, not a reservation;
+supervisors are interactive Claude sessions in version zero (headless is the target, not v0); Opus workers
+exist, cap 2, only for tasks the brief marks core logic or jobs Muse died on twice.
 
 Foreman is a runtime that runs a hierarchy of AI coding agents on one machine so that one human can
 see all of it and it cannot outrun them. This document is the whole system: who uses it and how, every
@@ -16,14 +21,14 @@ and where each number comes from.
 | **Owner** | The human. Decides scope, money, irreversible acts. | 1 | — | — |
 | **Planner** | A Claude session the owner opens to turn a want into a brief. Taught by `foreman-plan`. | one per planning conversation | ends when the brief is handed over | yes |
 | **Foreman** | The orchestrator (Fable 5.1). Takes briefs, launches supervisors, grants slots, routes questions, writes the digest. Never plans, never dispatches jobs. | 1 | long-lived; can be absent — nothing depends on it being alive | yes — the only long-lived interactive session |
-| **Supervisor** | Owns one component (Opus). Turns the brief's tasks into jobs, dispatches, verifies by re-running, measures monitors, reports. Never implements (rule 11 exceptions aside). | 1 per component | until the component is done | no (headless) |
+| **Supervisor** | Owns one component (Opus). Turns the brief's tasks into jobs, dispatches, verifies by re-running, measures monitors, reports. Never implements (rule 11 exceptions aside). | 1 per component | until the component is done | v0: yes, parked on a workspace, calling the CLI. Target: headless |
 | **Worker** | One process running one job in one worktree. Reads its spec, writes its artifact, exits. Never touches Foreman. | 1 per running job | the job | no |
 | **Merge desk** | A supervisor with no component. Lands branches, writes the merge ledger. Never reviews. | 1 | long-lived | no |
 | **Collector** | A daemon, no LLM. Observes, computes, flags, relaunches. | 1 | always | — |
 
 Pools: one per model (`opus`, `codex`, `grok`, `muse`), each a plugin directory (§8) with a system-wide cap.
-The `opus` pool has two caps: supervisors and workers (the "megalodon" for core logic and precision work);
-both draw the same Claude quota. Worker roles, by allocation: **opus** for core logic and cut-throat
+The `opus` pool has two caps: supervisors and workers (the "megalodon"; cap 2; only for tasks the brief
+marks `core = true` or for a job Muse died on twice); both draw the same Claude quota. Worker roles, by allocation: **opus** for core logic and cut-throat
 engineering; **muse** for everything else; **astra** and **grok** as reviewers.
 
 ---
@@ -56,8 +61,9 @@ Nothing enters the system except through a brief. Plans made elsewhere become br
 ### Foreman
 - On `component add`: validate (§4.3), write the component and its tasks to the ledger, put it in the
   **component queue**. Admission: a component's supervisor is launched when its `after` components are
-  done and its allocation fits inside the pools' free capacity; the queue is ordered by owner preference,
-  then plan order. Its allocation is reserved for it from launch to `done`.
+  done and at least one worker of each allocated role is free; the queue is ordered by owner preference,
+  then plan order. Its allocation is a **ceiling** — the most it may hold at once — never a reservation;
+  pools are shared first come, first served, and the queue shows who waits for what.
 - On a supervisor's question (`ask`): if it is money, irreversible or scope → inbox for the owner with a
   recommendation; otherwise answer it and record the answer as a ruling on the component.
 - Every hour: `foreman digest` — computed from ledgers, plus one paragraph of judgement.
@@ -129,7 +135,7 @@ reviews   = "on request"          # none | on request | always
 after     = []                    # components that must be done first
 prefer    = 0                     # owner preference in the component queue; higher runs first
 
-[allocation]                      # workers reserved for this component's supervisor, by role
+[allocation]                      # ceiling per role for this component; pools are shared FCFS
 muse  = 5                         # everything that is not core logic
 opus  = 1                         # core logic, cut-throat engineering, precision
 astra = 1                         # reviewer
@@ -208,7 +214,7 @@ A spec over one page is refused by `job plan`; a spec without the verification c
 |---|---|
 | **Session** | id, role, pool, model, component, job, pid, launched_by, started_at, last_declared_at, last_observed_at, cpu_s, state (`running \| exited \| stalled \| killed`) |
 | **Pool** | name, model, adapter, slots_total, kinds[], cannot_take[], timeout_default, meter, skill (config, §8) |
-| **Allocation** | component, role, count — reserved at admission, released at `done` |
+| **Allocation** | component, role, count — a ceiling checked at each grant; nothing is held while idle |
 | **Slot grant** | pool, component, role, job, session, granted_at, released_at — the slot ledger; pool counts are sums over open grants; "idle" = allocated to a component, not granted to a job |
 | **Frozen** | the presence of `~/.local/state/foreman/frozen` (file-presence-as-state) |
 
@@ -275,7 +281,8 @@ Ledgers are appended. The panel and the collector watch the directory; every CLI
   manifest.toml   model, vendor, slots, kinds = ["implement","research"], cannot_take = [], timeout = "20m", interactive = false
   launch          <spec> <worktree> <log> → starts the process headless, prints pid
   observe         <pid> <worktree> → JSON: transcript mtime, cpu_s, finish marker present
-  meter           → JSON: percent, resets_at   (or exit 3: no meter)
+  meter           → JSON: percent, resets_at   (or exit 3: no meter; then `foreman meter <pool> <percent>`
+                    lets the owner enter a figure read from the vendor's page, with its timestamp)
   usage           <session> → JSON: input_tokens, output_tokens   (or exit 3: no counter)
   verdict         <path> → normalised verdict JSON (review jobs)
   SKILL.md        how a supervisor writes a spec this model does well; how to verify its output
@@ -304,11 +311,14 @@ in the shipped config, and supervisors are not.
     supervisor writes what changed. Scope: the component.
 11. Delegate by job size: under ~10 tool calls, do it; bounded and one page, a worker; vague, do it or a
     Grok-high job; always verify a worker's result by re-running.
-12. Capacity: pools cap the system; a component's allocation reserves workers by role; within a component
-    the supervisor's job queue is a priority queue it orders; across components the component queue is
-    ordered by owner preference. No other reservation exists.
-13. Only the foreman is interactive. Every other session is headless, one job per process, finish marker
-    in the log, structured verdict file.
+12. Capacity: pools cap the system and are shared first come, first served; a component's allocation is a
+    ceiling per role, never a reservation; within a component the supervisor's job queue is a priority
+    queue it orders; across components the component queue is ordered by owner preference.
+14. Every owner-facing line (doing now, a finding's title, an inbox question, a digest sentence) is
+    self-contained: named by what it does, no code names, no ids the owner did not introduce. Enforced as
+    a warning at write time, not a refusal.
+13. Workers and reviewers are headless, one job per process, finish marker in the log, structured verdict
+    file. Supervisors are interactive in v0 (target: headless). The foreman is interactive.
 
 ---
 
@@ -318,6 +328,7 @@ in the shipped config, and supervisors are not.
 | supervisor silent | no declared write for 15 min AND no running jobs | none; relaunch offered | Problems |
 | supervisor dead | process gone | `relaunch` from checkpoint | Problems until back |
 | job stalled | running, no worktree mtime change and no CPU for 10 min | none; kill offered | on the task |
+| job tail | finished its planned work but keeps spawning retries | none | on the task as "tail", not stalled |
 | job timeout | elapsed > timeout | kill; job `failed`; supervisor notified | on the task |
 | intruder | a vendor process not in roster | none; kill offered | Problems |
 | monitor stale | latest measurement older than 2× cadence | none | on the component |
@@ -421,10 +432,15 @@ maps to a CLI verb.
 
 ---
 
-## 16. Build plan — Foreman builds Foreman
-Three components, three briefs, three supervisors, run through the boxes board until Foreman can run itself:
-1. **runtime** — state directory, CLI, validation, pools, launcher, collector, `status`, `doctor`. Testable
-   with a fake state directory and fake pool adapters.
-2. **panel** — Quickshell plugin rendering §13 from the state directory; `Super+M`; every key → verb.
-3. **skills** — the five documents in §15, written against the CLI as specified here.
-Then the first real swarm runs on it.
+## 16. Build plan
+**Version zero** (about two days, built by hand: the foreman session supervising an Opus supervisor with
+Muse workers through the existing skills, a file ledger, no board):
+launcher (mint id, worktree, unique log, timeout, inject rules + environment, deny worker tools) +
+collector (observe, anomalies, relaunch) + rulings ledger + inbox file + `foreman status` text.
+That alone fixes the failures of 2026-09-08: writes after a no-board ruling, an off-roster Grok builder,
+deaths hidden by overwritten logs, ten idle Muse slots for an hour, a relay contradicting the roster,
+readers handed every skill on the machine.
+
+**Then a real component runs on v0.** Only after that: brief validation and `component add`, the MCP
+server, plugin pools, the merge desk, the panel, the five skills — each as a brief (briefs/), admitted in
+that order.
