@@ -1,0 +1,132 @@
+name      = "runtime-v2"
+order     = 2
+want      = """
+Foreman's remaining runtime pieces from DESIGN.md, so the product swarm can move onto it: the merge desk,
+the MCP server with role-scoped tools, pools as plugin directories (the Omarchy doctrine), monitors
+measured by supervisors and shown on the front's card, and doctor, hooks and migrations.
+"""
+done-when = "A fixture front with two monitors and a merge target runs flow 2 through the merge desk (branch requested, landed, task marked landed by the merge ledger, target named), its supervisor calls every verb through the MCP server and workers get no server, a fifth pool added as a directory launches a job, monitors show on `foreman status` with value/of and age, `foreman doctor` finds three seeded divergences, one hook fires on landing, and one migration moves a v1 state directory forward — all CONFIRMED by running."
+land-on   = "main"
+reviews   = "on request"
+after     = ["runtime-v1"]
+prefer    = 9
+
+[allocation]
+muse  = 5
+opus  = 1
+astra = 1
+grok  = 1
+
+[[task]]
+title   = "merge desk"
+core    = true
+scope   = """
+WHAT: `foreman merge request <branch> --front <f> --tasks <t..> --target <branch> [--review <job>..]`,
+`merge take|land|fail`, merges.jsonl per DESIGN §5.1/§5.4, the merge queue FCFS, a `merge-desk` role
+summoned like a supervisor (interactive Claude, `foreman launch merge-desk`) with its own role prompt and
+verbs; landing = rebase onto target, run the target's check command from foreman.toml, push, write the
+ledger line; `task landed` is then written by the desk, never by a supervisor (remove that path from
+`task landed`, keep it for fronts flagged `merge = "self"` — Foreman's own fronts, per owner ruling).
+INPUTS: DESIGN §3 Merge desk, §5, §12, §14 flow 2.
+OUTPUTS: verbs, role prompt template, tests driving flow 2 through the desk on a fixture repo.
+OUT OF SCOPE: reviews (the supervisor's).
+"""
+verify  = "python -m pytest tests -q"
+size    = 1
+after   = []
+
+[[task]]
+title   = "MCP server with role-scoped tools"
+core    = true
+scope   = """
+WHAT: `foreman mcp` (stdio) exposing per connected session exactly the verbs its role may call, typed
+arguments, same refusals as the CLI, over the same library; supervisor and merge-desk launches register
+the server in the session's Claude config (`--mcp-config` or settings) so the verbs are tools; workers are
+launched with the server denied and no config; `foreman launch --dry-run` shows the MCP wiring.
+INPUTS: DESIGN §12; Claude Code MCP config documentation (search it; do not guess flags).
+OUTPUTS: server module, launch wiring, a test connecting as each role and listing tools, a test that a
+worker launch carries no server.
+OUT OF SCOPE: Codex/Muse/Grok MCP clients (CLI stays their door).
+"""
+verify  = "python -m pytest tests -q"
+size    = 1
+after   = []
+
+[[task]]
+title   = "pools as plugin directories"
+scope   = """
+WHAT: DESIGN §8: packaged pools under the package as directories (manifest.toml, launch, observe, meter,
+usage, verdict, SKILL.md) with the current Python adapters becoming the packaged implementations; user
+pools under ~/.config/foreman/pools/<name>/ override by name (Omarchy doctrine: packaged default, user
+override, broken → packaged); `foreman pool add|remove|clone|list`; a fifth pool added as a directory with a
+fake vendor launches a job end to end. The eight adapter fixes from docs/research/launching-agents.md
+must survive the move (their tests keep passing).
+INPUTS: DESIGN §8; docs/research/omarchy-doctrine.md.
+OUTPUTS: the layout, the verbs, tests.
+OUT OF SCOPE: new real vendors.
+"""
+verify  = "python -m pytest tests -q && foreman pool list"
+size    = 1
+after   = []
+
+[[task]]
+title   = "monitors"
+scope   = """
+WHAT: `foreman measure <front> <monitor> --value V [--of N] --command … --output …` by the front's
+supervisor; measurements.jsonl; the collector snapshots the latest per monitor and flags stale (older than
+2× cadence) and alert expressions; `foreman status` shows each monitor under its front as
+"question — value/of · N ago · trend"; the two free monitors (doing now, progress) rendered the same way.
+INPUTS: DESIGN §4.2 monitors, §5.4, §7, §13.
+OUTPUTS: verb, collector work, status lines, tests including stale and alert.
+OUT OF SCOPE: charts.
+"""
+verify  = "python -m pytest tests -q"
+size    = 1
+after   = []
+
+[[task]]
+title   = "doctor, hooks, migrations"
+scope   = """
+WHAT: `foreman doctor` cross-checks observed vs recorded (processes vs roster, worktrees vs jobs, slot
+ledger vs process table, config vs schema, collector vs code) and prints every divergence with a fix line;
+hooks: executables under ~/.config/foreman/hooks/<event>/ run on on-launch, on-return, on-land,
+on-freeze, on-alert with the event as JSON on stdin; migrations: `foreman migrate` runs
+migrations/<timestamp>.py once each with marker files, never blocking (unrepairable → notice, exit 0), and
+the first migration moves a v1 state directory to whatever v2 changed.
+INPUTS: DESIGN §12 doctor, docs/research/omarchy-doctrine.md.
+OUTPUTS: the three verbs, tests with seeded divergences, a hook fixture, a migration fixture.
+OUT OF SCOPE: —
+"""
+verify  = "python -m pytest tests -q && foreman doctor"
+size    = 1
+after   = ["pools as plugin directories"]
+
+[[task]]
+title   = "status: required fields and overall line"
+scope   = """
+WHAT: per DESIGN §13 (updated): each front shows what it is (want, one line), where it stands, REMAINING
+(tasks not landed by title), ESTIMATE (projected finish with basis: rate over N hours, or "no rate yet"),
+blocked on the owner; an Overall line at the end. Never omitted. Golden test appended, not reshaped.
+INPUTS: DESIGN §13; ~/.claude/skills/foreman-status/SKILL.md for the shape.
+OUTPUTS: status changes, tests.
+OUT OF SCOPE: the QML panel (the panel front mirrors this).
+"""
+verify  = "python -m pytest tests -q && foreman status | grep -c Overall"
+size    = 1
+after   = ["monitors"]
+
+[[task]]
+title   = "the proof"
+scope   = """
+WHAT: the done-when, run by the supervisor on a fixture front, recorded CONFIRMED with output; README
+"running v2".
+INPUTS: everything above.
+OUTPUTS: the record.
+OUT OF SCOPE: —
+"""
+verify  = "foreman doctor && foreman status | grep -c Overall"
+size    = 1
+after   = ["merge desk", "MCP server with role-scoped tools", "doctor, hooks, migrations", "status: required fields and overall line"]
+
+[[rule]]
+text = "Every worker through foreman launch; every progress step through the verbs; every friction with Foreman itself is a finding and, if under a page, a job on this front."
