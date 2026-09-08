@@ -1,16 +1,21 @@
 """Parts every headless pool adapter shares: the wrapper, the wait, observe.
 
-Each vendor command runs the same way: a shell started as a process group
-leader writes its own pid first, then runs the vendor CLI with the finish
-marker ``### finished rc=$?`` inside the redirected stream (a marker echoed
-after the pipe never reaches the log), tee'd to the session log::
+Each vendor command runs the same way: a shell writes its own pid first,
+then runs the vendor CLI with the finish marker ``### finished rc=$?``
+inside the redirected stream (a marker echoed after the pipe never reaches
+the log), tee'd to the session log::
 
-    setsid --wait bash -c 'echo $$ > <pid file>; { <vendor ...>; echo "### finished rc=$?"; } 2>&1 | tee <log>'
+    bash -c 'echo $$ > <pid file>; { <vendor ...>; echo "### finished rc=$?"; } 2>&1 | tee <log>'
 
-``observe`` recognises completion only as a line of its own reading
-``### finished rc=<n>``: a spec quoting the marker, or prose mentioning it,
-is not completion. ``read_verdict`` is the one verdict-file reading every
-review-capable adapter uses, so two pools never disagree about a review.
+The shell runs as its systemd unit's main process (``--service-type=exec``,
+measured 2026-09-08: pid file written and marker delivered exactly as with
+the old ``setsid --wait`` shape), so unit lifetime is job lifetime. The
+working directory is the unit's (``--working-directory``), never a ``cd``
+in the script. ``observe`` recognises completion only as a line of its own
+reading ``### finished rc=<n>``: a spec quoting the marker, or prose
+mentioning it, is not completion. ``read_verdict`` is the one verdict-file
+reading every review-capable adapter uses, so two pools never disagree
+about a review.
 """
 
 from __future__ import annotations
@@ -19,6 +24,7 @@ import json
 import os
 import re
 import shlex
+import subprocess
 import time
 import tomllib
 from pathlib import Path
@@ -57,6 +63,24 @@ def window_launcher() -> str | None:
     return None
 
 
+def default_window_launcher() -> str:
+    """The shipped window helper, when nothing configures another one.
+
+    A supervisor is an interactive session in a terminal window, so unlike
+    a headless worker it has no systemd-run fallback: without a launcher
+    there is no window and no session. The default is the helper shipped
+    with the skills; the source names no home directory, so the path is
+    composed here and overridden by ``FOREMAN_WINDOW_LAUNCHER`` or the
+    config file like every other launcher choice.
+    """
+    return str(Path.home() / ".claude" / "skills" / "muse-workers"
+               / "launch-window.sh")
+
+
+def window_launcher_or_default() -> str:
+    return window_launcher() or default_window_launcher()
+
+
 def read_pid_file(path: Path) -> int | None:
     try:
         return int(path.read_text(encoding="utf-8").strip().split()[0])
@@ -64,12 +88,43 @@ def read_pid_file(path: Path) -> int | None:
         return None
 
 
+def timeout_seconds(timeout: str | None) -> int | None:
+    """Seconds for a ``20m``-style job timeout, or None when unknown.
+
+    Same grammar the launcher accepts (``s``/``m``/``h``/``d``, repeatable):
+    ``RuntimeMaxSec`` needs a number, and an unparsed timeout must omit the
+    property rather than invent one — Foreman's own kill still enforces it.
+    """
+    if not isinstance(timeout, str) or not timeout:
+        return None
+    total, number, seen = 0, "", False
+    units = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+    for char in timeout:
+        if char.isdigit():
+            number += char
+        elif char in units and number:
+            total += int(number) * units[char]
+            number, seen = "", True
+        else:
+            return None
+    if number or not seen:
+        return None
+    return total
+
+
+def unit_name(session_id: str | None) -> str:
+    """The transient systemd unit one session's worker runs as."""
+    return f"foreman-{session_id}"
+
+
 def wrap_inner(vendor_argv: list[str], *, pid_path: Path | str,
-               log_path: Path | str, stdin_path: Path | str | None = None) -> str:
+               log_path: Path | str,
+               stdin_path: Path | str | None = None) -> str:
     """Shell running the worker: pid first, marker inside the redirection.
 
-    ``setsid`` makes the shell that writes the pid file a process group
-    leader, so the recorded pid is the group to signal later. ``stdin_path``
+    The vendor process starts in the worktree because the *unit* does
+    (``--working-directory``, set by :func:`wrap_outer`): no ``cd`` here,
+    and nothing about a launch is left to be guessed. ``stdin_path``
     redirects the vendor command's standard input from a file (for CLIs
     whose prompt arrives on stdin); the marker stays inside the braces so
     it always reaches the log.
@@ -82,18 +137,20 @@ def wrap_inner(vendor_argv: list[str], *, pid_path: Path | str,
         "{ " + vendor + '; echo "### finished rc=$?"; '
         "} 2>&1 | tee " + shlex.quote(str(log_path))
     )
-    # setsid --wait, never plain setsid: the headless spawn is a
-    # transient systemd unit with --collect, and plain setsid forks and
-    # lets its parent exit at once, so systemd sees the unit's main
-    # process finish and tears the cgroup down with the worker inside it.
-    # Proven 2026-09-08: the pid file was never written and the job never
-    # ran; with --wait the same command runs to completion.
-    return "setsid --wait bash -c " + shlex.quote(worker)
+    # No setsid: the unit's main process is this shell itself
+    # (``--service-type=exec``), so unit lifetime is job lifetime and the
+    # cgroup is the kill group. Measured 2026-09-08 against the old
+    # ``setsid --wait`` shape with a fake vendor plus a sleeping child:
+    # both wrote the pid file and delivered the marker; ``systemctl stop``
+    # reaps the whole tree either way.
+    return "bash -c " + shlex.quote(worker)
 
 
 def wrap_outer(session_id: str | None, inner: str, *,
                window: bool = False,
-               script_path: Path | str | None = None) -> list[str]:
+               script_path: Path | str | None = None,
+               worktree: Path | str | None = None,
+               timeout: str | None = None) -> list[str]:
     """Detached spawn: headless, unless this launch asked for a window.
 
     Owner ruling: swarm sessions do not take the owner's desktop
@@ -113,13 +170,109 @@ def wrap_outer(session_id: str | None, inner: str, *,
     launcher = window_launcher() if window else None
     if launcher:
         return [launcher, f"foreman-{session_id}", *run]
-    return [
+    # No --collect: a collected unit is gone when it finishes, and the
+    # same query then reads the defaults (Result=success, ExecMainStatus=0),
+    # so a failed job reads as success. Measured 2026-09-08: without it a
+    # unit that exited 7 still answers Result=exit-code ExecMainStatus=7.
+    # The collector reads that status as the completion signal (the log
+    # marker is the fallback) and runs `reset-failed` on its own schedule.
+    argv = [
         "systemd-run",
         "--user",
-        "--collect",
-        f"--unit=foreman-{session_id}",
-        *run,
+        f"--unit={unit_name(session_id)}",
     ]
+    if worktree is not None:
+        # The worker starts in its worktree: no wrapper `cd` needed, and
+        # no worker inherits the launcher's directory by accident.
+        argv.append(f"--working-directory={worktree}")
+    secs = timeout_seconds(timeout)
+    if secs is not None:
+        # systemd enforces the job timeout beside Foreman's own kill.
+        argv.append(f"--property=RuntimeMaxSec={secs}")
+    # The worker shell is the unit's main process, so unit lifetime is job
+    # lifetime; `systemctl stop` is the kill. See wrap_inner for the probe.
+    argv.append("--service-type=exec")
+    return [*argv, *run]
+
+
+#: Properties the collector reads off a worker's unit.
+_UNIT_PROPERTIES = ("LoadState,ActiveState,Result,ExecMainStatus,"
+                    "ExecMainCode")
+
+
+def unit_status(session_id: str | None, *, run: Any = None) -> dict | None:
+    """One worker unit's completion record, or None when unreadable.
+
+    Runs ``systemctl --user show`` and returns the ``LoadState``,
+    ``ActiveState``, ``Result`` and numeric ``ExecMainStatus`` (plus
+    ``ExecMainCode``). A finished-but-uncollected unit keeps answering
+    here; a never-started or already-cleaned one reads
+    ``LoadState=not-found`` with success defaults, which is a real answer
+    (fall back to the log marker), not a failure. ``None`` only when
+    systemctl itself cannot be asked. ``run`` is the ``subprocess.run``
+    to use, taken as a parameter so tests never shell out.
+    """
+    runner = run if run is not None else subprocess.run
+    try:
+        proc = runner(
+            ["systemctl", "--user", "show", unit_name(session_id),
+             f"--property={_UNIT_PROPERTIES}"],
+            stdout=subprocess.PIPE, stderr=DEVNULL, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if proc.returncode != 0:
+        return None
+    status: dict[str, Any] = {}
+    for line in proc.stdout.splitlines():
+        key, equals, value = line.partition("=")
+        if not equals or not key:
+            continue
+        if key in ("ExecMainStatus", "ExecMainCode"):
+            try:
+                status[key] = int(value.strip())
+            except ValueError:
+                status[key] = None
+        else:
+            status[key] = value
+    return status
+
+
+def unit_reports_failure(status: dict | None) -> bool:
+    """True when a unit record says its job failed.
+
+    A missing unit (``LoadState=not-found``) or an unreadable one (None)
+    says nothing — the caller falls back to the log marker. Anything else
+    whose ``ActiveState`` is failed with a non-success ``Result``, or whose
+    ``Result`` is ``exit-code`` with a non-zero status, failed even if the
+    log carries a finish marker.
+    """
+    if not status or status.get("LoadState") == "not-found":
+        return False
+    if status.get("ActiveState") == "failed" and \
+            status.get("Result") not in (None, "success"):
+        return True
+    return status.get("Result") == "exit-code" and \
+        (status.get("ExecMainStatus") or 0) != 0
+
+
+def reset_failed_unit(session_id: str | None, *, run: Any = None) -> bool:
+    """Forget one finished unit's result. Best-effort: never raises.
+
+    The collector calls this on its own schedule after it has read a dead
+    worker's status; without it every finished unit lingers as failed.
+    Reading the status first is what makes this safe — resetting before
+    the read would turn a failure into ``not-found`` success defaults.
+    """
+    runner = run if run is not None else subprocess.run
+    try:
+        proc = runner(
+            ["systemctl", "--user", "reset-failed", unit_name(session_id)],
+            stdout=DEVNULL, stderr=DEVNULL, text=True, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
 
 
 def printable_command(argv: list[str], inner: str) -> str:
@@ -153,7 +306,8 @@ def spawn_and_wait(argv: list[str], *, pid_path: Path,
     parameter so tests can substitute a double without touching the
     vendor CLI. The returned pid is read back from the pid file the
     wrapper writes as its first act — never the spawner's pid — and is
-    the process group id by construction (``setsid``).
+    the root of the worker's process tree, which is what a later kill
+    walks.
     """
     popen(argv, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL,
           start_new_session=True, close_fds=True)

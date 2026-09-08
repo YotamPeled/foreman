@@ -80,18 +80,8 @@ def _since(text: str | None, now: datetime) -> str:
     return _age((now - moment).total_seconds())
 
 
-def _fold_by_id(records: list[dict]) -> list[dict]:
-    """Ledger lines folded last-wins, keeping first-appearance order."""
-    order: list[str] = []
-    by_id: dict[str, dict] = {}
-    for record in records:
-        rid = record.get("id")
-        if not isinstance(rid, str) or not rid:
-            continue
-        if rid not in by_id:
-            order.append(rid)
-        by_id[rid] = record
-    return [by_id[rid] for rid in order]
+#: The ledger fold every reader shares; see :func:`foreman.store.fold_by_id`.
+_fold_by_id = store.fold_by_id
 
 
 def _open_anomalies(records: list[dict]) -> list[dict]:
@@ -131,6 +121,39 @@ def _jobs(name: str) -> list[dict]:
         return _fold_by_id(store.read_ledger(paths.front_jobs_path(name)))
     except OSError:
         return []
+
+
+def _front_record(name: str) -> dict | None:
+    """The folded front line, or None for a front that predates `front add`.
+
+    A front with no record renders exactly as it always has: the caller adds
+    nothing, so the v0 golden file holds byte for byte.
+    """
+    try:
+        folded = _fold_by_id(store.read_ledger(paths.front_record_path(name)))
+    except OSError:
+        return None
+    return folded[-1] if folded else None
+
+
+def _slots_held() -> dict[tuple[str, str], int]:
+    """Open slot grants per (front, role), folded last-wins like every reader.
+
+    A grant counts while its `released_at` is null; a missing slot ledger
+    holds nothing.
+    """
+    try:
+        records = store.read_ledger(paths.slots_path())
+    except OSError:
+        return {}
+    held: dict[tuple[str, str], int] = {}
+    for grant in _fold_by_id(records):
+        front, role = grant.get("front"), grant.get("role")
+        if grant.get("released_at") is None and \
+                isinstance(front, str) and front and \
+                isinstance(role, str) and role:
+            held[(front, role)] = held.get((front, role), 0) + 1
+    return held
 
 
 def _merges() -> list[dict] | None:
@@ -192,6 +215,14 @@ def _header(roster: dict, observed: dict | None, now: datetime) -> str:
         tick = f"collector {_since(observed.get('at'), now)} ago"
     else:
         tick = "collector never ticked"
+    try:
+        stale = any(record.get("kind") == "collector stale"
+                    for record in _open_anomalies(
+                        store.read_ledger(paths.anomalies_path())))
+    except OSError:
+        stale = False
+    if stale:
+        tick += " \u00b7 collector stale \u2014 foreman collector restart"
     return (f"Foreman status \u2014 {registered} sessions registered, "
             f"{seen} observed \u00b7 {frozen} \u00b7 {tick}")
 
@@ -287,6 +318,12 @@ def _task_line(task: dict, titles: dict[str, str]) -> str:
             f"{task.get('units_total', 0)}")
     if after:
         head += f" \u00b7 after: {', '.join(after)}"
+    if task.get("head"):
+        head += f" \u00b7 head {task.get('head')}"
+    # A task that was moved backwards says so until it moves again: the
+    # reset is the owner's business, not a quiet correction.
+    if task.get("reset_reason"):
+        head += f" \u00b7 reset: {task.get('reset_reason')}"
     return head
 
 
@@ -302,6 +339,17 @@ def _load_fronts() -> tuple[list[tuple[str, list[dict], list[dict]]],
         local = {task.get("id"): task.get("title") for task in tasks
                  if task.get("id")}
         titles.update(local)
+        # A job may name its task by title, which is what `--task` accepts.
+        # The launcher resolves it now, but records written before that do
+        # not match any task id, so every one of them was drawn a second
+        # time under "the task no ledger names". Resolve on the way in and
+        # the screen has one rule: a job hangs under its task.
+        by_title = {title: tid for tid, title in local.items()
+                    if isinstance(title, str)}
+        jobs = [dict(job, task=by_title[job["task"]])
+                if isinstance(job.get("task"), str)
+                and job["task"] in by_title else job
+                for job in jobs]
         for job in jobs:
             if isinstance(job.get("session"), str) and \
                     isinstance(job.get("task"), str):
@@ -326,14 +374,45 @@ def _working(roster: dict, observed: dict | None, now: datetime,
         progress = (f"tasks {landed} landed, {built} built, "
                     f"{len(tasks)} total")
         held = _supervisor_for(name, roster)
+        front_record = _front_record(name)
+        # A front for trying the runtime out says so on every line it owns:
+        # a task a probe job moved must never read as work a front did.
+        label = name
+        if (front_record or {}).get("fixture"):
+            label = f"{name} (fixture)"
         if held is None:
-            lines.append(f"  {name} \u2014 no supervisor \u00b7 {progress}")
+            lines.append(f"  {label} \u2014 no supervisor \u00b7 {progress}")
         else:
             sid, record = held
             doing = _doing_line(sid, record, sessions_view, now)
             tail = f" \u00b7 doing now: {doing}" if doing else ""
-            lines.append(f"  {name} \u2014 supervisor attached "
+            lines.append(f"  {label} \u2014 supervisor attached "
                          f"\u00b7 {progress}{tail}")
+        if front_record is not None:
+            done_when = front_record.get("done_when") or ""
+            if isinstance(done_when, str) and done_when.strip():
+                lines.append(f"    {done_when.strip()}")
+            allocation = front_record.get("allocation") or {}
+            if isinstance(allocation, dict) and allocation:
+                open_grants = _slots_held()
+                parts = [f"{role} {open_grants.get((name, role), 0)}/"
+                         f"{allocation[role]}"
+                         for role in sorted(allocation)]
+                lines.append(f"    allocation: {', '.join(parts)}")
+        try:
+            evidence = store.read_ledger(paths.front_evidence_path(name))
+        except OSError:
+            evidence = []
+        try:
+            findings = store.read_ledger(paths.front_findings_path(name))
+        except OSError:
+            findings = []
+        if evidence or findings:
+            confirmed = sum(1 for line in evidence
+                            if line.get("status") == "CONFIRMED")
+            lines.append(f"    evidence: {len(evidence)} "
+                         f"({confirmed} confirmed) "
+                         f"\u00b7 findings: {len(findings)}")
         for task in tasks:
             lines.append(f"    {_task_line(task, titles)}")
             for job in jobs:
@@ -399,15 +478,14 @@ def _merge_queue(titles: dict[str, str], now: datetime) -> list[str]:
 
 
 def _capacity(observed: dict | None) -> list[str]:
-    pools = (observed or {}).get("pools") or {}
-    if not pools:
-        return ["Capacity: no collector data yet."]
-    lines = ["Capacity:"]
-    for name in sorted(pools):
-        entry = pools[name] if isinstance(pools[name], dict) else {}
-        held, total = entry.get("held", "?"), entry.get("total", "?")
-        lines.append(f"  {name}: {held}/{total} held")
-    return lines
+    """Held/cap per pool, held/ceiling per allocated front role, and the
+    jobs waiting on a full pool — built from the slot ledger and the front
+    records, so it is right whether or not the collector has ticked. The
+    whole computation lives in :mod:`foreman.capacity`, imported here and
+    not at the top so this module keeps the import list it had."""
+    from . import capacity
+
+    return capacity.capacity_lines(observed)
 
 
 def render(now: datetime | None = None) -> str:
