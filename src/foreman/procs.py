@@ -22,8 +22,8 @@ def _clock_tick() -> float:
         return 100.0
 
 
-def _read_stat(pid: int) -> tuple[int, str, float] | None:
-    """(ppid, state, cpu seconds incl. reaped children) or None when unreadable."""
+def _read_stat(pid: int) -> tuple[int, str, float, int] | None:
+    """(ppid, state, cpu seconds incl. reaped children, starttime) or None."""
     try:
         with open(f"{PROC_ROOT}/{pid}/stat", encoding="utf-8") as handle:
             text = handle.read()
@@ -32,12 +32,42 @@ def _read_stat(pid: int) -> tuple[int, str, float] | None:
     try:
         _, _, rest = text.rpartition(")")
         parts = rest.split()
+        state = parts[0]
         ppid = int(parts[1])
-        state = parts[2]
         ticks = float(parts[11]) + float(parts[12]) + float(parts[13]) + float(parts[14])
-        return ppid, state, ticks / _clock_tick()
+        starttime = int(parts[19])
+        return ppid, state, ticks / _clock_tick(), starttime
     except (ValueError, IndexError):
         return None
+
+
+def proc_starttime(pid: int | None) -> int | None:
+    """Starttime (clock ticks since boot) for ``pid``, or None when unreadable."""
+    if pid is None or pid <= 0:
+        return None
+    info = _read_stat(pid)
+    return info[3] if info is not None else None
+
+
+def same_process(pid: int | None, stored: int | None,
+                 table: dict[int, dict] | None = None) -> bool:
+    """True when ``pid`` is still the process recorded beside ``stored``.
+
+    ``stored=None`` is a legacy record without identity: it is trusted so
+    older rosters keep working. Otherwise the current starttime must equal
+    the stored one; an unreadable pid or a mismatch reads as "not the
+    same" (pid reuse), never as alive.
+    """
+    if pid is None or pid <= 0:
+        return False
+    if stored is None:
+        return True
+    current: int | None = None
+    if table is not None and pid in table:
+        current = table[pid].get("starttime")
+    if current is None:
+        current = proc_starttime(pid)
+    return current is not None and current == stored
 
 
 def _read_cmdline(pid: int) -> str:
@@ -85,23 +115,32 @@ def snapshot() -> dict[int, dict]:
         info = _read_stat(pid)
         if info is None:
             continue
-        ppid, state, cpu = info
+        ppid, state, cpu, starttime = info
         table[pid] = {
             "ppid": ppid,
             "state": state,
             "cpu_s": cpu,
+            "starttime": starttime,
             "cmdline": _read_cmdline(pid),
         }
     return table
 
 
 def descendants(root: int, table: dict[int, dict] | None = None) -> set[int]:
-    """Every live pid below ``root``, root included when it is present."""
+    """Every live pid below ``root``, root included when it is present.
+
+    Zombies are reaped-but-unwaited dead: they are excluded, so a dead
+    process never looks alive forever behind its zombie entry.
+    """
     if table is None:
         table = snapshot()
     children: dict[int, list[int]] = {}
     for pid, info in table.items():
+        if info.get("state") == "Z":
+            continue
         children.setdefault(info["ppid"], []).append(pid)
+    if table.get(root, {}).get("state") == "Z":
+        return set()
     seen = {root}
     found = {root} if root in table else set()
     stack = [root]
@@ -133,6 +172,12 @@ def tree_cpu_seconds(pid: int | None,
         info = _read_stat(pid)
         return info[2] if info is not None else 0.0
     return sum(table[member]["cpu_s"] for member in descendants(pid, table))
+
+
+def executable_of(cmdline: str) -> str:
+    """Basename of the executable: the first cmdline token's final component."""
+    first = cmdline.split()[0] if cmdline.split() else ""
+    return first.rsplit("/", 1)[-1]
 
 
 def kill_tree(pid: int | None,
@@ -169,3 +214,53 @@ def kill_tree(pid: int | None,
         except (ProcessLookupError, PermissionError, OSError):
             continue
     return signalled
+
+
+def kill_job(pid: int | None, pgid: int | None = None) -> tuple[list[int], set[int]]:
+    """Kill a job through its process group, then confirm it is gone.
+
+    Signals the launcher-recorded process group first (so children spawned
+    or reparented since any earlier snapshot still die), then re-reads the
+    tree and kills stragglers leaves-first. Returns (signalled, remaining):
+    ``remaining`` is the live tree after the kill, empty when the job is
+    actually gone. Never raises for gone or foreign pids.
+    """
+    if pid is None or pid <= 0:
+        return [], set()
+    signalled: list[int] = []
+    if pgid is not None and pgid > 0:
+        try:
+            os.killpg(pgid, signal.SIGKILL)
+            signalled.append(pid)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+    table = snapshot()
+    members = descendants(pid, table) if table else (
+        {pid} if pid_alive(pid) else set()
+    )
+    depth: dict[int, int] = {}
+
+    def _depth(member: int) -> int:
+        trail, current = 0, member
+        while current != pid and current in table and trail <= len(table) + 1:
+            current = table[current]["ppid"]
+            trail += 1
+        return trail
+
+    if table:
+        for member in members:
+            depth[member] = _depth(member)
+    for member in sorted(members, key=lambda m: -depth.get(m, 0)):
+        if member in signalled:
+            continue
+        try:
+            os.kill(member, signal.SIGKILL)
+            signalled.append(member)
+        except (ProcessLookupError, PermissionError, OSError):
+            continue
+    fresh = snapshot()
+    if fresh:
+        remaining = descendants(pid, fresh)
+    else:
+        remaining = {pid} if pid_alive(pid) else set()
+    return signalled, remaining

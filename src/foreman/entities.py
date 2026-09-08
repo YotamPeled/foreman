@@ -127,6 +127,7 @@ class Session(Entity):
     job: str | None = None
     pid: int | None = None
     pgid: int | None = None
+    pid_starttime: int | None = None
     worktree: str = ""
     log: str = ""
     timeout: str = ""
