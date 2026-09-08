@@ -22,31 +22,48 @@ once.
 `foreman launch supervisor <front>` is the second argument shape, beside
 the worker one and reusing every part of it: a supervisor has no spec file
 and no worktree, so it takes the front's name where a worker names its
-pool, and works in the repository on the front's branch. Its identity is
-minted before its process exists — session id, role prompt and vendor
-session id are written first, the window opens second — so it is on the
-roster from the moment it starts and is missed by the collector when it
-goes quiet. `register` puts a session Foreman never started (a
-hand-started supervisor, the orchestrator) on the same roster with the
-same process identity; `relaunch` replaces a supervisor with a fresh
-prompt carrying its predecessor's last checkpoint, resuming the same
-vendor conversation.
+pool, and works in the repository on the branch that checkout is already
+on — a `--branch` naming any other is refused rather than switched
+underneath its owner. Its identity is minted before its process exists —
+session id, role prompt and vendor session id are written first, the
+window opens second — so it is on the roster from the moment it starts and
+is missed by the collector when it goes quiet, and it is recorded running
+only once that process is confirmed alive with a start time beside its
+pid. One front has one supervisor: a summon for a front that already has a
+live one is refused by name.
+
+The prompt it receives is generated, never kept beside the code it
+describes: the verbs come from what the CLI registers for the role, the
+work from the front's own tasks with their scopes and verification
+commands, the rules from the ledger and the brief.
+
+`register` puts a session Foreman never started (a hand-started
+supervisor, the orchestrator) on the same roster with the same process
+identity; `relaunch` replaces a supervisor with a fresh prompt carrying
+its predecessor's last checkpoint, resuming the same vendor conversation.
+It stops the predecessor's process before admitting the successor and
+records what it stopped, and because a resumed conversation cannot be
+handed a new prompt, the fresh one is published at a path the old prompt
+already told the session to read.
 """
 
 from __future__ import annotations
 
 import argparse
+import ast
 import errno
+import inspect
 import json
 import os
 import re
 import shlex
 import subprocess
 import sys
+import tomllib
 import uuid
 from pathlib import Path
 
-from . import caller, capacity, fronts, ids, paths, procs, store
+from . import caller, capacity, cli, fronts, ids, paths, procs, store
 from .caller import FOREMAN, SUPERVISOR
 from .cli import subcommand
 from . import entities
@@ -172,6 +189,43 @@ def default_base(repo: str) -> str:
         return run_git(repo, "symbolic-ref", "--short", "HEAD")
     except Refused:
         return "HEAD"
+
+
+def checked_out_branch(repo: str) -> str | None:
+    """The branch this checkout is on, or None when it is on none."""
+    try:
+        return run_git(repo, "symbolic-ref", "--short", "HEAD") or None
+    except Refused:
+        return None
+
+
+def _branch_of_checkout(repo: str, asked: str | None,
+                        problems: list[str]) -> str | None:
+    """The branch a supervisor will really work on, or a named refusal.
+
+    A supervisor works in the repository it is given, in a window, beside
+    whoever else has that checkout open; switching the branch underneath
+    its owner is not a launcher's decision to make. So `--branch` names the
+    branch the checkout is already on, or it is refused: naming one branch
+    in the prompt and working on another is the failure being closed here.
+    """
+    if not os.path.isdir(repo):
+        return None
+    on = checked_out_branch(repo)
+    if on is None:
+        problems.append(
+            f"repo {repo!r} has no branch checked out (detached HEAD, or not "
+            f"a git repository); a supervisor works on the branch of the "
+            f"checkout it is given, so check one out first")
+        return None
+    if asked is not None and asked != on:
+        problems.append(
+            f"branch {asked!r} is not the branch checked out at {repo} "
+            f"(that is {on!r}); a supervisor never switches a checkout "
+            f"underneath its owner, so check {asked!r} out yourself or drop "
+            f"--branch")
+        return None
+    return on
 
 
 def read_rulings(front: str | None = None) -> list[str]:
@@ -334,9 +388,13 @@ def _move_session(roster, session_id: str, **fields):
 
 @subcommand("launch", help="Mint a session, build its worktree, start its worker.")
 def cmd_launch(args: argparse.Namespace) -> int:
+    # The freeze is a violation like any other, never an early return: a
+    # refusal names every violated field at once, so a launch made while
+    # frozen and wrong in three other ways is told all four.
+    frozen_problems: list[str] = []
     frozen = paths.frozen_path()
     if frozen.exists():
-        return refuse(
+        frozen_problems.append(
             f"frozen file {frozen} exists; the launcher refuses while frozen"
         )
     me, identity_violations = caller.resolve("launch")
@@ -350,19 +408,21 @@ def cmd_launch(args: argparse.Namespace) -> int:
     # ceiling is the front existing at all, which `launch supervisor`
     # already requires of the ledger.
     if args.role == SUPERVISOR:
-        return launch_supervisor_main(args, list(identity_violations))
-    problems: list[str] = list(identity_violations)
+        return launch_supervisor_main(
+            args, frozen_problems + list(identity_violations))
+    problems: list[str] = frozen_problems + list(identity_violations)
     if args.spec is None:
         problems.append(
             "spec is required: launch <role> <pool> <spec>, "
             "or launch supervisor <front> for a supervisor")
 
+    adapter = None
     try:
         adapter = get_pool(args.pool)
     except ValueError as exc:
-        return refuse(str(exc))
+        problems.append(str(exc))
     if args.role not in JOB_ROLES:
-        return refuse(
+        problems.append(
             f"unknown role {args.role!r}; known roles: " + ", ".join(JOB_ROLES)
         )
     # Capacity, before anything is created: the front's ceiling for this
@@ -413,7 +473,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
 
     if problems:
         return refuse(*problems)
-    assert spec_text is not None
+    assert spec_text is not None and adapter is not None
 
     session_id = ids.mint("session")
     branch = args.branch or f"foreman/{session_id}"
@@ -633,33 +693,246 @@ AUTOCOMPACT = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=40"
 WINDOW_LINGER_SECONDS = 120
 WORKSPACE_RE = re.compile(r"\d+")
 
-#: The verbs a supervisor may call in this version, each with why it exists.
-#: One list, rendered into the role prompt: a supervisor told about a verb
-#: that does not exist flounders, and one it is never told about is unused.
-SUPERVISOR_VERBS = (
-    ("foreman checkpoint --doing \"…\" --next \"…\"",
-     "declare what you are doing and what comes next; the only thing that "
-     "puts you on the screen alive"),
-    ("foreman ask \"…\" --kind money|irreversible|scope|error",
-     "put a question to the Foreman; those four kinds and no others"),
-    ("foreman launch <role> <pool> <spec>",
-     "start one worker on one job spec, inside your allocation"),
-    ("foreman status",
-     "read the swarm the way the owner reads it"),
-    ("foreman front list",
-     "the fronts and what each waits for"),
-    ("foreman rule list",
-     "the rulings ledger, in full"),
-    ("foreman rule ack <ruling>",
-     "acknowledge a ruling you have read and will work under"),
+#: The design's supervisor row (docs/DESIGN.md section 12), verbatim. What
+#: this checkout has not shipped is this row minus what the CLI registers
+#: for the role, computed at render time: a verb that lands can never be
+#: advertised as missing, and a verb that is missing can never be advertised
+#: as callable. Nothing else about the verbs is written by hand.
+DESIGN_SUPERVISOR_ROW = (
+    "checkpoint", "task ready", "task built", "job plan", "job order",
+    "job verify", "job fail", "evidence", "finding", "measure", "ask",
+    "merge request", "front done",
 )
-#: Named so a supervisor knows these exist by design and does not invent
-#: them: they are the design's supervisor row that this version has not
-#: shipped yet.
-SUPERVISOR_VERBS_UNSHIPPED = (
-    "task ready|built", "job plan|order|verify|fail", "evidence", "finding",
-    "measure", "merge request", "front done",
-)
+
+#: The role names the gates are written with, as they read in the source.
+_ROLE_CONSTANTS = {"OWNER": caller.OWNER, "FOREMAN": FOREMAN,
+                   "SUPERVISOR": SUPERVISOR}
+#: A refusal names the field it refuses on: ``field '--head' is required``.
+_FIELD_RE = re.compile(r"field '(-{0,2}[A-Za-z][A-Za-z0-9_-]*)'")
+
+
+def _called_name(call: ast.Call) -> str:
+    if isinstance(call.func, ast.Attribute):
+        return call.func.attr
+    if isinstance(call.func, ast.Name):
+        return call.func.id
+    return ""
+
+
+def _string(node: ast.AST | None) -> str | None:
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return None
+
+
+def _module_gates(source: str) -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Read one module's role gates and required fields out of its source.
+
+    The gate is not a table somebody maintains: it is the
+    ``check_role(me, "<verb>", ROLE, …)`` call the verb already makes, and
+    ``check_front_supervisor`` (through ``_check``), which admits the
+    front's own supervisor by definition. The required fields are the
+    ``field '<name>' is required`` refusals beside them. Reading the code
+    is what keeps the prompt from drifting from it.
+
+    Returns (verb -> roles allowed, verb -> required field names). A verb
+    with no gate at all does not appear here: it is open to every caller.
+    """
+    gates: dict[str, set[str]] = {}
+    required: dict[str, set[str]] = {}
+    try:
+        tree = ast.parse(source)
+    except (SyntaxError, ValueError):
+        return gates, required
+    for func in (node for node in ast.walk(tree)
+                 if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))):
+        # `verb = "job verify"` at the top of a handler is the name the
+        # gate below it is called with.
+        own: str | None = None
+        for node in ast.walk(func):
+            if (isinstance(node, ast.Assign) and len(node.targets) == 1
+                    and isinstance(node.targets[0], ast.Name)
+                    and node.targets[0].id == "verb"):
+                own = _string(node.value) or own
+        local: dict[str, set[str]] = {}
+        for node in ast.walk(func):
+            if not isinstance(node, ast.Call):
+                continue
+            name = _called_name(node)
+            if name == "check_role" and len(node.args) >= 2:
+                verb = _string(node.args[1]) or own
+                roles = {_ROLE_CONSTANTS[arg.id] for arg in node.args[2:]
+                         if isinstance(arg, ast.Name)
+                         and arg.id in _ROLE_CONSTANTS}
+            elif (name in ("check_front_supervisor", "_check")
+                    and len(node.args) >= 3):
+                verb = _string(node.args[2]) or own
+                roles = {SUPERVISOR}
+            else:
+                continue
+            if verb:
+                local.setdefault(verb, set()).update(roles)
+        for verb, roles in local.items():
+            gates.setdefault(verb, set()).update(roles)
+        for node in ast.walk(func):
+            text = _string(node)
+            if not text or (" is required" not in text
+                            and " must be " not in text):
+                continue
+            match = _FIELD_RE.search(text)
+            if not match:
+                continue
+            # A refusal that names its verb belongs to that verb only; the
+            # longest name wins, so 'rule ack' does not read as 'rule'.
+            named = [verb for verb in local if verb in text]
+            if named:
+                targets = [max(named, key=len)]
+            else:
+                # A refusal naming no verb belongs to the whole function,
+                # which is only unambiguous when the function gates one verb.
+                targets = list(local) if len(local) == 1 else []
+            for verb in targets:
+                required.setdefault(verb, set()).add(match.group(1).lstrip("-"))
+    return gates, required
+
+
+def _gate_tables() -> tuple[dict[str, set[str]], dict[str, set[str]]]:
+    """Gates and required fields across every module the CLI registers."""
+    gates: dict[str, set[str]] = {}
+    required: dict[str, set[str]] = {}
+    seen: set[str] = set()
+    for handler, _kwargs in list(cli.SUBCOMMANDS.values()):
+        name = getattr(handler, "__module__", "")
+        module = sys.modules.get(name)
+        if module is None or name in seen:
+            continue
+        seen.add(name)
+        try:
+            source = inspect.getsource(module)
+        except (OSError, TypeError):
+            continue
+        module_gates, module_required = _module_gates(source)
+        for verb, roles in module_gates.items():
+            gates.setdefault(verb, set()).update(roles)
+        for verb, fields in module_required.items():
+            required.setdefault(verb, set()).update(fields)
+    return gates, required
+
+
+def _subparsers(parser: argparse.ArgumentParser):
+    for action in parser._actions:
+        if isinstance(action, argparse._SubParsersAction):
+            return action
+    return None
+
+
+def registered_verbs() -> list[tuple[str, argparse.ArgumentParser, str]]:
+    """Every verb the CLI registers: (path, its parser, its help line)."""
+    # Imported the way the entry point imports them, so a verb is on the
+    # parser here exactly when `foreman <verb>` runs it.
+    from . import collector as _collector  # noqa: F401
+    from . import config as _config  # noqa: F401
+    from . import fronts as _fronts  # noqa: F401
+    from . import progress as _progress  # noqa: F401
+    from . import status as _status  # noqa: F401
+    from . import verbs as _verbs  # noqa: F401
+
+    found: list[tuple[str, argparse.ArgumentParser, str]] = []
+
+    def walk(parser: argparse.ArgumentParser, prefix: str) -> None:
+        action = _subparsers(parser)
+        if action is None:
+            return
+        helps = {choice.dest: (choice.help or "")
+                 for choice in action._choices_actions}
+        for name, sub in action.choices.items():
+            path = f"{prefix} {name}".strip()
+            if _subparsers(sub) is None:
+                found.append((path, sub, helps.get(name, "")))
+            else:
+                walk(sub, path)
+
+    walk(cli.build_parser(), "")
+    return found
+
+
+def _positionals(parser: argparse.ArgumentParser) -> list:
+    return [action for action in parser._actions
+            if not action.option_strings
+            and not isinstance(action, argparse._SubParsersAction)]
+
+
+def _metavar(action) -> str:
+    # `--class` is stored as `class_`, the way a keyword has to be; the
+    # supervisor types the flag, not the attribute.
+    name = (action.metavar or action.dest).rstrip("_")
+    return f"<{name} ...>" if action.nargs in ("*", "+") else f"<{name}>"
+
+
+def _is_required(action, fields: set[str]) -> bool:
+    if action.required:
+        return True
+    names = {action.dest} | {opt.lstrip("-") for opt in action.option_strings}
+    return any(field == name or name.startswith(field) or field.startswith(name)
+               for field in fields for name in names)
+
+
+def _verb_line(path: str, parser: argparse.ArgumentParser, help_text: str,
+               verb: str, fields: set[str]) -> str:
+    """One rendered command: how it is called, and what it is for."""
+    extra = len(verb.split()) - len(path.split())
+    options = [action for action in parser._actions
+               if action.option_strings and action.dest != "help"]
+    needed = [action for action in options if _is_required(action, fields)]
+    spare = [action for action in options if action not in needed]
+    parts = [f"foreman {verb}"]
+    if extra > 0:
+        # A form the parser does not model (`rule ack` under `rule`): the
+        # words are its leading positionals, so what is left is whatever
+        # its own refusals say it needs.
+        for field in sorted(fields):
+            if not any(_is_required(action, {field}) for action in options):
+                parts.append(f"<{field}>")
+    else:
+        for action in _positionals(parser):
+            shown = _metavar(action)
+            parts.append(f"[{shown}]" if action.nargs == "?" else shown)
+    for action in needed:
+        flag = action.option_strings[-1]
+        parts.append(flag if action.nargs == 0
+                     else f"{flag} {_metavar(action)}")
+    line = "- `" + " ".join(parts) + "`"
+    if help_text:
+        line += f" — {help_text}"
+    for action in needed:
+        if action.help:
+            line += f" `{action.option_strings[-1]}`: {action.help}."
+    if spare:
+        line += (" Also takes: "
+                 + ", ".join(f"`{action.option_strings[-1]}`"
+                             for action in spare) + ".")
+    return line
+
+
+def supervisor_verbs() -> list[tuple[str, str]]:
+    """(verb, rendered line) for every verb a supervisor may actually call.
+
+    Built from the registered parser and the gates in the code behind it,
+    never from a hand-written list: a verb this checkout ships for the role
+    is in the prompt, and one it does not ship cannot be.
+    """
+    gates, required = _gate_tables()
+    lines: list[tuple[str, str]] = []
+    for path, parser, help_text in registered_verbs():
+        forms = sorted(verb for verb in gates
+                       if verb == path or verb.startswith(path + " "))
+        # No gate at all is no refusal at all: the verb is open to everyone.
+        allowed = ([verb for verb in forms if SUPERVISOR in gates[verb]]
+                   if forms else [path])
+        for verb in allowed:
+            lines.append((verb, _verb_line(path, parser, help_text, verb,
+                                           required.get(verb, set()))))
+    return lines
 
 
 def vendor_config_path() -> Path:
@@ -702,7 +975,7 @@ def pre_answer_first_launch_dialogs(directory: str) -> None:
 
 def supervisor_inner_command(*, pid_path: Path, session_id: str, repo: str,
                              role_prompt: Path, vendor_id: str,
-                             resume: bool) -> str:
+                             resume: bool, front_prompt: Path | None = None) -> str:
     """The shell the window runs: pid first, then the proven vendor line.
 
     The pid is written as the first act and read back by the launcher, so
@@ -712,11 +985,20 @@ def supervisor_inner_command(*, pid_path: Path, session_id: str, repo: str,
     its own supervisor as an unregistered writer.
 
     A resume passes **no positional prompt**: a ``--resume`` with one sits
-    idle and never starts. The fresh prompt is on disk either way.
+    idle and never starts. So the fresh prompt is delivered the way a
+    resumed conversation can actually take it — the wrapper prints its
+    path, and the prompt the session already has tells it to read that
+    file first. Writing a file nobody opens is not a relaunch.
     """
+    announce = ""
     if resume:
         vendor = (f"{AUTOCOMPACT} claude --resume {shlex.quote(vendor_id)} "
                   f"--model {SUPERVISOR_MODEL} --dangerously-skip-permissions")
+        where = str(front_prompt if front_prompt is not None else role_prompt)
+        announce = "printf '%s\\n' " + shlex.quote(
+            "You were relaunched. Read your fresh role prompt before anything "
+            "else, as the prompt in this conversation tells you to: "
+            + where) + "\n"
     else:
         vendor = (f"{AUTOCOMPACT} claude --session-id {shlex.quote(vendor_id)} "
                   f"--model {SUPERVISOR_MODEL} --dangerously-skip-permissions "
@@ -725,6 +1007,7 @@ def supervisor_inner_command(*, pid_path: Path, session_id: str, repo: str,
         f"echo $$ > {shlex.quote(str(pid_path))}\n"
         f"export {caller.SESSION_ENV}={shlex.quote(session_id)}\n"
         f"cd {shlex.quote(repo)}\n"
+        f"{announce}"
         f"{vendor}\n"
         f"sleep {WINDOW_LINGER_SECONDS}\n"
     )
@@ -750,21 +1033,95 @@ def window_name(session_id: str) -> str:
 
 
 def front_tasks_block(front: str) -> str:
-    """Every task with its title, state, size and what it comes after."""
+    """Every task: its line, its scope verbatim, and its verify command.
+
+    A supervisor plans jobs out of the scope and re-runs the verification
+    itself, so a prompt carrying titles and states alone carries none of
+    the work. Both travel with the task, verbatim from the brief.
+    """
     records = store.fold_by_id(
         store.read_ledger(paths.front_tasks_path(front)))
     if not records:
         return "(this front has no tasks on the ledger)"
-    lines = []
+    blocks = []
     for record in records:
         after = [entry for entry in (record.get("after") or [])
                  if isinstance(entry, str) and entry]
-        lines.append(
-            f"- \"{record.get('title') or '(untitled)'}\" — "
-            f"{record.get('state') or 'unknown'} · "
+        title = record.get("title") or "(untitled)"
+        scope = (record.get("scope") or "").strip()
+        verify = (record.get("verify") or "").strip()
+        block = [
+            f"### Task \"{title}\"",
+            "",
+            f"- \"{title}\" — {record.get('state') or 'unknown'} · "
             f"size {record.get('size', 0)} · "
-            f"after {', '.join(after) if after else 'nothing'}"
+            f"units {record.get('units_done', 0)}/"
+            f"{record.get('units_total', 0)} · "
+            f"after {', '.join(after) if after else 'nothing'}",
+            f"- lands on: {record.get('land_on') or '(the front’s branch)'}",
+            "- verification, which you re-run yourself before this task is "
+            "done: " + (f"`{verify}`" if verify
+                        else "(the brief records none: ask before you call "
+                             "this task built)"),
+            "- scope, verbatim from the brief:",
+            "",
+            scope or "(the brief records no scope for this task)",
+        ]
+        blocks.append("\n".join(block))
+    return "\n\n".join(blocks)
+
+
+def front_monitors_block(record: dict) -> str:
+    """The brief's monitors: the question, the command, and how often."""
+    monitors = record.get("monitors")
+    if not isinstance(monitors, list) or not monitors:
+        return "(the brief records no monitor for this front)"
+    lines = []
+    for monitor in monitors:
+        if not isinstance(monitor, dict):
+            continue
+        alert = monitor.get("alert")
+        lines.append(
+            f"- \"{monitor.get('question') or '(no question recorded)'}\" — "
+            f"measure with `{monitor.get('measure') or '(no command)'}`, "
+            f"in {monitor.get('unit') or '(no unit)'} of "
+            f"{monitor.get('of', '(no target)')}, every "
+            f"{monitor.get('every') or '(no cadence)'}"
+            + (f", alert when {alert}" if alert else "")
         )
+    return "\n".join(lines) or "(the brief records no monitor for this front)"
+
+
+def brief_rules(front: str) -> list[str]:
+    """The `[[rule]]` lines of the brief, which `front add` stores nowhere.
+
+    The brief is the front's only input and its rules are the owner's; a
+    prompt that says "(no rulings recorded)" while the brief carries one
+    tells the supervisor the opposite of the truth.
+    """
+    try:
+        with open(paths.brief_path(front), "rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, ValueError):
+        return []
+    if not isinstance(data, dict):
+        return []
+    texts = []
+    for entry in data.get("rule") or []:
+        text = entry.get("text") if isinstance(entry, dict) else None
+        if isinstance(text, str) and text.strip():
+            texts.append(text.strip())
+    return texts
+
+
+def supervisor_rulings_block(front: str) -> str:
+    """Everything this front runs under, each line saying where it came from."""
+    lines = [f"- from the brief: {text}" for text in brief_rules(front)]
+    lines += [f"- from the rulings ledger: {text}"
+              for text in read_rulings(front)]
+    if not lines:
+        return ("(no rule is recorded for this front: the swarm's rulings "
+                "ledger is empty and the brief carries no `[[rule]]`)")
     return "\n".join(lines)
 
 
@@ -780,28 +1137,64 @@ def allocation_block(record: dict) -> str:
 
 
 def verbs_block() -> str:
-    lines = [f"- `{verb}` — {why}" for verb, why in SUPERVISOR_VERBS]
-    lines.append(
-        "- The design gives your role "
-        + ", ".join(f"`{verb}`" for verb in SUPERVISOR_VERBS_UNSHIPPED)
-        + " as well; this version does not ship them yet, so do not call them "
-          "and do not invent a substitute."
-    )
+    verbs = supervisor_verbs()
+    lines = [line for _verb, line in verbs]
+    shipped = {verb for verb, _line in verbs}
+    missing = [verb for verb in DESIGN_SUPERVISOR_ROW if verb not in shipped]
+    if missing:
+        lines.append(
+            "- The design gives your role "
+            + ", ".join(f"`{verb}`" for verb in missing)
+            + " as well; this version does not ship them, so do not call them "
+              "and do not invent a substitute.")
     return "\n".join(lines)
 
 
-def supervisor_environment_block(*, repo: str, branch: str, session_id: str,
-                                 role_prompt: str, checkpoint: str) -> str:
+def front_prompt_path(front: str) -> Path:
+    """Where the front's newest supervisor prompt always is.
+
+    A resumed conversation carries the prompt its predecessor was summoned
+    with, not the fresh one, so the fresh one is published at a path the
+    old prompt could already name. This is the address a relaunched
+    supervisor is told to read, and it is rewritten on every summon.
+    """
+    return paths.front_dir(front) / "supervisor-prompt.md"
+
+
+def supervisor_environment_block(*, front: str, repo: str, branch: str,
+                                 session_id: str, role_prompt: str,
+                                 checkpoint: str) -> str:
+    """Every path the supervisor needs, absolute, with none to reconstruct."""
     return (
-        f"- repository: {repo}\n"
-        f"- branch: {branch}\n"
+        f"- repository: {repo} — you work in this checkout\n"
+        f"- branch: {branch} — the branch this checkout is on. The launcher "
+        f"refuses to summon you onto any other, and you never switch it "
+        f"underneath its owner.\n"
         f"- state directory: {paths.state_dir()}\n"
         f"- your session id: {session_id}\n"
         f"- {caller.SESSION_ENV}: must be set to {session_id} on every "
         f"`foreman` call. Your window exports it; a shell you open yourself "
         f"must set it, or the CLI refuses you as an unregistered writer.\n"
         f"- your role prompt: {role_prompt}\n"
-        f"- your checkpoint: {checkpoint}"
+        f"- this front's newest role prompt, rewritten on every summon and "
+        f"relaunch: {front_prompt_path(front)}\n"
+        f"- your checkpoint: {checkpoint}\n"
+        f"- the brief, verbatim, the only input this front has: "
+        f"{paths.brief_path(front)}\n"
+        f"- the plan, when the brief came with one: {paths.plan_path(front)}\n"
+        f"- the front ledger: {paths.front_record_path(front)}\n"
+        f"- the task ledger: {paths.front_tasks_path(front)}\n"
+        f"- the job ledger: {paths.front_jobs_path(front)}\n"
+        f"- the evidence ledger: {paths.front_evidence_path(front)}\n"
+        f"- the findings ledger: {paths.front_findings_path(front)}\n"
+        f"- the measurements ledger: "
+        f"{paths.front_measurements_path(front)}\n"
+        f"- the rulings ledger: {paths.rulings_path()}\n"
+        f"- the roster: {paths.roster_path()}\n"
+        f"- the configuration: {paths.config_file()}\n"
+        f"- every relative path quoted in the brief, a task scope or a "
+        f"monitor is relative to the repository above: `docs/DESIGN.md` is "
+        f"{os.path.join(repo, 'docs/DESIGN.md')}"
     )
 
 
@@ -838,20 +1231,31 @@ def render_supervisor_prompt(*, front: str, record: dict, session_id: str,
     return render_role_template(SUPERVISOR, {
         "front": front,
         "session_id": session_id,
+        "branch": branch,
         "want": (record.get("want") or "(the brief records no want)").strip(),
         "done_when": (record.get("done_when")
                       or "(the brief records no done-when)").strip(),
         "tasks": front_tasks_block(front),
+        "monitors": front_monitors_block(record),
         "allocation": allocation_block(record),
         "verbs": verbs_block(),
         "silent_minutes": f"{silent:.0f}",
-        "rulings": format_rulings(read_rulings(front)),
+        "rulings": supervisor_rulings_block(front),
         "predecessor": predecessor_block(predecessor),
+        "front_prompt": str(front_prompt_path(front)),
         "environment": supervisor_environment_block(
-            repo=repo, branch=branch, session_id=session_id,
+            front=front, repo=repo, branch=branch, session_id=session_id,
             role_prompt=str(role_prompt),
             checkpoint=str(paths.checkpoint_path(session_id))),
     })
+
+
+def publish_front_prompt(front: str, text: str) -> Path:
+    """Put the fresh prompt where a resumed session was told to look."""
+    path = front_prompt_path(front)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    write_no_symlink(str(path), text)
+    return path
 
 
 def _write_vendor_session(session_id: str, vendor_id: str) -> Path:
@@ -888,37 +1292,74 @@ def _supervisor_session(session_id: str, front: str | None, repo: str,
 
 def _start_supervisor(session_id: str, *, repo: str, role_prompt: Path,
                       vendor_id: str, workspace: str | None,
-                      resume: bool) -> tuple[list[str], str, int | None,
-                                             str | None]:
+                      resume: bool,
+                      front_prompt: Path | None = None
+                      ) -> tuple[list[str], str, int | None, str | None]:
     """Write the window's script, open it, read the pid back.
 
     Returns the outer argv, the inner shell, the pid and a failure message;
-    exactly one of the last two is set.
+    exactly one of the last two is set. Nothing here raises: this runs after
+    the session is on the roster, so a disk or permission error must come
+    back as a named refusal that closes the record, never as an exception
+    that leaves a session `starting` forever.
     """
     session_dir = paths.session_dir(session_id)
     pid_path = paths.session_pid_path(session_id)
     inner = supervisor_inner_command(
         pid_path=pid_path, session_id=session_id, repo=repo,
-        role_prompt=role_prompt, vendor_id=vendor_id, resume=resume)
+        role_prompt=role_prompt, vendor_id=vendor_id, resume=resume,
+        front_prompt=front_prompt)
     argv = supervisor_outer_argv(session_id, session_dir / RUN_SCRIPT_FILE,
                                  workspace)
-    pre_answer_first_launch_dialogs(repo)
-    _common.write_worker_script(session_dir / RUN_SCRIPT_FILE, inner)
     try:
+        pre_answer_first_launch_dialogs(repo)
+        _common.write_worker_script(session_dir / RUN_SCRIPT_FILE, inner)
         pid = _common.spawn_and_wait(
             argv, pid_path=pid_path, session_id=session_id,
             popen=subprocess.Popen)
     except Exception as exc:  # noqa: BLE001 - a dead spawn is a refusal
-        return argv, inner, None, str(exc)
+        return argv, inner, None, f"{type(exc).__name__}: {exc}"
     return argv, inner, pid, None
+
+
+def live_front_supervisor(front: str | None,
+                          ignore: str | None = None) -> tuple[str, dict] | None:
+    """The front's live supervisor, if it has one.
+
+    One front has one supervisor: two of them is the state the collector
+    reads as an intruder, and the one this whole runtime exists to prevent.
+    Live means rostered as starting or running *and* the recorded process
+    still being that process — a stale record for a pid that is gone, or
+    one a later process has reused, holds no front.
+    """
+    if not front:
+        return None
+    sessions = caller.read_roster().get("sessions", {})
+    for session_id, entry in sessions.items():
+        if not isinstance(entry, dict) or session_id == ignore:
+            continue
+        if entry.get("role") != SUPERVISOR or entry.get("front") != front:
+            continue
+        if entry.get("state") not in ("starting", "running"):
+            continue
+        pid = entry.get("pid")
+        if pid is None or procs.same_process(pid, entry.get("pid_starttime")):
+            return session_id, entry
+    return None
 
 
 def _print_supervisor(session_id: str, vendor_id: str, role_prompt: Path,
                       workspace: str | None, pid: int | None,
-                      argv: list[str], inner: str) -> None:
+                      argv: list[str], inner: str,
+                      front: str | None = None,
+                      branch: str | None = None) -> None:
     print(f"session: {session_id}")
     print(f"vendor session: {vendor_id}")
     print(f"role prompt: {role_prompt}")
+    if front:
+        print(f"front prompt: {front_prompt_path(front)}")
+    if branch:
+        print(f"branch: {branch}")
     where = (f"workspace {workspace}" if workspace is not None
              else "workspace from the window helper")
     print(f"window: {window_name(session_id)} {where}")
@@ -926,16 +1367,35 @@ def _print_supervisor(session_id: str, vendor_id: str, role_prompt: Path,
     print(f"command: {_common.printable_command(argv, inner)}")
 
 
-def _record_running(session_id: str, pid: int) -> None:
+def _confirm_started(pid: int | None) -> tuple[int | None, str | None]:
+    """The process identity of a launch, or why it is not a launch at all.
+
+    A pid file is not proof that a process lives: the wrapper writes it as
+    its first act and can be gone before it is read. A record with no
+    process start time beside the pid is worse than none — the collector
+    reads a null identity as "trust it" — so a launch that cannot confirm
+    both is a refusal and a terminal record, never a running one.
+    """
+    if pid is None:
+        return None, None
+    starttime = procs.proc_starttime(pid)
+    if not procs.pid_alive(pid) or starttime is None:
+        return None, (f"the window wrote pid {pid} and was gone before the "
+                      f"launcher could confirm it; a session with no process "
+                      f"identity is never recorded running")
+    return starttime, None
+
+
+def _record_running(session_id: str, pid: int, starttime: int) -> None:
     # The starttime beside the pid is the process identity: the collector
     # requires both to match before believing a session alive, so a later
-    # process reusing the number cannot inherit this supervisor's slot.
+    # process reusing the number cannot inherit this supervisor's slot. It
+    # is read before this call and never null here.
     #
     # The group is asked for rather than assumed: unlike a headless worker,
     # whose wrapper runs under setsid and is its own group leader, this
     # shell runs inside a terminal it did not start, so its pid is not its
     # pgid and a kill aimed at the pid as a group would miss.
-    starttime = procs.proc_starttime(pid)
     try:
         pgid = os.getpgid(pid)
     except OSError:
@@ -945,6 +1405,15 @@ def _record_running(session_id: str, pid: int) -> None:
         lambda roster: _move_session(roster, session_id, state="running",
                                      pid=pid, pgid=pgid,
                                      pid_starttime=starttime),
+        default={"sessions": {}},
+    )
+
+
+def _record_failed(session_id: str) -> None:
+    store.update_snapshot(
+        paths.roster_path(),
+        lambda roster: _move_session(roster, session_id, state="failed",
+                                     pid=None, pgid=None),
         default={"sessions": {}},
     )
 
@@ -969,12 +1438,24 @@ def launch_supervisor_main(args: argparse.Namespace,
     repo = os.path.abspath(args.repo or os.getcwd())
     if not os.path.isdir(repo):
         problems.append(f"repo {repo!r} is not a directory")
+    branch = _branch_of_checkout(repo, args.branch, problems)
+    # One front, one supervisor. A second live one is refused by name here,
+    # before anything is minted: two supervisors of one front, both
+    # authorised to plan and dispatch, is the failure this runtime exists
+    # to prevent, and a replacement goes through `relaunch`.
+    live = live_front_supervisor(front) if record is not None else None
+    if live is not None:
+        held, entry = live
+        problems.append(
+            f"front '{front}' already has a live supervisor '{held}' "
+            f"({entry.get('state')}, pid {entry.get('pid')}); one front has "
+            f"one supervisor, so replace it with "
+            f"`foreman relaunch {held}` instead of summoning a second")
     if problems:
         return refuse(*problems)
-    assert record is not None
+    assert record is not None and branch is not None
 
     session_id = ids.mint("session")
-    branch = args.branch or default_base(repo)
     # The vendor mints no id of its own for a fresh session, so Foreman
     # generates the uuid it will answer to and keeps it beside the session.
     vendor_id = str(uuid.uuid4())
@@ -1000,32 +1481,48 @@ def launch_supervisor_main(args: argparse.Namespace,
         argv = supervisor_outer_argv(
             session_id, session_dir / RUN_SCRIPT_FILE, workspace)
         _print_supervisor(session_id, vendor_id, role_prompt, workspace,
-                          None, argv, inner)
+                          None, argv, inner, front=front, branch=branch)
         print()
         print(text)
         return 0
 
-    store.update_snapshot(
-        paths.roster_path(),
-        lambda roster: _place_session(
-            roster, _supervisor_session(session_id, front, repo,
-                                        os.environ.get(caller.SESSION_ENV))),
-        default={"sessions": {}},
-    )
-    argv, inner, pid, failure = _start_supervisor(
-        session_id, repo=repo, role_prompt=role_prompt, vendor_id=vendor_id,
-        workspace=workspace, resume=False)
-    if pid is None:
+    try:
         store.update_snapshot(
             paths.roster_path(),
-            lambda roster: _move_session(roster, session_id, state="failed"),
+            lambda roster: _place_session(
+                roster,
+                _supervisor_session(session_id, front, repo,
+                                    os.environ.get(caller.SESSION_ENV))),
             default={"sessions": {}},
         )
+    except OSError as exc:
+        return refuse(f"cannot record the session on the roster: "
+                      f"{exc.strerror or exc}")
+
+    # From the roster write to the spawn, every step is inside this handler:
+    # past this line the session exists, so a failure has to close it as
+    # failed and refuse by name. A session left `starting` forever is a
+    # stranded slot nobody can see the end of.
+    argv: list[str] = []
+    inner = ""
+    pid: int | None = None
+    failure: str | None = None
+    try:
+        publish_front_prompt(front, text)
+        argv, inner, pid, failure = _start_supervisor(
+            session_id, repo=repo, role_prompt=role_prompt,
+            vendor_id=vendor_id, workspace=workspace, resume=False)
+    except Exception as exc:  # noqa: BLE001 - anything here is a refusal
+        failure = f"{type(exc).__name__}: {exc}"
+    starttime, dead = _confirm_started(pid)
+    if starttime is None:
+        _record_failed(session_id)
         return refuse(f"the window launcher failed to start the supervisor: "
-                      f"{failure}")
-    _record_running(session_id, pid)
+                      f"{failure or dead}")
+    assert pid is not None
+    _record_running(session_id, pid, starttime)
     _print_supervisor(session_id, vendor_id, role_prompt, workspace, pid,
-                      argv, inner)
+                      argv, inner, front=front, branch=branch)
     return 0
 
 
@@ -1149,14 +1646,15 @@ def add_relaunch_arguments(parser: argparse.ArgumentParser) -> None:
 @subcommand("relaunch",
             help="Replace a supervisor with a fresh prompt, resuming its session.")
 def cmd_relaunch(args: argparse.Namespace) -> int:
+    problems: list[str] = []
     frozen = paths.frozen_path()
     if frozen.exists():
-        return refuse(
+        problems.append(
             f"frozen file {frozen} exists; the launcher refuses while frozen")
     me, violations = caller.resolve("relaunch")
     caller.check_role(me, "relaunch", FOREMAN, SUPERVISOR,
                       violations=violations)
-    problems = list(violations)
+    problems.extend(violations)
     workspace = args.workspace
     if workspace is not None and not WORKSPACE_RE.fullmatch(str(workspace)):
         problems.append(
@@ -1187,12 +1685,19 @@ def cmd_relaunch(args: argparse.Namespace) -> int:
     repo = os.path.abspath(args.repo or old.get("worktree") or os.getcwd())
     if not os.path.isdir(repo):
         problems.append(f"repo {repo!r} is not a directory")
+    branch = _branch_of_checkout(repo, args.branch, problems)
+    other = live_front_supervisor(front, ignore=old_id) if old else None
+    if other is not None:
+        held, entry = other
+        problems.append(
+            f"front '{front}' already has another live supervisor '{held}' "
+            f"({entry.get('state')}, pid {entry.get('pid')}); one front has "
+            f"one supervisor, so relaunch that one instead")
     if problems:
         return refuse(*problems)
-    assert record is not None and vendor_id is not None
+    assert record is not None and vendor_id is not None and branch is not None
 
     session_id = ids.mint("session")
-    branch = args.branch or default_base(repo)
     session_dir = paths.session_dir(session_id)
     role_prompt = session_dir / ROLE_PROMPT_FILE
     try:
@@ -1209,49 +1714,85 @@ def cmd_relaunch(args: argparse.Namespace) -> int:
     except OSError as exc:
         return refuse(f"cannot write launch files: {exc.strerror or exc}")
 
+    old_pid = old.get("pid")
+    old_alive = procs.same_process(old_pid, old.get("pid_starttime"))
     if args.dry_run:
         inner = supervisor_inner_command(
             pid_path=paths.session_pid_path(session_id),
             session_id=session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, resume=True)
+            vendor_id=vendor_id, resume=True,
+            front_prompt=front_prompt_path(front))
         argv = supervisor_outer_argv(
             session_id, session_dir / RUN_SCRIPT_FILE, workspace)
         print(f"replaces: {old_id}")
+        print(f"would stop: pid {old_pid}" if old_alive
+              else f"would stop: nothing ({old_id} is not running)")
         _print_supervisor(session_id, vendor_id, role_prompt, workspace,
-                          None, argv, inner)
+                          None, argv, inner, front=front, branch=branch)
         print()
         print(text)
         return 0
 
-    # The predecessor leaves the roster before the successor starts: two
-    # live supervisors on one front is the state the collector reads as an
-    # intruder, and only one of them holds the front.
+    # The predecessor is stopped before the successor is admitted, and the
+    # roster says what was stopped. Marking a record exited while its
+    # process runs on, still able to plan, dispatch and checkpoint, leaves
+    # two live supervisors of one front: the failure this runtime exists to
+    # prevent. Authority follows the process, so the process ends first.
+    stopped: list[int] = []
+    if old_alive:
+        signalled, remaining = procs.kill_job(old_pid, old.get("pgid"))
+        if remaining:
+            return refuse(
+                f"session '{old_id}' is still alive after being stopped "
+                f"(pids {sorted(remaining)}); no successor was started, "
+                f"because two live supervisors of one front is the failure "
+                f"this runtime exists to prevent")
+        stopped = signalled
     store.update_snapshot(
         paths.roster_path(),
-        lambda roster: _move_session(roster, old_id, state="exited"),
+        lambda roster: _move_session(
+            roster, old_id, state="exited", pid=None, pgid=None,
+            stopped_pid=old_pid if old_alive else None,
+            stopped_pids=stopped,
+            stopped_at=store.utcnow_iso() if old_alive else None,
+            stopped_by=session_id),
         default={"sessions": {}},
     )
-    store.update_snapshot(
-        paths.roster_path(),
-        lambda roster: _place_session(
-            roster, _supervisor_session(session_id, front, repo, old_id)),
-        default={"sessions": {}},
-    )
-    argv, inner, pid, failure = _start_supervisor(
-        session_id, repo=repo, role_prompt=role_prompt, vendor_id=vendor_id,
-        workspace=workspace, resume=True)
-    if pid is None:
+    try:
         store.update_snapshot(
             paths.roster_path(),
-            lambda roster: _move_session(roster, session_id, state="failed"),
+            lambda roster: _place_session(
+                roster, _supervisor_session(session_id, front, repo, old_id)),
             default={"sessions": {}},
         )
+    except OSError as exc:
+        return refuse(f"cannot record the session on the roster: "
+                      f"{exc.strerror or exc}")
+
+    argv: list[str] = []
+    inner = ""
+    pid: int | None = None
+    failure: str | None = None
+    try:
+        publish_front_prompt(front, text)
+        argv, inner, pid, failure = _start_supervisor(
+            session_id, repo=repo, role_prompt=role_prompt,
+            vendor_id=vendor_id, workspace=workspace, resume=True,
+            front_prompt=front_prompt_path(front))
+    except Exception as exc:  # noqa: BLE001 - anything here is a refusal
+        failure = f"{type(exc).__name__}: {exc}"
+    starttime, dead = _confirm_started(pid)
+    if starttime is None:
+        _record_failed(session_id)
         return refuse(f"the window launcher failed to start the supervisor: "
-                      f"{failure}")
-    _record_running(session_id, pid)
+                      f"{failure or dead}")
+    assert pid is not None
+    _record_running(session_id, pid, starttime)
     print(f"replaces: {old_id}")
+    print(f"stopped: pid {old_pid} ({len(stopped)} process(es))" if stopped
+          else f"stopped: nothing ({old_id} was not running)")
     _print_supervisor(session_id, vendor_id, role_prompt, workspace, pid,
-                      argv, inner)
+                      argv, inner, front=front, branch=branch)
     return 0
 
 
