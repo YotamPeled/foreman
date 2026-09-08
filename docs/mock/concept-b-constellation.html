@@ -398,6 +398,37 @@ const MI={"claude opus":C.model_claude,"codex astra":C.model_codex,
 const isBlack=m=>m==="grok 4.6";
 const mc=m=>MC[m]||C.accent, mi=m=>MI[m]||C.accent;
 
+/* ══ the faces ════════════════════════════════════════════════════════════
+   One silhouette per pool, each drawn from a single path in a 24×24 box so
+   the canvas and the HUD share exactly the same geometry. The shape does the
+   recognising and the vendor colour does the naming, which means the marks
+   still read when the whole picture is one colour.
+     claude  a radiating burst      codex  a hexagonal rosette
+     grok    a slashed X            muse   a four-point spark               */
+const GLYPH={
+  "claude opus":"M12 .9 13.6 8 19 3.2 16.1 9.6 23.1 8.1 17.4 12 23.1 15.9 16.1 14.4 19 20.8 13.6 16 12 23.1 10.4 16 5 20.8 7.9 14.4 .9 15.9 6.6 12 .9 8.1 7.9 9.6 5 3.2 10.4 8Z",
+  "codex astra":"M12 1 21.5 6.5 21.5 17.5 12 23 2.5 17.5 2.5 6.5ZM12 7.2 16.8 10 16.8 15.5 12 18.3 7.2 15.5 7.2 10Z",
+  "grok 4.6":"M3.4 1.8 8.8 1.8 20.6 22.2 15.2 22.2ZM15.2 1.8 20.6 1.8 8.8 22.2 3.4 22.2Z",
+  "muse":"M12 .6C13.1 8.2 15.8 10.9 23.4 12 15.8 13.1 13.1 15.8 12 23.4 10.9 15.8 8.2 13.1 .6 12 8.2 10.9 10.9 8.2 12 .6Z"
+};
+const GP={};   /* implicit lineto after moveto is standard SVG, Path2D reads it */
+function glyphPath(m){ const d=GLYPH[m]||GLYPH.muse; return GP[d]||(GP[d]=new Path2D(d)); }
+/* r is the half-size the mark occupies */
+function drawGlyph(m,x,y,r,col,a,scale){
+  const p=glyphPath(m);
+  ctx.save(); ctx.translate(x,y); ctx.scale((scale||1)*r/12,(scale||1)*r/12); ctx.translate(-12,-12);
+  ctx.fillStyle=rgba(col,a==null?1:a); ctx.fill(p,"evenodd");
+  if(isBlack(m)){ ctx.lineWidth=1.5; ctx.strokeStyle=rgba(C.model_grok_ink,a==null?.95:a); ctx.stroke(p); }
+  ctx.restore();
+}
+/* the same mark for the HUD, so a slot row and a berth show one face */
+function glyphSVG(m,px){
+  const blk=isBlack(m);
+  return `<svg class="gl" viewBox="0 0 24 24" width="${px}" height="${px}" aria-hidden="true">`+
+    `<path d="${GLYPH[m]||GLYPH.muse}" fill="${mc(m)}" fill-rule="evenodd"`+
+    (blk?` stroke="${C.model_grok_ink}" stroke-width="1.6"`:"")+`/></svg>`;
+}
+
 /* ══ state ════════════════════════════════════════════════════════════════
    The story is 14:07 on a Monday. Engine's supervisor has been silent 14 min
    while still holding its slot. Ingestion is halted on the same defect three
@@ -407,7 +438,7 @@ const CX=1275, CY=630;                     /* the foreman sits at the origin */
 const S={
   frozen:false, focus:null, hover:null, t:0, tickPhase:0, sweeps:[], min0:14*60+7, wall0:Date.now(),
   comps:[
-    {id:"api",name:"api",sup:"sup·api",supModel:"claude opus",x:1275,y:320,
+    {id:"api",target:"dev",name:"api",sup:"sup·api",supModel:"claude opus",x:1275,y:320,
      total:22,built:14,landed:11,plaus:2,vel:2.1,eta:"~4h left",state:"",R:82,
      mx:1275,my:478,malign:"c",
      ck:[["done","routes registered straight from the ledger schema"],
@@ -423,7 +454,7 @@ const S={
            {n:"ledger-write-guard",m:"muse",w:"wt/api-32",min:17,to:30,b:1},
            {n:"openapi-drift-check",m:"grok 4.6",w:"wt/api-33",min:2,to:20,b:2}]},
 
-    {id:"corpus",name:"corpus",sup:"sup·corpus",supModel:"claude opus",x:1739,y:550,
+    {id:"corpus",target:"main",name:"corpus",sup:"sup·corpus",supModel:"claude opus",x:1739,y:550,
      total:31,built:22,landed:19,plaus:1,vel:3.0,eta:"~3h left",state:"",R:88,
      mx:1623,my:585,malign:"r",
      ck:[["done","labels carry the reader and the moment of reading"],
@@ -432,9 +463,11 @@ const S={
          ["plaus","dump export matches the ledger schema"],
          ["open","sampling plan written on the component"]],
      berths:[{a:300,side:"r"},{a:30,side:"r"}],
-     jobs:[{n:"label-second-read",m:"muse",w:"wt/corp-18",min:9,to:30,b:0}]},
+     jobs:[{n:"label-second-read",m:"muse",w:"wt/corp-18",min:9,to:30,b:0},
+           {n:"review·label-second-read",m:"codex astra",w:"wt/corp-rev",min:4,to:15,b:1,
+            spec:"read the second-read branch before it goes to the desk"}]},
 
-    {id:"reaper",name:"reaper",sup:"sup·reaper",supModel:"claude opus",x:1620,y:900,
+    {id:"reaper",target:"feat/reaper-sweep",name:"reaper",sup:"sup·reaper",supModel:"claude opus",x:1620,y:900,
      total:12,built:3,landed:1,plaus:1,vel:0,eta:"waiting on you",state:"idle",R:70,
      mx:1560,my:750,malign:"r",
      ck:[["done","dead session leaves the roster in one tick"],
@@ -444,7 +477,7 @@ const S={
      berths:[{a:310,side:"r"},{a:0,side:"r"}],
      jobs:[]},
 
-    {id:"ingestion",name:"ingestion",sup:"sup·ingestion",supModel:"claude opus",x:936,y:849,
+    {id:"ingestion",target:"feat/ingest-webhook",name:"ingestion",sup:"sup·ingestion",supModel:"claude opus",x:936,y:849,
      total:18,built:9,landed:9,plaus:1,vel:0,eta:"dispatching stopped",state:"halt",R:76,
      mx:1050,my:830,malign:"l",defect:"webhook destination",defects:3,
      ck:[["done","source registry reads from the component ledger"],
@@ -453,7 +486,7 @@ const S={
          ["open","backfill window is bounded"]],
      berths:[{a:135,side:"l"}], jobs:[]},
 
-    {id:"engine",name:"engine",sup:"sup·engine",supModel:"claude opus",x:811,y:550,
+    {id:"engine",target:"dev",name:"engine",sup:"sup·engine",supModel:"claude opus",x:811,y:550,
      total:24,built:15,landed:12,plaus:1,vel:0,eta:"stalled",state:"silent",R:84,
      mx:760,my:310,malign:"l",silentFor:14,
      ck:[["done","routing table read from the slot ledger"],
@@ -464,7 +497,7 @@ const S={
          ["open","relaunch replays the checkpoint"]],
      berths:[{a:190,side:"c"},{a:315,side:"c"}], jobs:[]},
 
-    {id:"merge-desk",name:"merge-desk",sup:"merge desk",supModel:"claude opus",x:1808,y:1150,
+    {id:"merge-desk",target:"main",name:"merge-desk",sup:"merge desk",supModel:"claude opus",x:1808,y:1150,
      total:9,built:7,landed:7,plaus:1,vel:1.1,eta:"~1h left",state:"gate",R:64,
      short:"merge",mx:1808,my:1010,malign:"c",
      ck:[["done","one queue for the whole swarm"],
@@ -473,23 +506,27 @@ const S={
          ["open","branch handoff frees the component"]],
      berths:[], jobs:[]}
   ],
-  /* the review gate: a rail the finished work has to cross to become landed */
-  gate:{y:1150, x0:590, x1:1990, qx:1060, qStep:40,
-    queue:[{c:"corpus",n:"label-index-rebuild"},{c:"api",n:"session-registry-read"},{c:"corpus",n:"dump-export-shape"}],
-    stations:[
-      {x:1230,name:"review·ledger-write-guard",m:"codex astra",w:"wt/merge-q",min:3,to:15,p:.42,item:{c:"api",n:"ledger-write-guard"}},
-      {x:1490,name:"review·label-second-read",m:"codex astra",w:"wt/merge-r",min:1,to:15,p:.12,item:{c:"corpus",n:"label-second-read"}}
-    ], landX:1670},
+  /* The merge desk, not a gate. A supervisor dispatches a review only when it
+     judges one worth the slot, so branches arrive reviewed or not and the desk
+     merges both. Every landing names the branch it went to.                */
+  desk:{y:1105, x0:600, x1:1700, x:1800,
+    queue:[{n:"label-index-rebuild",c:"corpus",reviewed:true},
+           {n:"session-registry-read",c:"api",reviewed:false},
+           {n:"dump-export-shape",c:"corpus",reviewed:false}],
+    landed:[{n:"routes-from-ledger",c:"api",target:"dev",reviewed:true,at:"14:02"},
+            {n:"replay-idempotent",c:"ingestion",target:"feat/ingest-webhook",reviewed:false,at:"13:58"},
+            {n:"reader-id-guard",c:"corpus",target:"main",reviewed:true,at:"13:55"}],
+    merging:null, p:0},
   /* the process nobody launched: off the lattice, untethered, jittering */
   rogue:{x:1962,y:236,alive:true,pid:41180,ws:9,jitter:0},
   models:[
-    {id:"opus", name:"claude opus", role:"orchestrator · supervisors", run:4,grant:4, pct:41,
+    {id:"opus", name:"claude opus", role:"opus pool · supervisors only", run:4,grant:4, pct:41,
      reset:"resets 17:00", dur:"avg supervisor 2h 41m · p90 4h 05m"},
-    {id:"astra",name:"codex astra", role:"reviewers",                  run:2,grant:2, pct:62,
-     reset:"resets 19:00", dur:"avg review 6 min · p90 13 min"},
-    {id:"grok", name:"grok 4.6",    role:"workers · fallback reviews", run:1,grant:2, pct:null,
+    {id:"astra",name:"codex astra", role:"codex pool · reviews", run:1,grant:2, pct:62,
+     reset:"resets 19:00", dur:"avg review 6 min · p90 13 min · 1 slot idle, no review judged worth it"},
+    {id:"grok", name:"grok 4.6",    role:"grok pool · workers", run:1,grant:2, pct:null,
      proxy:"3.4 jobs/h", dur:"avg job 17 min · p90 31 min"},
-    {id:"muse", name:"muse",        role:"workers",                    run:3,grant:3, pct:null,
+    {id:"muse", name:"muse",        role:"muse pool · workers", run:3,grant:3, pct:null,
      proxy:"5.1 jobs/h", dur:"avg job 14 min · p90 27 min"}
   ],
   alerts:[

@@ -65,6 +65,7 @@ Project ⊃ Component ⊃ Task ⊃ Job
 | Merge ledger | one line per landing: what, why, which review if any, which head, which target branch (feature, dev, main — normal git practice) | task state; duration metrics |
 | Inbox | question + recommendation + answer; money, irreversible, scope only | owner |
 | Events | the collector's raw observed stream | collector; metrics |
+| Metrics | per component, declared in its done-when (name, unit, denominator if any); each entry: value, timestamp, CONFIRMED or PLAUSIBLE, the command that produced it. Appended by the supervisor after it ran the measurement — never self-reported by a worker | collector snapshots the latest per metric every tick; the panel draws them on the component's body (a fill against the denominator, a sparkline for a series) |
 
 ### Lifecycles
 - Task: `open → active → built (supervisor CONFIRMED by re-running) → landed (a merge ledger line names it)`;
