@@ -318,7 +318,12 @@ def waiting_by_pool() -> dict[str, int]:
 
 
 def front_allocations() -> list[tuple[str, str, int]]:
-    """(front, role, ceiling) for every role a front record allocates."""
+    """(front, role, ceiling) for every role a front record allocates.
+
+    A front at state ``done`` allocates nothing: a ceiling on a front
+    nobody is working is not capacity, so its lines stay off the one
+    screen that has to stay readable.
+    """
     rows: list[tuple[str, str, int]] = []
     try:
         names = sorted(entry.name for entry in paths.fronts_dir().iterdir()
@@ -327,6 +332,8 @@ def front_allocations() -> list[tuple[str, str, int]]:
         return rows
     for name in names:
         record = fronts.read_front_record(name)
+        if (record or {}).get("state") == "done":
+            continue
         allocation = (record or {}).get("allocation")
         if not isinstance(allocation, dict):
             continue
