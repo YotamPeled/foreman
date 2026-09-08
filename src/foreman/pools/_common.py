@@ -57,6 +57,24 @@ def window_launcher() -> str | None:
     return None
 
 
+def default_window_launcher() -> str:
+    """The shipped window helper, when nothing configures another one.
+
+    A supervisor is an interactive session in a terminal window, so unlike
+    a headless worker it has no systemd-run fallback: without a launcher
+    there is no window and no session. The default is the helper shipped
+    with the skills; the source names no home directory, so the path is
+    composed here and overridden by ``FOREMAN_WINDOW_LAUNCHER`` or the
+    config file like every other launcher choice.
+    """
+    return str(Path.home() / ".claude" / "skills" / "muse-workers"
+               / "launch-window.sh")
+
+
+def window_launcher_or_default() -> str:
+    return window_launcher() or default_window_launcher()
+
+
 def read_pid_file(path: Path) -> int | None:
     try:
         return int(path.read_text(encoding="utf-8").strip().split()[0])
