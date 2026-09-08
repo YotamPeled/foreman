@@ -1,0 +1,28 @@
+Foreman status — 4 sessions registered, 3 observed · live · collector 2m ago
+Needs you (2):
+  [scope · 2h] Extend the beacon work to cover the harbor light? — recommend: No, finish the beacon first. (foreman answer inb-open02 <text>)
+  [money · 14m] Buy the map tile subscription for the atlas work? — recommend: Yes, buy the monthly tier. (foreman answer inb-open01 <yes|no>)
+Problems (2):
+  - job stalled: Draw the atlas map — no worktree write and no cpu for 600s (ses-stal0001, 11m)
+  - supervisor silent: beacon — wrote nothing for 900s and runs no jobs (ses-supbeacon, 26m)
+Working:
+  atlas — supervisor attached · tasks 1 landed, 0 built, 3 total · doing now: Splitting the map work into road jobs (4m ago)
+    Draw the atlas map — active · units 3/8
+      muse job running 8m of 20m, write 2m ago
+      grok job stalled 18m of 20m, write 14m ago
+    Label the atlas roads — ready · units 0/5 · after: Draw the atlas map
+    Bind the atlas book — landed · units 4/4
+      muse job verified 2h ago
+  beacon — supervisor attached · tasks 0 landed, 1 built, 2 total · doing now: Reading the light measurements (26m ago)
+    Light the beacon — built · units 6/6
+      astra job returned 40m ago
+    Guard the beacon — waiting · units 0/2 · after: Light the beacon
+Job queue:
+  atlas: Label the atlas roads waits for muse (waiting 6m)
+  beacon: Guard the beacon waits for muse (waiting 3m)
+Merge queue:
+  waiting: foreman/job-b1 -> dev, lands Light the beacon (requested 22m ago)
+  last landed: foreman/job-a4 -> dev (2h ago)
+Capacity:
+  grok: 1/2 held
+  muse: 1/5 held

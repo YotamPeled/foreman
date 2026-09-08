@@ -1,0 +1,2 @@
+{"kind":"job stalled","subject":"ses-stal0001","since":"2026-09-08T11:49:00+00:00","detail":"no worktree write and no cpu for 600s","resolved_at":null}
+{"kind":"supervisor silent","subject":"ses-supbeacon","since":"2026-09-08T11:34:00+00:00","detail":"wrote nothing for 900s and runs no jobs","resolved_at":null}
