@@ -224,9 +224,11 @@ def test_codex_wrapper_feeds_job_on_stdin(env, monkeypatch):
     ctx.job_path.write_text("WHAT: judge this branch.\n", encoding="utf-8")
     write_stub(env / "bin", "codex", "cat\nexit 5\n", monkeypatch)
     inner = codex_pool.inner_command(ctx)
-    assert inner.startswith("setsid --wait ")
+    assert inner.startswith("bash -c ")
     assert f"< {ctx.job_path}" in inner
-    assert f"cd {ctx.worktree} &&" in inner
+    assert "cd " not in inner
+    assert f"--working-directory={ctx.worktree}" in " ".join(
+        codex_pool.outer_argv(ctx))
     assert inner.index("### finished rc=$?") < inner.index("| tee")
     subprocess.run(["bash", "-c", inner], check=True,
                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)

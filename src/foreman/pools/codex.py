@@ -74,9 +74,18 @@ def last_message_path(ctx: LaunchContext) -> Path:
     """Where ``-o`` writes the agent's last message: beside the verdict.
 
     Never the verdict path itself: pointing both at one file lets the
-    last message overwrite the reviewer's verdict JSON.
+    last message overwrite the reviewer's verdict JSON (seen 2026-09-08:
+    nine findings replaced by one sentence of prose). A verdict file
+    already named ``last-message.txt`` refuses loudly here instead of
+    destroying the review at launch.
     """
-    return ctx.verdict_path.parent / LAST_MESSAGE_FILENAME
+    target = ctx.verdict_path.parent / LAST_MESSAGE_FILENAME
+    if target == ctx.verdict_path:
+        raise ValueError(
+            f"verdict path {ctx.verdict_path} collides with the "
+            f"last-message file; rename the verdict file"
+        )
+    return target
 
 
 def codex_argv(ctx: LaunchContext) -> list[str]:
@@ -108,13 +117,14 @@ def inner_command(ctx: LaunchContext) -> str:
     """Shell running the worker: pid first, marker inside the redirection.
 
     The job file is redirected into the vendor command's standard input.
+    The worktree reaches the worker through ``-C`` and the unit
+    (``--working-directory``) — no ``cd`` here.
     """
     return _common.wrap_inner(
         codex_argv(ctx),
         pid_path=ctx.pid_path,
         log_path=ctx.log_path,
         stdin_path=ctx.job_path,
-        cwd=ctx.worktree,
     )
 
 
@@ -122,7 +132,9 @@ def outer_argv(ctx: LaunchContext) -> list[str]:
     """Detached spawn: headless, unless this launch asked for a window."""
     return _common.wrap_outer(ctx.session.id, inner_command(ctx),
                               window=ctx.window,
-                              script_path=ctx.pid_path.parent / "run.sh")
+                              script_path=ctx.pid_path.parent / "run.sh",
+                              worktree=ctx.worktree,
+                              timeout=ctx.timeout)
 
 
 def read_pid_file(path: Path) -> int | None:

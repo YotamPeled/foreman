@@ -2,9 +2,10 @@
 
 Launch shape::
 
-    cd <worktree> && claude -p --output-format stream-json --verbose \\
+    claude -p --output-format stream-json --verbose \\
       --model <the role's model> --dangerously-skip-permissions \\
-      --disallowedTools 'mcp__foreman__* mcp__boxes__*' < <FOREMAN-JOB.md>
+      --disallowedTools 'mcp__foreman__* mcp__boxes__*' \\
+      --add-dir <worktree> < <FOREMAN-JOB.md>
 
 ``-p`` reads the spec from standard input (the job file is redirected in,
 so the whole spec never travels as one argv element). The swarm's own
@@ -20,12 +21,14 @@ Wrapping, pid file, finish marker and ``observe`` are the shared ones in
 :mod:`foreman.pools._common`, identical to the muse adapter.
 
 Nothing here is left to the machine's own configuration. The working
-directory is the worktree, the model is named for the role the job asked
-for, and the permission mode is on the command line: a headless worker
-has nobody to answer an approval prompt, and a worker whose model is
-whatever the machine happens to default to is not the worker the
-supervisor asked for. Owner ruling, 2026-09-08: nothing is guessed at
-launch.
+directory is the worktree — the unit starts there
+(``--working-directory``) and Claude is told too (``--add-dir``), since
+``systemd-run --user`` otherwise starts in the caller's home — the model
+is named for the role the job asked for, and the permission mode is on
+the command line: a headless worker has nobody to answer an approval
+prompt, and a worker whose model is whatever the machine happens to
+default to is not the worker the supervisor asked for. Owner ruling,
+2026-09-08: nothing is guessed at launch.
 """
 
 from __future__ import annotations
@@ -67,6 +70,8 @@ def claude_argv(ctx: LaunchContext) -> list[str]:
         "--dangerously-skip-permissions",
         "--disallowedTools",
         DISALLOWED_TOOLS,
+        "--add-dir",
+        str(ctx.worktree),
     ]
 
 
@@ -75,13 +80,14 @@ def inner_command(ctx: LaunchContext) -> str:
 
     The job file is redirected into the vendor command's standard input;
     the JSONL transcript streams through the pipe into the session log.
+    The worktree reaches the worker through the unit
+    (``--working-directory``) and ``--add-dir`` above — no ``cd`` here.
     """
     return _common.wrap_inner(
         claude_argv(ctx),
         pid_path=ctx.pid_path,
         log_path=ctx.log_path,
         stdin_path=ctx.job_path,
-        cwd=ctx.worktree,
     )
 
 
@@ -89,7 +95,9 @@ def outer_argv(ctx: LaunchContext) -> list[str]:
     """Detached spawn: headless, unless this launch asked for a window."""
     return _common.wrap_outer(ctx.session.id, inner_command(ctx),
                               window=ctx.window,
-                              script_path=ctx.pid_path.parent / "run.sh")
+                              script_path=ctx.pid_path.parent / "run.sh",
+                              worktree=ctx.worktree,
+                              timeout=ctx.timeout)
 
 
 def transcript_path(session: Session) -> Path:

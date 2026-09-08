@@ -325,7 +325,9 @@ def test_dry_run_prints_muse_command(env, capsys, effort):
     assert "muse exec" in out
     assert "--model muse-spark-1.3-contributor" in out
     assert f"--reasoning-effort {effort}" in out
-    assert "--yolo" in out
+    assert "--approval-mode never" in out
+    assert "--json" in out
+    assert "--yolo" not in out
     assert f"--workspace {worktree}" in out
     assert "--prompt-file" in out and "FOREMAN-JOB.md" in out
     assert "### finished rc=$?" in out
@@ -411,7 +413,8 @@ def test_muse_argv_is_exactly_the_proven_shape(env):
         "muse", "exec",
         "--model", "muse-spark-1.3-contributor",
         "--reasoning-effort", "high",
-        "--yolo",
+        "--approval-mode", "never",
+        "--json",
         "--workspace", str(ctx.worktree),
         "--prompt-file", str(ctx.job_path),
     ]
@@ -463,8 +466,11 @@ def test_muse_detach_defaults_to_systemd_run(env, monkeypatch):
     argv = muse_pool.outer_argv(ctx)
     # The worker is handed over as a script file, never as text on a
     # systemd command line, where $$ means a literal dollar.
-    assert argv == ["systemd-run", "--user", "--collect",
-                    f"--unit=foreman-{ctx.session.id}", "bash",
+    assert argv == ["systemd-run", "--user",
+                    f"--unit=foreman-{ctx.session.id}",
+                    f"--working-directory={ctx.worktree}",
+                    "--property=RuntimeMaxSec=1200",
+                    "--service-type=exec", "bash",
                     str(ctx.pid_path.parent / "run.sh")]
     assert "muse exec" in muse_pool.inner_command(ctx)
 
@@ -603,7 +609,7 @@ def test_launch_records_process_group(env, fake_pool, capsys):
     record = _roster_sessions()[sid]
     assert record["pid"] == os.getpid()
     assert record["pgid"] == record["pid"]
-    assert muse_pool.inner_command(make_ctx(env)).startswith("setsid --wait ")
+    assert muse_pool.inner_command(make_ctx(env)).startswith("bash -c ")
 
 
 @pytest.mark.parametrize("name", ["FOREMAN-JOB.md", "FOREMAN-ROLE.md"])

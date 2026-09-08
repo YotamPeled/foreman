@@ -425,6 +425,7 @@ def _live_supervisor_for(front: str | None, sessions: dict,
 
 def _tick_inner(moment: datetime, now_iso: str,
                 config: CollectorConfig) -> dict:
+    from .pools import _common as pool_common
     from .pools import get as get_pool
 
     table = procs.snapshot()
@@ -622,7 +623,20 @@ def _tick_inner(moment: datetime, now_iso: str,
                           f"{config.supervisor_silent_seconds:.0f}s and runs "
                           f"no jobs", asserted)
         elif worker and pid is not None and not alive:
-            if finish:
+            # The unit is the completion signal; the marker is the
+            # fallback. Workers spawn without --collect, so a finished
+            # unit still answers Result/ExecMainStatus here — and a unit
+            # that says it failed failed even if it wrote a marker.
+            try:
+                unit_failed = pool_common.unit_reports_failure(
+                    pool_common.unit_status(sid))
+            except Exception:  # noqa: BLE001 - status never blocks a tick
+                unit_failed = False
+            if unit_failed:
+                _mark_job(record.get("front"), record.get("job"),
+                          "failed", None)
+                _release_slots(sid, now_iso, "failed")
+            elif finish:
                 _mark_job(record.get("front"), record.get("job"),
                           "returned", now_iso)
                 _release_slots(sid, now_iso, "returned")
@@ -636,6 +650,15 @@ def _tick_inner(moment: datetime, now_iso: str,
                 _mark_job(record.get("front"), record.get("job"),
                           "killed", now_iso, by=_stopped_by(record))
                 _release_slots(sid, now_iso, "killed")
+            # The status above has been read, so the finished unit can be
+            # forgotten on the collector's own schedule; without this every
+            # finished unit lingers as failed. Best-effort and only while
+            # the session is still around to own the unit.
+            if unit_failed or state in RUNNING_LIKE:
+                try:
+                    pool_common.reset_failed_unit(sid)
+                except Exception:  # noqa: BLE001 - cleanup never blocks
+                    pass
             if state in RUNNING_LIKE:
                 update["state"] = "exited"
         elif worker and alive and not terminal_session:
