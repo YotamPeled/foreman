@@ -320,7 +320,8 @@ in the shipped config, and supervisors are not.
     self-contained: named by what it does, no code names, no ids the owner did not introduce. Enforced as
     a warning at write time, not a refusal.
 13. Workers and reviewers are headless, one job per process, finish marker in the log, structured verdict
-    file. Supervisors are interactive in v0 (target: headless). The foreman is interactive.
+    file, and never show a CLI window on screen. Only the foreman and supervisors are visible as CLIs
+    (supervisors interactive in v0; target: headless).
 
 ---
 
