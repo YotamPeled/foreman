@@ -113,6 +113,18 @@ def session_log_path(session_id: str) -> Path:
     return session_dir(session_id) / "log"
 
 
+def session_pid_path(session_id: str) -> Path:
+    return session_dir(session_id) / "pid"
+
+
+def session_verdict_path(session_id: str) -> Path:
+    return session_dir(session_id) / "verdict.json"
+
+
+def session_scratch_dir(session_id: str) -> Path:
+    return session_dir(session_id) / "scratch"
+
+
 def config_file() -> Path:
     return config_dir() / "foreman.toml"
 
