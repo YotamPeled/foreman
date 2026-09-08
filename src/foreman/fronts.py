@@ -129,6 +129,20 @@ def _branch_violation(directory: str, branch: str) -> str | None:
     return None
 
 
+def _validate_identity(data: dict, existing: set[str]) -> list[str]:
+    """The part of §4.3 a front that already ran must still satisfy.
+
+    A closed front records history: its tasks are never written, its
+    allocation never spends anything, and its brief cannot be corrected
+    after the fact. What still has to hold is that it is a front, that it
+    is named once, and that what it waits on exists.
+    """
+    return [line for line in _validate(data, existing)
+            if line.startswith("field 'name'")
+            or line.startswith("field 'after'")
+            or line.startswith("front '")]
+
+
 def _validate(data: dict, existing: set[str],
               directory: str | None = None) -> list[str]:
     """Every 4.3 violation at once, each naming the field or rule it breaks."""
@@ -370,17 +384,32 @@ def _read_brief(directory: str, violations: list[str]) -> dict | None:
 
 
 def front_add_main(directory: str, dry_run: bool = False,
-                   fixture: bool = False) -> int:
+                   fixture: bool = False, closed: bool = False) -> int:
+    """Add a front from its brief.
+
+    ``closed`` records a front that is already finished: the record goes on
+    at state ``done`` and no task line is written. It exists because the
+    queue's `after` names fronts by ledger record, and this swarm ran two
+    fronts to completion before `front add` existed — so a brief could not
+    wait on the front it really came after. Writing their tasks out as
+    landed would be a claim the ledger has no evidence for; writing the
+    front alone claims only what is true, that it ran and is done.
+    """
     me, violations = caller.resolve("front add")
     caller.check_role(me, "front add", violations=violations)
     data = _read_brief(directory, violations)
     if data is not None:
-        violations.extend(_validate(data, _existing_fronts(), directory))
+        violations.extend(
+            _validate_identity(data, _existing_fronts()) if closed
+            else _validate(data, _existing_fronts(), directory))
     if violations:
         return Refusal(violations).report()
     assert data is not None
     name = data["name"].strip()
     front_line, task_lines = _build(data, name, fixture=fixture)
+    if closed:
+        front_line["state"] = "done"
+        task_lines = []
     if dry_run:
         print(f"would write {paths.front_record_path(name)}:")
         print(json.dumps(front_line))
@@ -511,6 +540,9 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     add.add_argument("--fixture", action="store_true",
                      help="a front for trying the runtime out, marked as such "
                           "wherever it appears")
+    add.add_argument("--closed", action="store_true",
+                     help="a front that already ran and is done: the record "
+                          "only, no tasks")
     verbs.add_parser("list", help="Print one line per front.")
     prefer = verbs.add_parser("prefer", help="Set a front's queue preference.")
     prefer.add_argument("name", help="front name")
@@ -523,7 +555,7 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
 def _front_entry(args: argparse.Namespace) -> int:
     if args.front_verb == "add":
         return front_add_main(args.directory, dry_run=args.dry_run,
-                              fixture=args.fixture)
+                              fixture=args.fixture, closed=args.closed)
     if args.front_verb == "list":
         return front_list_main()
     if args.front_verb == "prefer":

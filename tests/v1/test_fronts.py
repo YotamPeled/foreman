@@ -550,3 +550,50 @@ def test_worker_may_not_add_a_front(env, capsys, monkeypatch):
     assert rc == 1
     assert "'worker'" in err
     assert not paths.front_record_path("owned").exists()
+
+
+def test_a_front_that_already_ran_is_added_closed_with_no_tasks(env, capsys):
+    """`front add --closed` records history without claiming work.
+
+    The queue's `after` names fronts by their ledger record, and this swarm
+    ran two fronts to completion before `front add` existed — so the next
+    brief could not wait on the front it really came after. Writing their
+    tasks out would claim states no evidence supports; the record alone
+    claims only that the front ran and is done.
+    """
+    brief = write_brief(env, "history")
+    assert cli.main(["front", "add", str(brief), "--closed"]) == 0
+    capsys.readouterr()
+    record = fronts.read_front_record("history")
+    assert record["state"] == "done"
+    assert store.read_ledger(paths.front_tasks_path("history")) == []
+    assert cli.main(["front", "list"]) == 0
+    assert "history — done" in capsys.readouterr().out
+
+
+def test_a_closed_front_is_not_held_to_a_brief_it_cannot_fix(env, capsys):
+    """A brief that already ran cannot be corrected after the fact.
+
+    The seed briefs on main predate the validator that shipped after them:
+    one has a two-sentence done-when, which a live front is rightly refused
+    for. A closed front writes no tasks and spends no allocation, so what
+    still has to hold is that it is named once and waits on fronts that
+    exist — and that is what is checked.
+    """
+    text = VALID_BRIEF.format(name="old").replace(
+        'done-when = "', 'done-when = "Two things. And another. ')
+    brief = write_brief(env, "old", text=text)
+    assert cli.main(["front", "add", str(brief)]) == 1
+    assert "one sentence" in capsys.readouterr().err
+    assert cli.main(["front", "add", str(brief), "--closed"]) == 0
+    capsys.readouterr()
+    assert fronts.read_front_record("old")["state"] == "done"
+
+
+def test_a_closed_front_still_must_be_named_once(env, capsys):
+    """History is recorded once: a second closed add is refused by name."""
+    brief = write_brief(env, "twice")
+    assert cli.main(["front", "add", str(brief), "--closed"]) == 0
+    capsys.readouterr()
+    assert cli.main(["front", "add", str(brief), "--closed"]) == 1
+    assert "already on the ledger" in capsys.readouterr().err
