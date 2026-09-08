@@ -77,3 +77,24 @@ def test_a_launch_without_the_flag_is_never_refused_for_it(
     monkeypatch.setenv(SESSION_ENV, roster_supervisor())
 
     assert launch(["muse", "fake", spec, "--repo", str(repo)]) == 0
+
+
+def test_a_shell_check_is_a_verification_command(env, fake_pool, monkeypatch,
+                                                 capsys):
+    """A spec judged by a shell one-liner is not a spec with no check.
+
+    The launcher recognises a verification command from a list of shapes.
+    It refused an honest `test` comparison on the version zero front and an
+    honest `python -c` one-liner here, and each time the spec was reworded
+    to satisfy the checker rather than the checker fixed. Both forms now
+    pass, and this test is why they keep passing.
+    """
+    repo = make_repo(env / "repo")
+    for name, check in (("a.md", 'python -c "print(open(\'P.txt\').read())"'),
+                        ("b.md", 'test "$(cat P.txt)" = "done"')):
+        spec = write_spec(env, name,
+                          "WHAT: write one file.\nINPUTS: none.\n"
+                          "OUTPUTS: P.txt.\nOUT OF SCOPE: everything.\n"
+                          f"It will be judged by: {check}\n")
+        assert launch(["muse", "fake", spec, "--repo", str(repo)]) == 0
+        capsys.readouterr()

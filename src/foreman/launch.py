@@ -76,9 +76,18 @@ JOB_FILE = "FOREMAN-JOB.md"
 ROLE_FILE = "FOREMAN-ROLE.md"
 PAGE_LINES = 120
 
+#: A spec must carry the command its work will be judged by, and this is
+#: how that is recognised. It is a heuristic, and it has now refused two
+#: honest checks — a `test` comparison on the version zero front and a
+#: `python -c` one-liner here — so the shell forms a small check actually
+#: takes are listed beside the test runners. A spec whose check is none of
+#: these is refused and reworded, which is a cost worth paying: a spec with
+#: no verification command in it produces work nobody can judge.
 VERIFY_HINTS = (
     "pytest",
     "python -m",
+    "python -c",
+    "python3 -c",
     "uv run",
     "npm test",
     "npm run",
@@ -88,6 +97,11 @@ VERIFY_HINTS = (
     "make check",
     "foreman-verify",
     "gh pr checks",
+    "test ",
+    "diff ",
+    "grep ",
+    "bash -c",
+    "sh -c",
 )
 
 #: The owner's own debugging switch for a worker window, and the only way
