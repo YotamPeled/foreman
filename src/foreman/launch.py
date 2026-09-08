@@ -73,6 +73,13 @@ VERIFY_HINTS = (
     "gh pr checks",
 )
 
+#: The owner's own debugging switch for a worker window, and the only way
+#: one can be opened. Owner ruling: worker and reviewer agents never show a
+#: command line on screen; only the foreman and supervisors are visible as
+#: command lines. A supervisor asking for a window is refused by name, so
+#: the rule holds by construction and not by a sentence in a spec.
+WORKER_WINDOW_ENV = "FOREMAN_WORKER_WINDOW"
+
 TIMEOUT_RE = re.compile(r"(?:\d+[smhd])+$")
 UNIT_RANGE_RE = re.compile(r"(\d+)-(\d+)$")
 
@@ -104,8 +111,11 @@ def add_launch_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--effort", default="high", choices=EFFORTS)
     parser.add_argument("--scope", default=None, help="task scope text")
     parser.add_argument("--window", action="store_true",
-                        help="open this worker in a terminal window to watch it "
-                             "(off by default: swarm sessions take no workspace)")
+                        help="owner debugging only: open this worker in a "
+                             "terminal window. Requires "
+                             + WORKER_WINDOW_ENV + "=1 and refuses any caller "
+                             "but the owner; workers and reviewers are never "
+                             "on screen.")
     parser.add_argument("--dry-run", action="store_true",
                         help="do everything except start the process; print the command")
 
@@ -359,6 +369,17 @@ def cmd_launch(args: argparse.Namespace) -> int:
     except ValueError as exc:
         problems.append(str(exc))
         units = []
+
+    if getattr(args, "window", False):
+        if me is not None and me.role != caller.OWNER:
+            problems.append(
+                f"role '{me.role}' may not ask for a worker window; workers "
+                "and reviewers are never on screen, and summoning a "
+                "supervisor is the only launch that opens one")
+        elif os.environ.get(WORKER_WINDOW_ENV) != "1":
+            problems.append(
+                f"a worker window is the owner's debugging switch: set "
+                f"{WORKER_WINDOW_ENV}=1 to open one")
 
     for label, value in (("worktree", args.worktree), ("spec", args.spec),
                          ("log", args.log)):
