@@ -68,9 +68,8 @@ def read_ledger(path: str | Path) -> list[dict]:
     return records
 
 
-def write_snapshot(path: str | Path, obj: Any) -> None:
-    target = Path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
+def _replace_with(target: Path, obj: Any) -> None:
+    """Stage the value beside the target and rename it into place."""
     fd, tmp = tempfile.mkstemp(
         dir=str(target.parent), prefix=target.name + ".", suffix=".tmp"
     )
@@ -80,14 +79,41 @@ def write_snapshot(path: str | Path, obj: Any) -> None:
             handle.write("\n")
             handle.flush()
             os.fsync(handle.fileno())
-        with _write_lock():
-            os.replace(tmp, target)
+        os.replace(tmp, target)
     except BaseException:
         try:
             os.unlink(tmp)
         except OSError:
             pass
         raise
+
+
+def write_snapshot(path: str | Path, obj: Any) -> None:
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with _write_lock():
+        _replace_with(target, obj)
+
+
+def update_snapshot(path: str | Path, change, default: Any = None) -> Any:
+    """Read a snapshot, change it and write it back, all under one lock.
+
+    Read-modify-write on a snapshot is not safe with write_snapshot alone:
+    that holds the lock only across the rename, so two writers can both read
+    the old value and the second one silently discards the first one's
+    change. Every caller that edits a snapshot in place uses this instead.
+    """
+    target = Path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    with _write_lock():
+        try:
+            with open(target, encoding="utf-8") as handle:
+                current = json.load(handle)
+        except FileNotFoundError:
+            current = default
+        changed = change(current)
+        _replace_with(target, changed)
+    return changed
 
 
 def read_snapshot(path: str | Path, default: Any = None) -> Any:

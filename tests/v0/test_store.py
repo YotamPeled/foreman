@@ -89,3 +89,39 @@ def test_append_stamps_only_when_absent(tmp_path, monkeypatch):
     )
     assert entry == {"at": "2001-01-01T00:00:00+00:00", "by": "ses-x", "q": 1}
     assert store.read_ledger(ledger) == [entry]
+
+
+def _stamp_many(path: str, key: str, count: int) -> None:
+    def change(roster):
+        roster = roster or {"sessions": {}}
+        entry = roster["sessions"].setdefault(key, {})
+        entry["n"] = entry.get("n", 0) + 1
+        return roster
+
+    for _ in range(count):
+        store.update_snapshot(path, change, default={"sessions": {}})
+
+
+def test_concurrent_snapshot_edits_lose_no_update(tmp_path, monkeypatch):
+    """Two writers editing one snapshot must not overwrite each other.
+
+    write_snapshot alone cannot do this: it locks only the rename, so both
+    writers read the same old value and the second discards the first.
+    """
+    monkeypatch.setenv("FOREMAN_STATE", str(tmp_path))
+    roster = paths.roster_path()
+    store.write_snapshot(roster, {"sessions": {}})
+    ctx = mp.get_context("fork")
+    writers = [
+        ctx.Process(target=_stamp_many, args=(str(roster), f"ses-{k}", 60))
+        for k in range(3)
+    ]
+    for writer in writers:
+        writer.start()
+    for writer in writers:
+        writer.join(60)
+    assert all(writer.exitcode == 0 for writer in writers)
+    sessions = store.read_snapshot(roster)["sessions"]
+    assert {key: entry["n"] for key, entry in sessions.items()} == {
+        f"ses-{k}": 60 for k in range(3)
+    }
