@@ -937,3 +937,29 @@ def test_a_job_launched_by_task_title_records_the_task_id(env, capsys):
              store.read_ledger(paths.front_tasks_path("alpha"))}
     assert tasks["first work"] != "first work"
     assert job_lines(job_id)[-1]["task"] == tasks["first work"]
+
+
+def test_a_dry_run_leaves_the_real_launch_it_rehearsed_possible(env, capsys):
+    """The identical launch runs after its own dry run.
+
+    A dry run builds the real worktree, job file and log so it can print the
+    real command, and it used to leave them there — so the launch it was
+    rehearsing was refused for reusing a log and a branch its own rehearsal
+    had taken. Reported by the panel supervisor reading its generated
+    prompt. The check is the pair, in order: rehearse, then launch.
+    """
+    root = env
+    add_front(root, "alpha")
+    worktree = str(root / "wt-rehearsed")
+    argv = ["launch", "muse", "fake", str(root / "spec.md"),
+            "--repo", str(root), "--front", "alpha",
+            "--task", "first work", "--branch", "foreman/rehearsed",
+            "--worktree", worktree]
+    assert cli.main(argv + ["--dry-run"]) == 0
+    capsys.readouterr()
+    assert not Path(worktree).exists()
+
+    assert cli.main(argv) == 0
+    out = capsys.readouterr().out
+    assert (Path(worktree) / "FOREMAN-JOB.md").is_file()
+    assert "(not started --dry-run)" not in out

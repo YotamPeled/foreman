@@ -57,6 +57,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -396,6 +397,27 @@ def remove_launch_worktree(repo: str, branch: str, worktree: str) -> None:
             pass
 
 
+def remove_dry_run_files(repo: str, branch: str, worktree: str,
+                         log_path: str, session_id: str) -> None:
+    """Undo everything a dry run wrote. It starts nothing, so it keeps
+    nothing.
+
+    A dry run has to build the real thing to print the real command: the
+    worktree the worker would work in, the job file and role prompt it
+    would read, the log the finish marker would land in. Leaving them
+    behind made the launch it was rehearsing impossible — the identical
+    real launch is refused for reusing a log and a branch the rehearsal
+    took. Found by the panel supervisor reading its own generated prompt.
+    """
+    remove_launch_worktree(repo, branch, worktree)
+    try:
+        os.unlink(log_path)
+    except OSError:
+        pass
+    if session_id:
+        shutil.rmtree(paths.session_dir(session_id), ignore_errors=True)
+
+
 def _place_session(roster, session: Session):
     if not isinstance(roster, dict):
         roster = {"sessions": {}}
@@ -723,6 +745,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
             store.append_ledger(paths.front_jobs_path(args.front),
                                 job.to_dict(), session_id=session_id)
     command = adapter.command_str(ctx)
+    if args.dry_run:
+        remove_dry_run_files(repo, branch, worktree, log_path, session_id)
 
     print(f"session: {session_id}")
     print(f"worktree: {worktree}")
@@ -1580,6 +1604,11 @@ def launch_supervisor_main(args: argparse.Namespace,
                           None, argv, inner, front=front, branch=branch)
         print()
         print(text)
+        # The session directory stays: a supervisor dry run creates no
+        # worktree, no branch and no log, so it blocks no later summon, and
+        # reading the generated prompt at its real path is what the dry run
+        # is for. The worker launch is the one that had to take its files
+        # back (see `remove_dry_run_files`).
         return 0
 
     try:

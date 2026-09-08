@@ -299,7 +299,8 @@ def _task_after(tasks: list, title: str) -> list:
     return []
 
 
-def _build(data: dict, name: str) -> tuple[dict, list[dict]]:
+def _build(data: dict, name: str,
+           fixture: bool = False) -> tuple[dict, list[dict]]:
     """The front line and task lines a validated brief becomes."""
     allocation = dict(data.get("allocation") or {})
     monitors = []
@@ -321,6 +322,7 @@ def _build(data: dict, name: str) -> tuple[dict, list[dict]]:
         supervisor=None,
         brief_path=str(paths.brief_path(name)),
         state="queued",
+        fixture=fixture,
     )
     front_line = front.to_dict()
     front_line["monitors"] = monitors
@@ -367,7 +369,8 @@ def _read_brief(directory: str, violations: list[str]) -> dict | None:
     return data
 
 
-def front_add_main(directory: str, dry_run: bool = False) -> int:
+def front_add_main(directory: str, dry_run: bool = False,
+                   fixture: bool = False) -> int:
     me, violations = caller.resolve("front add")
     caller.check_role(me, "front add", violations=violations)
     data = _read_brief(directory, violations)
@@ -377,7 +380,7 @@ def front_add_main(directory: str, dry_run: bool = False) -> int:
         return Refusal(violations).report()
     assert data is not None
     name = data["name"].strip()
-    front_line, task_lines = _build(data, name)
+    front_line, task_lines = _build(data, name, fixture=fixture)
     if dry_run:
         print(f"would write {paths.front_record_path(name)}:")
         print(json.dumps(front_line))
@@ -427,8 +430,10 @@ def _list_lines() -> list[str]:
         pending = [front for front in (record.get("after") or [])
                    if (read_front_record(front) or {}).get("state") != "done"]
         waits = ", ".join(pending) if pending else "nothing"
+        mark = " \u00b7 fixture" if record.get("fixture") else ""
         rows.append((-prefer if isinstance(prefer, int) else 0, name,
-                     f"{name} \u2014 {record.get('state')} \u00b7 prefer {prefer} "
+                     f"{name}{mark} \u2014 {record.get('state')} "
+                     f"\u00b7 prefer {prefer} "
                      f"\u00b7 tasks {ready}/{len(tasks)} ready "
                      f"\u00b7 waits for {waits}"))
     rows.sort(key=lambda row: (row[0], row[1]))
@@ -503,6 +508,9 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     add.add_argument("directory", help="directory holding brief.toml (and plan.md)")
     add.add_argument("--dry-run", action="store_true",
                      help="validate and print what would be written; write nothing")
+    add.add_argument("--fixture", action="store_true",
+                     help="a front for trying the runtime out, marked as such "
+                          "wherever it appears")
     verbs.add_parser("list", help="Print one line per front.")
     prefer = verbs.add_parser("prefer", help="Set a front's queue preference.")
     prefer.add_argument("name", help="front name")
@@ -514,7 +522,8 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
 @cli.subcommand("front", help="Add, list, prefer or close a front.")
 def _front_entry(args: argparse.Namespace) -> int:
     if args.front_verb == "add":
-        return front_add_main(args.directory, dry_run=args.dry_run)
+        return front_add_main(args.directory, dry_run=args.dry_run,
+                              fixture=args.fixture)
     if args.front_verb == "list":
         return front_list_main()
     if args.front_verb == "prefer":

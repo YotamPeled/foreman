@@ -374,15 +374,20 @@ def _working(roster: dict, observed: dict | None, now: datetime,
         progress = (f"tasks {landed} landed, {built} built, "
                     f"{len(tasks)} total")
         held = _supervisor_for(name, roster)
+        front_record = _front_record(name)
+        # A front for trying the runtime out says so on every line it owns:
+        # a task a probe job moved must never read as work a front did.
+        label = name
+        if (front_record or {}).get("fixture"):
+            label = f"{name} (fixture)"
         if held is None:
-            lines.append(f"  {name} \u2014 no supervisor \u00b7 {progress}")
+            lines.append(f"  {label} \u2014 no supervisor \u00b7 {progress}")
         else:
             sid, record = held
             doing = _doing_line(sid, record, sessions_view, now)
             tail = f" \u00b7 doing now: {doing}" if doing else ""
-            lines.append(f"  {name} \u2014 supervisor attached "
+            lines.append(f"  {label} \u2014 supervisor attached "
                          f"\u00b7 {progress}{tail}")
-        front_record = _front_record(name)
         if front_record is not None:
             done_when = front_record.get("done_when") or ""
             if isinstance(done_when, str) and done_when.strip():

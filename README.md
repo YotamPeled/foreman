@@ -72,6 +72,7 @@ lands on, an allocation, and its tasks with their scopes, verify commands and si
 
 ```
 foreman front add briefs/<name>       # validates the whole brief and names every violation at once
+foreman front add briefs/<name> --fixture   # a front for trying the runtime out, marked as such
 foreman front list
 foreman launch supervisor <name>      # summons its supervisor: a window, a role prompt, a roster entry
 ```

@@ -674,3 +674,55 @@ def test_a_job_launched_by_task_title_is_listed_once(
     where = next(i for i, line in enumerate(lines)
                  if line.strip().startswith("first \u2014 ready"))
     assert "muse job running" in lines[where + 1]
+
+
+def test_verify_records_the_spec_it_verified(env, monkeypatch, capsys):
+    """Evidence names the spec the verified job was launched from.
+
+    A verification is a claim about a particular piece of work. Without the
+    spec on the evidence, a probe job's verification and the front's own
+    work read identically on the ledger — which is how a real front's first
+    task came to be built by a fixture job.
+    """
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    store.append_ledger(paths.front_jobs_path("flow"), {
+        "id": "job-spec1", "task": first, "kind": "implement",
+        "role": "muse", "priority": 1, "spec_path": "/tmp/specs/probe.md",
+        "session": None, "worktree": "", "branch": "", "log": "",
+        "timeout": "20m", "units": [1], "attempt": 1, "state": "returned",
+        "planned_at": iso(NOW - timedelta(minutes=10)),
+        "queued_at": iso(NOW - timedelta(minutes=9)),
+        "started_at": iso(NOW - timedelta(minutes=8)),
+        "returned_at": iso(NOW - timedelta(minutes=2)),
+        "verified_at": None, "artifact": "", "verdict_path": "",
+    })
+    assert run(monkeypatch, ["job", "verify", "job-spec1", "--confirmed",
+                             "--command", "make check first",
+                             "--output", "ok"], SUP) == 0
+    assert "/tmp/specs/probe.md" in capsys.readouterr().out
+    evidence = store.read_ledger(paths.front_evidence_path("flow"))
+    assert evidence[-1]["spec_path"] == "/tmp/specs/probe.md"
+
+
+def test_a_fixture_front_is_marked_wherever_it_appears(
+        env, monkeypatch, capsys):
+    """A front for trying the runtime out is never mistaken for a real one.
+
+    The runtime v1 proof ran its probe jobs against the panel front and
+    left its first task built, units 1/1, by a job that wrote a PROBE.txt
+    line. A proof needs a front of its own that says what it is.
+    """
+    write_brief(env, "trial")
+    assert run(monkeypatch, ["front", "add", str(env / "trial"),
+                             "--fixture"]) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["front", "list"]) == 0
+    assert "trial · fixture" in capsys.readouterr().out
+    assert "(fixture)" in status_out(monkeypatch, capsys)
+
+    add_front(env, monkeypatch, capsys, name="real")
+    out = status_out(monkeypatch, capsys)
+    assert "real —" in out
+    assert "real (fixture)" not in out

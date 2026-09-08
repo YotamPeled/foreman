@@ -333,10 +333,14 @@ def test_dry_run_prints_muse_command(env, capsys, effort):
     assert "### finished rc=$?" in out
     assert out.index("### finished rc=$?") < out.index("| tee")
     assert "(not started --dry-run)" in out
-    # A dry run starts nothing, so it records nothing: the files exist,
-    # but the roster is left as found and no pid file is written.
-    assert (Path(worktree) / "FOREMAN-JOB.md").is_file()
-    assert (Path(worktree) / "FOREMAN-ROLE.md").is_file()
+    # A dry run starts nothing and keeps nothing. It builds the real
+    # worktree, job file and log to print the real command, and then takes
+    # them back: leaving them made the launch it was rehearsing impossible,
+    # because the identical real launch is refused for reusing a log and a
+    # branch the rehearsal took.
+    assert not Path(worktree).exists()
+    assert not paths.session_dir(sid).exists()
+    assert not paths.session_log_path(sid).exists()
     assert not paths.session_pid_path(sid).exists()
     assert not paths.roster_path().exists()
 
@@ -566,7 +570,7 @@ def test_dry_run_leaves_roster_untouched(env, fake_pool, capsys):
                    "--worktree", worktree, "--dry-run"]) == 0
     capsys.readouterr()
     assert paths.roster_path().read_bytes() == before
-    assert (Path(worktree) / "FOREMAN-JOB.md").is_file()
+    assert not Path(worktree).exists()
 
 
 def test_worker_receives_role_prompt(env, fake_pool, capsys):

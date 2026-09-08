@@ -219,7 +219,9 @@ def job_verify_main(job_id: str, confirmed: bool,
         paths.front_evidence_path(front),
         entities.Evidence(on=key, claim=f"job '{key}' verified",
                           status=CONFIRMED, command=(command or "").strip(),
-                          output_ref=(output or "").strip()).to_dict(),
+                          output_ref=(output or "").strip(),
+                          spec_path=str(record.get("spec_path") or "")
+                          ).to_dict(),
         session_id=who,
     )
     store.append_ledger(paths.front_jobs_path(front),
@@ -227,8 +229,14 @@ def job_verify_main(job_id: str, confirmed: bool,
                         session_id=who)
     store.append_ledger(paths.front_tasks_path(front),
                         _moved(task, units_done=done), session_id=who)
+    spec = str(record.get("spec_path") or "")
     print(f"{key} verified "
           f"({add} units on task '{task.get('title')}': {done}/{total})")
+    if spec:
+        # What was verified, not just that something was. A proof run
+        # credited a real front's task with a probe job's spec, and nothing
+        # on the ledger said which spec had earned it.
+        print(f"from spec: {spec}")
     return 0
 
 
