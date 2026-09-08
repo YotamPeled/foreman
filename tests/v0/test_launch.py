@@ -384,7 +384,8 @@ def test_launch_writes_only_state_worktree_and_git(env, fake_pool, capsys):
     assert strays == []
 
 
-def make_ctx(tmp: Path, sid: str = "ses-test123") -> LaunchContext:
+def make_ctx(tmp: Path, sid: str = "ses-test123",
+             window: bool = False) -> LaunchContext:
     session = Session(id=sid, role="muse", pool="muse",
                       model=MuseAdapter.model, state="running")
     return LaunchContext(
@@ -400,6 +401,7 @@ def make_ctx(tmp: Path, sid: str = "ses-test123") -> LaunchContext:
         target="main",
         timeout="20m",
         effort="high",
+        window=window,
     )
 
 
@@ -439,13 +441,20 @@ def test_muse_marker_reaches_the_log_file(env, monkeypatch):
     assert "### finished rc=3" in lines
 
 
-def test_muse_detach_prefers_window_launcher(env, monkeypatch):
-    ctx = make_ctx(env)
+def test_muse_detach_uses_the_window_launcher_only_when_asked(env, monkeypatch):
+    ctx = make_ctx(env, window=True)
     monkeypatch.setenv("FOREMAN_WINDOW_LAUNCHER", "test-launcher")
     argv = muse_pool.outer_argv(ctx)
     assert argv[:4] == ["test-launcher", f"foreman-{ctx.session.id}",
                         "bash", "-c"]
     assert "muse exec" in argv[4]
+
+
+def test_a_configured_launcher_alone_opens_no_window(env, monkeypatch):
+    """Swarm sessions take no desktop workspace unless a launch asks for one."""
+    ctx = make_ctx(env)
+    monkeypatch.setenv("FOREMAN_WINDOW_LAUNCHER", "test-launcher")
+    assert muse_pool.outer_argv(ctx)[0] == "systemd-run"
 
 
 def test_muse_detach_defaults_to_systemd_run(env, monkeypatch):
@@ -465,7 +474,7 @@ def test_muse_detach_reads_config_file(env, monkeypatch):
     (config_dir / "foreman.toml").write_text(
         "[launch]\nwindow_launcher = \"cfg-launcher\"\n", encoding="utf-8")
     assert muse_pool.window_launcher() == "cfg-launcher"
-    assert muse_pool.outer_argv(ctx)[0] == "cfg-launcher"
+    assert muse_pool.outer_argv(make_ctx(env, window=True))[0] == "cfg-launcher"
     monkeypatch.setenv("FOREMAN_WINDOW_LAUNCHER", "env-launcher")
     assert muse_pool.window_launcher() == "env-launcher"
 

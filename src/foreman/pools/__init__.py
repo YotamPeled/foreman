@@ -54,6 +54,9 @@ class LaunchContext:
     timeout: str
     effort: str = "high"
     units: tuple[int, ...] = field(default_factory=tuple)
+    #: Open this worker in a terminal window, for watching a run. Off by
+    #: owner ruling: swarm sessions do not take the owner's workspaces.
+    window: bool = False
 
 
 class PoolAdapter:
