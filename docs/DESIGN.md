@@ -19,9 +19,10 @@ visibility structural.
 - **The ledger is the only channel.** No queued messages between agents, no chat. A rule written on a
   component reaches its supervisor on its next read; acknowledgement is a write.
 - **Scripts do, models decide.** Every repeated act is a script; a model only chooses whether to invoke it.
-- **Only Claude sessions are interactive.** Codex, Grok and Muse run headless, one job per process, with a
-  finish marker in the log and a structured verdict file. TUIs that ignore queued input are the mechanism
-  behind off-roster launches.
+- **Only the foreman is interactive.** The owner talks to one session: the foreman (Fable 5.1). Every
+  supervisor, worker and reviewer runs headless, one job per process, with a finish marker in the log and a
+  structured verdict file, and is seen only through the panel. No agent takes a desktop workspace. TUIs
+  that ignore queued input are the mechanism behind off-roster launches.
 - **Every memory has a named reader and a named moment of reading.** No vector store, no free-form
   "lessons" that agents write and nobody reads.
 
@@ -41,10 +42,10 @@ visibility structural.
 
 ## Roles
 
-- **Orchestrator** (Fable, interactive, summoned). Creates components, assigns supervisors, holds the slot
+- **Foreman / orchestrator** (Fable 5.1, the one interactive session). Creates components, assigns supervisors, holds the slot
   grants, answers supervisors' questions, adds one paragraph of judgement to the hourly digest. Never
   dispatches jobs. Nothing depends on it being alive; when it is gone, decisions queue.
-- **Supervisor** (Opus, interactive, one per component). First act: turn the done-when into a checklist.
+- **Supervisor** (Opus, headless, one per component). First act: turn the done-when into a checklist.
   Then dispatch jobs, verify results by running them, write the ledger. Never implements; never runs a long
   silent turn (hand long work to a job, checkpoint first). Flips a checklist item only with CONFIRMED evidence.
 - **Worker** (Muse; Grok only where its vendor allows the topic). Headless. Reads its spec and nothing
@@ -103,6 +104,13 @@ Standing rules present from the first launch. Supervisors obey them; the page sh
    finding about the spec, not a third round.
 10. A defect class found a third time in one component halts that component's dispatching until the
     supervisor writes what changed. Scope is the component, never its parent.
+11. Delegate by job size. A supervisor does a tiny job (under about ten tool calls) itself; hands a
+    clear, bounded job that fits one page of spec to a Muse worker; does a vague job ("find out why this
+    fails", "redesign X") itself or as a Grok 4.6 high job within budget; and always verifies a worker's
+    result itself by re-running. Why: doing a job itself puts every read and command into the
+    supervisor's context (50k–150k tokens per repair round, then a compaction that loses rulings);
+    delegating costs about 15k–25k (spec, verify, one relaunch when the worker hangs) and moves the heavy
+    work to the worker's subscription. The gain exists only when the spec is tight.
 
 ## Scripts
 
@@ -111,7 +119,8 @@ Standing rules present from the first launch. Supervisors obey them; the page sh
 Every launch: allocate a slot, mint the id, allocate a unique log and worktree, inject the environment
 contract (where scratch space is, what is memory-backed, where checkouts go) and the applicable rules,
 register the session. Worker launches deny every Foreman tool surface; assume any model will find any tool it
-is not denied.
+is not denied. `launch-job` refuses a spec over about one page and requires the verification command in the
+spec, so rule 11 is enforced at the door rather than remembered.
 
 ## The page
 

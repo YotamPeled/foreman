@@ -1,0 +1,754 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>foreman — panel</title>
+<style>
+/* ── Everforest dark, Omarchy tokens ───────────────────────────────────── */
+:root{
+  --background:#2d353b; --dark_background:#21272c; --darker_background:#181d20;
+  --lighter_background:#343f44; --foreground:#d3c6aa; --light_foreground:#9da9a0;
+  --dark_foreground:#4f585e; --muted:#475258; --selection:#3d484d;
+  --accent:#7fbbb3; --red:#e67e80; --yellow:#dbbc7f; --orange:#e09d7f;
+  --green:#a7c080; --cyan:#83c092; --blue:#7fbbb3; --magenta:#d699b6;
+
+  --hair:1px solid var(--lighter_background);
+  --r:4px; --r-lg:6px;
+  --ease:cubic-bezier(.16,1,.3,1);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;background:var(--darker_background);overflow:hidden}
+body{font-family:ui-monospace,monospace;font-size:13px;color:var(--foreground);
+  -webkit-font-smoothing:antialiased;font-variant-ligatures:none}
+::selection{background:var(--selection);color:var(--foreground)}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+:focus-visible{outline:1px solid var(--accent);outline-offset:2px}
+svg.ic{width:12px;height:12px;flex:none;display:block}
+
+/* ── stage: a real 2560×1440 screen, scaled to the viewport ────────────── */
+.stage{position:absolute;top:50%;left:50%;width:2560px;height:1440px;--s:1;
+  transform:translate(-50%,-50%) scale(var(--s));transform-origin:50% 50%;
+  background:var(--background);overflow:hidden}
+
+/* ── desktop: two tiled terminals, hyprland gaps ───────────────────────── */
+.desktop{position:absolute;inset:32px 0 0 0;display:flex;gap:10px;padding:10px}
+.win{background:var(--darker_background);border:var(--hair);border-radius:var(--r-lg);
+  padding:16px 20px;overflow:hidden;font-size:13.5px;line-height:1.72;color:var(--light_foreground);
+  white-space:nowrap}
+.win.w1{flex:0 0 45%} .win.w2{flex:0 0 32%} .win.w3{flex:1;font-size:13px}
+.win .t{color:var(--light_foreground);opacity:.55}
+.win .a{color:var(--accent)} .win .g{color:var(--green)} .win .r{color:var(--red)}
+.win .y{color:var(--yellow)} .win .f{color:var(--foreground)}
+.win .caret{display:inline-block;width:8px;height:15px;background:var(--foreground);
+  vertical-align:-3px;opacity:.75}
+.scrim{position:absolute;inset:32px 0 0 0;background:rgba(24,29,32,.74);backdrop-filter:blur(7px) saturate(.85)}
+.stage.closed .scrim,.stage.closed .panel{opacity:0;pointer-events:none}
+.scrim,.panel{transition:opacity .22s var(--ease)}
+
+/* ── top bar ───────────────────────────────────────────────────────────── */
+.bar{position:absolute;top:0;left:0;right:0;height:32px;display:flex;align-items:stretch;
+  background:var(--darker_background);border-bottom:1px solid var(--selection);
+  font-size:12px;padding:0 10px;gap:2px;z-index:5}
+.ws{display:flex;align-items:center;gap:7px;padding:4px 10px;border-radius:var(--r);
+  color:var(--light_foreground);align-self:center;line-height:1.15}
+.ws:hover{background:rgba(211,198,170,.05)}
+.ws.active{background:var(--lighter_background);color:var(--foreground)}
+.ws .n{color:var(--light_foreground);opacity:.75;font-size:11px}
+.ws.active .n{color:var(--light_foreground)}
+.ws .l{letter-spacing:.01em}
+.ws.need .l{border-bottom:1px solid var(--yellow);padding-bottom:1px}
+.mk{width:6px;height:6px;border-radius:50%;flex:none;background:var(--muted);
+  transition:background .25s linear,box-shadow .3s var(--ease),opacity .25s}
+.mk.work{background:var(--green)} .mk.idle{background:var(--dark_foreground)}
+.mk.need{background:var(--yellow)}
+.mk.bad{border-radius:0;background:var(--red);width:6px;height:6px}
+.mk.beat{box-shadow:0 0 0 3px rgba(167,192,128,.22)}
+.mk.bad.beat{box-shadow:0 0 0 3px rgba(230,126,128,.25)}
+.barR{margin-left:auto;display:flex;align-items:center;gap:14px;padding-right:4px;align-self:center}
+.clock{color:var(--light_foreground);letter-spacing:.02em}
+.chip{display:flex;align-items:center;gap:9px;padding:4px 12px;border-radius:var(--r);line-height:1.15;
+  border:1px solid var(--selection);background:var(--dark_background);color:var(--light_foreground)}
+.chip .sep{color:var(--light_foreground);opacity:.55}
+.chip .num{color:var(--foreground)}
+.chip .wait{color:var(--yellow)}
+.chip .live{width:6px;height:6px;border-radius:50%;background:var(--green)}
+.chip .live.beat{box-shadow:0 0 0 3px rgba(167,192,128,.25)}
+
+/* ── panel ─────────────────────────────────────────────────────────────── */
+.panel{position:absolute;left:50%;transform:translateX(-50%);top:62px;width:1400px;height:1350px;
+  background:var(--dark_background);border:1px solid var(--selection);border-radius:var(--r-lg);
+  display:flex;flex-direction:column;z-index:4;overflow:hidden}
+.phead{display:flex;align-items:baseline;gap:16px;padding:18px 28px 16px;border-bottom:1px solid var(--selection)}
+.brand{font-size:17px;color:var(--accent);letter-spacing:.04em}
+.phead .meta{color:var(--light_foreground);opacity:.8;font-size:12px}
+.phead .wait{margin-left:auto;color:var(--yellow);font-size:12px}
+.phead .wait.none{color:var(--light_foreground);opacity:.7}
+
+.body{flex:1;overflow-y:auto;padding:4px 28px 8px;scrollbar-width:thin;scrollbar-color:var(--muted) transparent}
+.body::-webkit-scrollbar{width:8px}
+.body::-webkit-scrollbar-thumb{background:var(--muted);border-radius:4px}
+.body::-webkit-scrollbar-track{background:transparent}
+section{padding:22px 0 2px}
+.shead{display:flex;align-items:center;gap:14px;margin-bottom:12px}
+.shead .name{font-size:13px;color:var(--foreground);letter-spacing:.06em}
+.shead .rule{flex:1;height:1px;background:var(--lighter_background)}
+.shead .meta{font-size:12px;color:var(--light_foreground);opacity:.8}
+.stack{display:flex;flex-direction:column;gap:8px}
+.empty{color:var(--light_foreground);opacity:.65;font-size:12.5px;padding:10px 2px}
+
+/* alerts */
+.alert{display:flex;align-items:center;gap:14px;padding:11px 15px;border-radius:var(--r);
+  border:1px solid rgba(230,126,128,.3);background:rgba(230,126,128,.07);
+  transition:opacity .3s var(--ease),transform .3s var(--ease),margin .3s var(--ease),
+             max-height .3s var(--ease),padding .3s var(--ease)}
+.alert.orange{border-color:rgba(224,157,127,.32);background:rgba(224,157,127,.07)}
+.alert .sq{width:7px;height:7px;flex:none;background:var(--red)}
+.alert.orange .sq{background:var(--orange)}
+.alert .txt{font-size:13px}
+.alert .age{margin-left:auto;color:var(--light_foreground);font-size:12px;opacity:.85}
+.alert.gone{opacity:0;transform:translateY(-4px);max-height:0;padding-top:0;padding-bottom:0;
+  margin-top:-8px;border-width:0}
+
+.btn{font-size:12px;padding:5px 13px;border-radius:var(--r);border:1px solid var(--muted);
+  color:var(--light_foreground);transition:color .15s,border-color .15s,background .15s}
+.btn:hover{color:var(--foreground);border-color:var(--light_foreground);background:rgba(211,198,170,.05)}
+.btn.acc{border-color:rgba(127,187,179,.45);color:var(--accent)}
+.btn.acc:hover{border-color:var(--accent);background:rgba(127,187,179,.09)}
+.btn.dgr{border-color:rgba(230,126,128,.4);color:var(--red)}
+.btn.dgr:hover{border-color:var(--red);background:rgba(230,126,128,.09)}
+.btn[disabled]{opacity:.4;pointer-events:none}
+
+/* inbox */
+.card{background:var(--background);border:var(--hair);border-radius:5px;padding:14px 18px 13px;
+  transition:opacity .3s var(--ease),transform .3s var(--ease),max-height .35s var(--ease),
+             padding .3s var(--ease),margin .3s var(--ease)}
+.card.gone{opacity:0;transform:translateY(-4px);max-height:0;padding-top:0;padding-bottom:0;
+  margin-top:-8px;overflow:hidden;border-width:0}
+.tag{font-size:11px;padding:1px 7px;border-radius:3px;border:1px solid rgba(219,188,127,.35);
+  color:var(--yellow)}
+.tag.err{border-color:rgba(230,126,128,.4);color:var(--red)}
+.card .from{font-size:11.5px;color:var(--light_foreground);opacity:.75;margin-left:10px}
+.q{font-size:15px;line-height:1.45;margin-top:9px;max-width:74ch}
+.rec{margin-top:9px;padding-left:13px;border-left:1px solid var(--muted);
+  color:var(--light_foreground);font-size:12.5px;line-height:1.6;max-width:78ch}
+.rec .lead{color:var(--light_foreground);opacity:.7}
+.rec .verdict{color:var(--accent)}
+.cfoot{display:flex;align-items:center;gap:8px;margin-top:13px}
+.waited{margin-left:auto;font-size:12px;color:var(--light_foreground);opacity:.85}
+
+/* plan */
+.prow{display:grid;grid-template-columns:238px 300px 178px 1fr 20px;gap:20px;align-items:center;
+  padding:12px 12px;border-radius:var(--r);border-bottom:1px solid rgba(52,63,68,.55);width:100%;
+  text-align:left;transition:background .15s}
+.prow:hover{background:rgba(211,198,170,.035)}
+.prow .cname{font-size:14.5px;display:flex;align-items:center;gap:9px}
+.prow .csup{font-size:11.5px;color:var(--light_foreground);opacity:.75;margin-top:4px}
+.prow.halt .cname,.prow.stall .cname{color:var(--red)}
+.pbar{position:relative;height:6px;background:var(--darker_background);border-radius:1px;overflow:hidden}
+.pbar span{position:absolute;left:0;top:0;bottom:0;transition:width .55s var(--ease)}
+.pbar .built{background:rgba(127,187,179,.32)}
+.pbar .landed{background:var(--green)}
+.pnum{margin-top:6px;font-size:11.5px;color:var(--light_foreground);opacity:.8}
+.pnum b{color:var(--foreground);font-weight:400}
+.vel{font-size:12.5px}
+.vel .eta{display:block;font-size:11.5px;color:var(--light_foreground);opacity:.8;margin-top:4px}
+.vel.zero{color:var(--dark_foreground)}
+.now{font-size:12.5px;color:var(--light_foreground);white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;transition:color .3s}
+.now.hot{color:var(--foreground)}
+.prow .chev{color:var(--muted);transition:transform .2s var(--ease),color .15s}
+.prow[aria-expanded="true"] .chev{transform:rotate(90deg);color:var(--light_foreground)}
+.prow:hover .chev{color:var(--light_foreground)}
+.blocker{display:flex;align-items:center;gap:10px;margin:0 12px;padding:9px 13px;
+  background:rgba(230,126,128,.07);border:1px solid rgba(230,126,128,.26);border-radius:var(--r);
+  font-size:12.5px;color:var(--red)}
+.blocker .rule{color:var(--light_foreground);opacity:.8;margin-left:auto}
+
+.detail{padding:4px 12px 18px 32px;border-bottom:1px solid rgba(52,63,68,.55)}
+.dhead{display:flex;align-items:center;gap:12px;margin:12px 0 8px}
+.dhead .n{font-size:12px;color:var(--light_foreground);letter-spacing:.05em}
+.dhead .rule{flex:1;height:1px;background:rgba(52,63,68,.7)}
+.dhead .m{font-size:11.5px;color:var(--light_foreground);opacity:.75}
+.ck{display:grid;grid-template-columns:14px 84px 1fr;gap:12px;align-items:center;
+  padding:4px 0;font-size:12.5px}
+.ck .st{font-size:11px;letter-spacing:.03em}
+.ck.done{color:var(--foreground)} .ck.done .st{color:var(--green)} .ck.done .ic{color:var(--green)}
+.ck.plaus{color:var(--light_foreground)} .ck.plaus .st{color:var(--yellow)} .ck.plaus .ic{color:var(--yellow)}
+.ck.open{color:var(--light_foreground);opacity:.7} .ck.open .st{color:var(--light_foreground);opacity:.8}
+.ck.open .ic{color:var(--muted)}
+.more{font-size:11.5px;color:var(--light_foreground);opacity:.7;padding:6px 0 0 110px}
+
+.job{display:grid;grid-template-columns:8px 230px 74px 118px 96px 1fr;gap:14px;align-items:center;
+  padding:7px 0;font-size:12.5px;transition:opacity .35s var(--ease)}
+.job.new{opacity:0}
+.job.fin{color:var(--green)}
+.jdot{width:6px;height:6px;border-radius:50%;background:var(--accent);opacity:.55}
+.jdot.on{opacity:1}
+.job.fin .jdot{background:var(--green);opacity:1}
+.jname{color:var(--foreground);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.job .sub{color:var(--light_foreground);opacity:.8;font-size:11.5px}
+.job .tm{font-size:11.5px;color:var(--light_foreground)}
+.job .tm.warn{color:var(--yellow)} .job .tm.crit{color:var(--red)}
+.trace{display:flex;align-items:flex-end;gap:1px;height:16px;justify-self:end}
+.tk{width:3px;flex:none;background:var(--accent);transition:height .16s linear,background .16s linear}
+@keyframes ping{from{box-shadow:0 0 0 0 rgba(127,187,179,.5)}to{box-shadow:0 0 0 7px rgba(127,187,179,0)}}
+.ping{animation:ping .55s var(--ease)}
+@keyframes pingG{from{box-shadow:0 0 0 0 rgba(167,192,128,.55)}to{box-shadow:0 0 0 8px rgba(167,192,128,0)}}
+.pingG{animation:pingG .6s var(--ease)}
+
+/* swarm */
+.mrow{display:grid;grid-template-columns:232px 128px 1fr 150px;gap:22px;align-items:center;
+  padding:13px 12px;border-bottom:1px solid rgba(52,63,68,.55)}
+.mrow .mn{font-size:14px;display:block}
+.mrow .mr{display:block;font-size:11.5px;color:var(--light_foreground);opacity:.75;margin-top:4px}
+.slots{font-size:13px}
+.slots .of{color:var(--light_foreground);opacity:.7}
+.slots .sub{display:block;font-size:11.5px;color:var(--light_foreground);opacity:.8;margin-top:4px}
+.qwrap{position:relative;padding-top:2px;max-width:470px}
+.qbar{position:relative;height:6px;background:var(--darker_background);border-radius:1px;overflow:hidden}
+.qbar .fill{position:absolute;left:0;top:0;bottom:0;background:var(--green);transition:width .5s var(--ease)}
+.qbar .fill.warn{background:var(--yellow)} .qbar .fill.crit{background:var(--red)}
+.qtick{position:absolute;top:-4px;bottom:-4px;width:1px;background:var(--light_foreground);opacity:.55}
+.qmeta{display:flex;gap:14px;margin-top:7px;font-size:11.5px;color:var(--light_foreground);opacity:.85}
+.qmeta .pct{color:var(--foreground);opacity:1}
+.nometer{height:6px;border-top:1px dashed var(--muted);opacity:.7}
+.reset{font-size:12px;color:var(--light_foreground);opacity:.85;text-align:right}
+.reset.none{color:var(--light_foreground);opacity:.6}
+
+.freeze{display:flex;align-items:center;gap:20px;margin-top:18px;margin-bottom:6px;padding:17px 20px;
+  border:var(--hair);border-radius:5px;background:var(--background);
+  transition:border-color .3s,background .3s}
+.freeze .fdot{width:9px;height:9px;border-radius:50%;background:var(--green);flex:none}
+.freeze .fs{display:block;font-size:15px}
+.freeze .fx{font-size:12px;color:var(--light_foreground);opacity:.85;margin-top:5px}
+.freeze .fbtn{font-size:14.5px;padding:11px 30px;border-radius:var(--r);letter-spacing:.05em;
+  border:1px solid rgba(230,126,128,.45);color:var(--red);margin-left:auto;
+  transition:background .15s,border-color .15s,color .15s}
+.freeze .fbtn:hover{background:rgba(230,126,128,.12);border-color:var(--red)}
+.stage.frozen .freeze{border-color:rgba(230,126,128,.4);background:rgba(230,126,128,.06)}
+.stage.frozen .freeze .fdot{background:var(--red)}
+.stage.frozen .freeze .fs{color:var(--red)}
+.stage.frozen .freeze .fbtn{border-color:rgba(127,187,179,.5);color:var(--accent)}
+.stage.frozen .freeze .fbtn:hover{background:rgba(127,187,179,.12);border-color:var(--accent)}
+
+.pfoot{display:flex;align-items:center;gap:10px;padding:14px 28px;border-top:1px solid var(--selection);
+  font-size:12px;color:var(--light_foreground);opacity:.9}
+.pfoot .sep{color:var(--dark_foreground)}
+.tickdot{width:5px;height:5px;border-radius:50%;background:var(--muted);transition:background .12s linear}
+.tickdot.on{background:var(--accent)}
+.pfoot .hint{margin-left:auto;color:var(--light_foreground);opacity:.6}
+.pfoot kbd{font:inherit;color:var(--light_foreground);border:1px solid var(--muted);
+  border-radius:3px;padding:0 5px}
+
+@media (prefers-reduced-motion:reduce){
+  *,*::before,*::after{transition-duration:0ms!important;animation:none!important}
+}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+  <symbol id="i-check" viewBox="0 0 12 12"><path d="M2 6.3 4.6 8.9 10 3" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-dot" viewBox="0 0 12 12"><circle cx="6" cy="6" r="2.1" fill="currentColor"/></symbol>
+  <symbol id="i-ring" viewBox="0 0 12 12"><circle cx="6" cy="6" r="3.3" fill="none" stroke="currentColor" stroke-width="1.4"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 12 12"><path d="M4.6 2.6 8.4 6l-3.8 3.4" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></symbol>
+  <symbol id="i-halt" viewBox="0 0 12 12"><rect x="2.6" y="2.6" width="6.8" height="6.8" fill="currentColor"/></symbol>
+</svg>
+
+<div class="stage" id="stage">
+  <div class="desktop">
+    <div class="win w1">
+      <div><span class="a">▌</span> <span class="f">fable</span> <span class="t">·</span> orchestrator <span class="t">·</span> slot 1/1 <span class="t">·</span> ws1</div>
+      <div class="t">&nbsp;</div>
+      <div><span class="t">13:58</span> rule <span class="f">swarm/11</span> written — a reviewer never reopens a closed round</div>
+      <div><span class="t">14:01</span> answered <span class="f">sup·corpus</span> — read the ledger schema, never the dump</div>
+      <div><span class="t">14:03</span> component <span class="r">ingestion</span> halted under rule 10, waiting on its supervisor</div>
+      <div><span class="t">14:04</span> slot grant <span class="f">muse 3 → 3</span> held; codex granted 4, two idle</div>
+      <div><span class="t">14:00</span> digest written <span class="t">·</span> 6 components <span class="t">·</span> 9 jobs <span class="t">·</span> 2 decisions open</div>
+      <div class="t">&nbsp;</div>
+      <div><span class="g">›</span> <span class="caret"></span></div>
+    </div>
+    <div class="win w2">
+      <div><span class="f">collector</span> <span class="t">·</span> tick 2s <span class="t">·</span> no model <span class="t">·</span> pid 3891</div>
+      <div class="t">&nbsp;</div>
+      <div><span class="t">14:07:03</span> <span class="g">observed</span> wt/api-32 head b41e9c2 <span class="t">(+3 files)</span></div>
+      <div><span class="t">14:07:05</span> <span class="g">observed</span> job·parser cpu 41.2s rss 612M</div>
+      <div><span class="t">14:07:05</span> <span class="r">anomaly </span> ws9 pid 41180 codex — no slot, no id</div>
+      <div><span class="t">14:07:07</span> <span class="r">stall   </span> sup·engine silent 14m, 0 jobs active</div>
+      <div><span class="t">14:07:09</span> <span class="g">observed</span> merge queue depth 3</div>
+      <div><span class="t">14:07:11</span> <span class="y">quota   </span> codex astra 62% of 5h window</div>
+    </div>
+    <div class="win w3">
+      <div><span class="f">foreman roster</span> <span class="t">--watch</span></div>
+      <div class="t">&nbsp;</div>
+      <div><span class="t">ws1</span> orch <span class="t">····</span> <span class="g">fable</span></div>
+      <div><span class="t">ws2</span> sup·engine <span class="r">14m silent</span></div>
+      <div><span class="t">ws3</span> sup·api <span class="t">··</span> <span class="g">opus</span> 3 jobs</div>
+      <div><span class="t">ws4</span> job·parser <span class="g">muse</span></div>
+      <div><span class="t">ws5</span> rev·api <span class="t">··</span> <span class="g">astra</span></div>
+      <div><span class="t">ws6</span> merge <span class="t">···</span> <span class="g">q 3</span></div>
+      <div><span class="t">ws7</span> sup·ingestion <span class="y">halt</span></div>
+      <div><span class="t">ws8</span> sup·corpus <span class="g">opus</span></div>
+      <div><span class="t">ws9</span> <span class="r">·· no slot ····</span></div>
+      <div class="t">&nbsp;</div>
+      <div class="t">12 registered · 1 not</div>
+    </div>
+  </div>
+  <div class="scrim"></div>
+
+  <div class="bar">
+    <div id="wsStrip" style="display:flex;align-items:center;gap:2px"></div>
+    <div class="barR">
+      <span class="clock" id="clock">Mon 14:07</span>
+      <span class="chip">
+        <span class="live" id="chipLive"></span>
+        <span><span class="num" id="chipRun">9</span> running</span>
+        <span class="sep">·</span>
+        <span class="wait" id="chipWait">2 waiting on you</span>
+        <span class="sep">·</span>
+        <span>muse <span class="num" id="chipMuse">3/3</span></span>
+        <span class="sep">·</span>
+        <span>codex <span class="num" id="chipCodex">62%</span></span>
+      </span>
+    </div>
+  </div>
+
+  <div class="panel" role="dialog" aria-label="Foreman">
+    <div class="phead">
+      <span class="brand">foreman</span>
+      <span class="meta">orchestrator fable · 6 components · <span id="hJobs">9</span> jobs · slots <span id="hSlots">12/16</span></span>
+      <span class="wait" id="hWait">2 decisions waiting on you</span>
+    </div>
+
+    <div class="body">
+      <section>
+        <div class="shead"><span class="name">alerts</span><span class="rule"></span><span class="meta" id="alMeta">2 floating</span></div>
+        <div class="stack" id="alerts"></div>
+      </section>
+
+      <section>
+        <div class="shead"><span class="name">inbox</span><span class="rule"></span><span class="meta" id="inMeta">2 decisions · 0 errors</span></div>
+        <div class="stack" id="inbox"></div>
+      </section>
+
+      <section>
+        <div class="shead"><span class="name">plan</span><span class="rule"></span><span class="meta" id="plMeta">owner order · 6 components</span></div>
+        <div id="plan"></div>
+      </section>
+
+      <section>
+        <div class="shead"><span class="name">swarm</span><span class="rule"></span><span class="meta" id="swMeta">4 models · 12 of 16 slots held</span></div>
+        <div id="swarm"></div>
+        <div class="freeze">
+          <span class="fdot"></span>
+          <span>
+            <span class="fs" id="frzState">dispatch running</span>
+            <span class="fx" id="frzSub">launch scripts may take slots · 12 sessions registered</span>
+          </span>
+          <button class="fbtn" id="frzBtn" onclick="toggleFreeze()">freeze</button>
+        </div>
+      </section>
+    </div>
+
+    <div class="pfoot">
+      <span class="tickdot" id="tickDot"></span>
+      <span>collector tick 2s</span><span class="sep">·</span>
+      <span>last digest 14:00</span><span class="sep">·</span>
+      <span>Super+M close</span>
+      <span class="hint">plan rows expand · <kbd>esc</kbd> close</span>
+    </div>
+  </div>
+</div>
+
+<script>
+"use strict";
+const $=(s,r=document)=>r.querySelector(s), el=(t,c,x)=>{const n=document.createElement(t);if(c)n.className=c;if(x!=null)n.textContent=x;return n;};
+const calm=matchMedia("(prefers-reduced-motion: reduce)").matches;
+const rnd=a=>a[Math.floor(Math.random()*a.length)];
+const TRACE=52;
+
+/* ── state ─────────────────────────────────────────────────────────────── */
+const S={
+  frozen:false, mergeQ:3, t0:Date.now(),
+  spaces:[
+    {n:1,l:"orch",     s:"need"}, {n:2,l:"sup·engine", s:"bad"},
+    {n:3,l:"sup·api",  s:"work"}, {n:4,l:"job·parser", s:"work"},
+    {n:5,l:"rev·api",  s:"work"}, {n:6,l:"merge",      s:"work"},
+    {n:7,l:"sup·ingestion",s:"idle"},{n:8,l:"sup·corpus",s:"work"},
+    {n:9,l:"?codex",   s:"bad"}
+  ],
+  alerts:[
+    {id:"a1",tone:"red",   txt:"engine supervisor silent 14 min · no jobs active", born:14, act:"relaunch",
+     done:"sup·engine relaunched from checkpoint · reading rules"},
+    {id:"a2",tone:"orange",txt:"unregistered codex process in ws9 · not on roster", born:3, act:"kill",
+     done:"pid 41180 killed · slot ledger unchanged"}
+  ],
+  inbox:[
+    {id:"i1",kind:"decision",from:"orchestrator · money",born:23,
+     q:"Buy 2M extra Codex tokens so the review pool keeps two reviewers overnight?",
+     rec:["recommends no","Grok 4.6 covers reviews until Monday at 3.4 jobs/h, and the Codex 5h window resets at 19:00. Nothing on the plan needs a second reviewer before the merge desk drains."],
+     btns:[["approve buy","acc"],["choose","" ],["answer",""]]},
+    {id:"i2",kind:"decision",from:"sup·reaper · scope",born:6,
+     q:"Ship the reaper without the dead-worktree sweep?",
+     rec:["recommends yes","The sweep is 40 minutes of work and nothing downstream reads stale worktrees. Cutting it moves reaper to ~2h left and frees a muse slot for corpus."],
+     btns:[["approve cut","acc"],["choose",""],["answer",""]]}
+  ],
+  models:[
+    {id:"opus", name:"claude opus", role:"orchestrator · supervisors", run:6,grant:7, pct:41, reset:"resets 17:00"},
+    {id:"astra",name:"codex astra", role:"reviewers",                  run:2,grant:4, pct:62, reset:"resets 19:00"},
+    {id:"grok", name:"grok 4.6",    role:"reviewers · fallback workers",run:1,grant:3, pct:null, proxy:"3.4 jobs/h"},
+    {id:"muse", name:"muse",        role:"workers",                    run:3,grant:3, pct:null, proxy:"5.1 jobs/h"}
+  ],
+  comps:[
+    {id:"engine",name:"engine",sup:"sup·engine",model:"opus",total:24,built:15,landed:12,vel:0,
+     eta:"stalled",state:"stall",now:"supervisor silent 14m · no jobs",jobs:[],
+     ck:[["done","routing table read from the slot ledger"],["done","launch refuses a job with no worktree"],
+         ["done","session id minted before the process starts"],["plaus","timeout kills the child group, not the leader"],
+         ["open","frozen state survives a collector restart"],["open","relaunch replays the checkpoint"]],ckDone:9},
+    {id:"api",name:"api",sup:"sup·api",model:"opus",total:22,built:14,landed:11,vel:2.1,eta:"~4h left",
+     state:"",now:"dispatched openapi-drift-check → muse",open:true,ckDone:9,
+     ck:[["done","routes registered straight from the ledger schema"],["done","a write from an unknown session id is refused"],
+         ["done","job dispatch returns the worktree path"],["done","checkpoint read is the first act after relaunch"],
+         ["plaus","inbox resolve endpoint stamps the owner act"],["plaus","quota meter adapter reads the 5h window"],
+         ["open","digest endpoint serves the 14:00 paragraph"],["open","freeze refuses launches with a 409"]],
+     jobs:[{n:"inbox-resolve-endpoint",m:"muse",w:"wt/api-31",min:6,to:25},
+           {n:"ledger-write-guard",m:"muse",w:"wt/api-32",min:17,to:30},
+           {n:"openapi-drift-check",m:"grok 4.6",w:"wt/api-33",min:2,to:20}]},
+    {id:"ingestion",name:"ingestion",sup:"sup·ingestion",model:"opus",total:18,built:9,landed:9,vel:0,
+     eta:"dispatching stopped",state:"halt",now:"halted · supervisor must write what changed",
+     blocker:"repeated defect: webhook destination ×3",blockRule:"rule 10 · component scope",
+     ck:[["done","source registry reads from the component ledger"],["done","replay is idempotent on a duplicate id"],
+         ["plaus","webhook destination resolves from config"],["open","backfill window is bounded"]],ckDone:9,jobs:[]},
+    {id:"reaper",name:"reaper",sup:"sup·reaper",model:"opus",total:12,built:3,landed:1,vel:1.4,eta:"~6h left",
+     state:"",now:"waiting on your scope decision",
+     ck:[["done","dead session leaves the roster in one tick"],["plaus","orphan worktree is detected, not removed"],
+         ["open","sweep runs on the collector clock"]],ckDone:1,
+     jobs:[{n:"orphan-worktree-scan",m:"muse",w:"wt/reap-04",min:11,to:25}]},
+    {id:"corpus",name:"corpus",sup:"sup·corpus",model:"opus",total:31,built:22,landed:19,vel:3.0,eta:"~3h left",
+     state:"",now:"two jobs writing · second read queued",
+     ck:[["done","labels carry the reader and the moment of reading"],["done","second read disagrees on 4% of rows"],
+         ["plaus","dump export matches the ledger schema"],["open","sampling plan written on the component"]],ckDone:19,
+     jobs:[{n:"label-second-read",m:"muse",w:"wt/corp-18",min:9,to:30},
+           {n:"schema-drift-report",m:"muse",w:"wt/corp-19",min:4,to:20}]},
+    {id:"merge-desk",name:"merge-desk",sup:"merge",model:"opus",total:9,built:7,landed:7,vel:1.1,eta:"~1h left",
+     state:"",now:"queue depth 3 · reviewing ledger-write-guard",
+     ck:[["done","one queue for the whole swarm"],["done","every landing writes one merge ledger line"],
+         ["plaus","review rounds bounded at two"],["open","branch handoff frees the component"]],ckDone:7,
+     jobs:[{n:"review·ledger-write-guard",m:"grok 4.6",w:"wt/merge-q",min:3,to:15}]}
+  ]
+};
+const JOBPOOL=["session-registry-read","quota-meter-adapter","checkpoint-restore","slot-refusal-path",
+  "digest-endpoint","stall-rule-timer","worktree-allocator","verdict-file-parser","roster-diff"];
+/* a job's trace is the collector's count of files it wrote in each 2s tick */
+const sample=j=>Math.random()<j.act ? 1+Math.floor(Math.random()*3) : 0;
+S.comps.forEach(c=>c.jobs.forEach(j=>{ j.act=.55+Math.random()*.3;
+  j.tr=Array.from({length:TRACE},()=>sample(j)); }));
+
+/* ── render ────────────────────────────────────────────────────────────── */
+const ico=id=>`<svg class="ic"><use href="#${id}"/></svg>`;
+
+function renderBar(){
+  const w=$("#wsStrip"); w.innerHTML="";
+  S.spaces.forEach(s=>{
+    const b=el("button","ws"+(s.n===1?" active":"")+(s.s==="need"?" need":""));
+    b.innerHTML=`<span class="n">${s.n}</span><span class="l">${s.l}</span>`;
+    const m=el("span","mk "+s.s); m.id="mk"+s.n; b.appendChild(m); w.appendChild(b);
+  });
+}
+
+function renderAlerts(){
+  const w=$("#alerts"); w.innerHTML="";
+  if(!S.alerts.length){ w.appendChild(el("div","empty","nothing floating · observed matches declared")); }
+  S.alerts.forEach(a=>{
+    const d=el("div","alert"+(a.tone==="orange"?" orange":"")); d.id=a.id;
+    d.innerHTML=`<span class="sq"></span><span class="txt">${a.txt}</span>
+      <span class="age" data-age="${a.id}">${a.born}m ago</span>`;
+    const b=el("button","btn dgr",a.act); b.onclick=()=>resolveAlert(a,b,d); d.appendChild(b);
+    w.appendChild(d);
+  });
+  $("#alMeta").textContent = S.alerts.length ? S.alerts.length+" floating" : "clear";
+}
+function resolveAlert(a,btn,node){
+  btn.disabled=true; const txt=node.querySelector(".txt");
+  txt.textContent = a.act==="relaunch" ? "relaunching sup·engine from checkpoint…" : "killing pid 41180…";
+  setTimeout(()=>{
+    txt.textContent=a.done; node.classList.remove("orange");
+    node.style.borderColor="rgba(167,192,128,.3)"; node.style.background="rgba(167,192,128,.07)";
+    node.querySelector(".sq").style.background="var(--green)";
+    if(a.id==="a1"){ const c=S.comps[0]; c.state=""; c.now="reading rules · checklist re-read"; c.vel=1.6;
+      c.eta="~5h left"; S.spaces[1].s="work"; renderPlan(); renderBar(); }
+    if(a.id==="a2"){ S.spaces[8].s="idle"; S.spaces[8].l="—"; renderBar(); }
+    setTimeout(()=>{ node.classList.add("gone");
+      setTimeout(()=>{ S.alerts=S.alerts.filter(x=>x!==a); renderAlerts(); },340); },1100);
+  },820);
+}
+
+function renderInbox(){
+  const w=$("#inbox"); w.innerHTML="";
+  if(!S.inbox.length) w.appendChild(el("div","empty","nothing waiting on you · decisions queue here when an agent cannot decide"));
+  S.inbox.forEach(it=>{
+    const c=el("div","card"); c.id=it.id;
+    c.innerHTML=`<div><span class="tag${it.kind==="error"?" err":""}">${it.kind}</span><span class="from">${it.from}</span></div>
+      <div class="q">${it.q}</div>
+      <div class="rec"><span class="lead">orchestrator </span><span class="verdict">${it.rec[0]}</span> — ${it.rec[1]}</div>`;
+    const f=el("div","cfoot");
+    it.btns.forEach(([label,cls])=>{ const b=el("button","btn "+cls,label); b.onclick=()=>answer(it,c,label); f.appendChild(b); });
+    const a=el("span","waited",`waited ${it.born} min`); a.dataset.age=it.id; f.appendChild(a);
+    c.appendChild(f); w.appendChild(c);
+  });
+  const n=S.inbox.length, errs=S.inbox.filter(i=>i.kind==="error").length;
+  $("#inMeta").textContent=`${n-errs} decision${n-errs===1?"":"s"} · ${errs} error${errs===1?"":"s"}`;
+  const wait=n?`${n} decision${n===1?"":"s"} waiting on you`:"nothing waiting on you";
+  $("#hWait").textContent=wait; $("#hWait").classList.toggle("none",!n);
+  $("#chipWait").textContent=n?`${n} waiting on you`:"0 waiting on you";
+  $("#chipWait").style.color=n?"var(--yellow)":"var(--dark_foreground)";
+  if(!S.inbox.length && S.spaces[0].s==="need"){ S.spaces[0].s="work"; renderBar(); }
+}
+function answer(it,node,label){
+  node.querySelectorAll("button").forEach(b=>b.disabled=true);
+  node.querySelector(".rec").innerHTML=`<span class="lead">recorded </span><span class="verdict">${label}</span> — stamped as an owner act, and a rule on ${it.from.split(" · ")[0]} from now on.`;
+  if(it.id==="i2"){ const r=S.comps.find(c=>c.id==="reaper"); r.total=10; r.now="scope cut · sweep dropped"; r.eta="~2h left"; r.vel=1.8; renderPlan(); }
+  setTimeout(()=>{ node.classList.add("gone");
+    setTimeout(()=>{ S.inbox=S.inbox.filter(x=>x!==it); renderInbox(); },360); },900);
+}
+
+function planRow(c){
+  const frag=document.createDocumentFragment();
+  const b=el("button","prow"+(c.state?" "+c.state:"")); b.setAttribute("aria-expanded",!!c.open);
+  b.innerHTML=`<span><span class="cname">${c.state==="halt"?`<span style="color:var(--red)">${ico("i-halt")}</span>`:""}${c.name}</span>
+      <span class="csup">${c.sup} · ${c.model}</span></span>
+    <span><span class="pbar"><span class="built" style="width:${c.built/c.total*100}%"></span><span class="landed" style="width:${c.landed/c.total*100}%"></span></span>
+      <span class="pnum"><b>${c.landed}</b> landed · <b>${c.built}</b> built · ${c.total} items</span></span>
+    <span class="vel${c.vel?"":" zero"}">${c.vel.toFixed(1)} items/h<span class="eta">${c.eta}</span></span>
+    <span class="now" data-now="${c.id}">${c.now}</span>
+    <span class="chev">${ico("i-chev")}</span>`;
+  b.onclick=()=>{ c.open=!c.open; renderPlan(); };
+  frag.appendChild(b);
+  if(c.blocker){
+    const d=el("div","blocker");
+    d.innerHTML=`<span class="sq" style="width:7px;height:7px;background:var(--red);flex:none"></span>
+      <span>${c.blocker}</span><span class="rule">${c.blockRule}</span>`;
+    frag.appendChild(d);
+  }
+  if(c.open) frag.appendChild(detail(c));
+  return frag;
+}
+function detail(c){
+  const d=el("div","detail");
+  d.innerHTML=`<div class="dhead"><span class="n">checklist</span><span class="rule"></span>
+    <span class="m">${c.ckDone} of ${c.total} confirmed</span></div>`;
+  c.ck.forEach(([st,t])=>{
+    const cls=st==="done"?"done":st==="plaus"?"plaus":"open";
+    const icn=st==="done"?"i-check":st==="plaus"?"i-dot":"i-ring";
+    const word=st==="done"?"CONFIRMED":st==="plaus"?"PLAUSIBLE":"open";
+    const r=el("div","ck "+cls); r.innerHTML=`${ico(icn)}<span class="st">${word}</span><span>${t}</span>`;
+    d.appendChild(r);
+  });
+  const rest=c.total-c.ck.length;
+  if(rest>0) d.appendChild(el("div","more",`+${rest} more items on the component ledger`));
+
+  const jh=el("div","dhead");
+  const free=S.models.find(m=>m.id==="muse").grant-S.models.find(m=>m.id==="muse").run;
+  jh.innerHTML=`<span class="n">jobs</span><span class="rule"></span>
+    <span class="m">${c.jobs.length} running · ${free} muse slot${free===1?"":"s"} free</span>`;
+  d.appendChild(jh);
+  if(!c.jobs.length){
+    d.appendChild(el("div","empty",c.state==="halt"
+      ? "no jobs · dispatching halted until the supervisor writes what changed"
+      : "no jobs · nothing dispatched since 13:53"));
+  }
+  c.jobs.forEach(j=>d.appendChild(jobRow(c,j)));
+  return d;
+}
+function jobRow(c,j){
+  const r=el("div","job"); r.id="job-"+c.id+"-"+j.n;
+  const pct=j.min/j.to, tc=pct>.9?" crit":pct>.7?" warn":"";
+  r.innerHTML=`<span class="jdot" id="jd-${c.id}-${j.n}"></span>
+    <span class="jname">${j.n}</span><span class="sub">${j.m}</span><span class="sub">${j.w}</span>
+    <span class="tm${tc}">${j.min}m <span style="color:var(--light_foreground);opacity:.65">/ ${j.to}m</span></span>`;
+  const tr=el("span","trace"); tr.id="tr-"+c.id+"-"+j.n;
+  for(let i=0;i<TRACE;i++) tr.appendChild(el("span","tk"));
+  r.appendChild(tr); paintBars(tr,j.tr);
+  return r;
+}
+function paintBars(tr,data){
+  for(let i=0;i<TRACE;i++){ const v=data[i], b=tr.children[i];
+    if(!v){ b.style.height="1px"; b.style.background="var(--muted)"; b.style.opacity=".8"; }
+    else { b.style.height=Math.min(16,3+v*4)+"px"; b.style.background="var(--accent)";
+           b.style.opacity=(.42+i/TRACE*.58).toFixed(2); }
+  }
+}
+function paintTrace(c,j){
+  const tr=document.getElementById("tr-"+c.id+"-"+j.n); if(tr) paintBars(tr,j.tr);
+}
+function renderPlan(){
+  const w=$("#plan"); w.innerHTML="";
+  S.comps.forEach(c=>w.appendChild(planRow(c)));
+  const built=S.comps.reduce((a,c)=>a+c.built,0), tot=S.comps.reduce((a,c)=>a+c.total,0);
+  $("#plMeta").textContent=`owner order · ${built} of ${tot} items built`;
+}
+
+function renderSwarm(){
+  const w=$("#swarm"); w.innerHTML="";
+  S.models.forEach(m=>{
+    const r=el("div","mrow"); r.id="m-"+m.id;
+    let meter;
+    if(m.pct==null){
+      meter=`<div class="qwrap"><div class="nometer"></div>
+        <div class="qmeta"><span>no meter</span><span>proxied by <span class="pct" data-proxy="${m.id}">${m.proxy}</span></span></div></div>`;
+    }else{
+      const cls=m.pct>95?" crit":m.pct>=80?" warn":"";
+      meter=`<div class="qwrap"><div class="qbar"><span class="fill${cls}" style="width:${m.pct}%"></span>
+        <span class="qtick" style="left:80%"></span><span class="qtick" style="left:calc(100% - 1px)"></span></div>
+        <div class="qmeta"><span class="pct" data-pct="${m.id}">${m.pct}%</span>
+        <span>of the 5h window · marks at 80 and 100</span></div></div>`;
+    }
+    r.innerHTML=`<span><span class="mn">${m.name}</span><span class="mr">${m.role}</span></span>
+      <span class="slots"><span data-run="${m.id}">${m.run}</span> <span class="of">/ ${m.grant}</span>
+        <span class="sub">running / granted</span></span>
+      ${meter}
+      <span class="reset${m.pct==null?" none":""}">${m.pct==null?"no reset":m.reset}</span>`;
+    w.appendChild(r);
+  });
+  const run=S.models.reduce((a,m)=>a+m.run,0), gr=S.models.reduce((a,m)=>a+m.grant,0);
+  $("#swMeta").textContent=`4 models · ${run} of ${gr} slots held`;
+  $("#hSlots").textContent=`${run}/${gr}`;
+  const jobs=S.comps.reduce((a,c)=>a+c.jobs.length,0);
+  $("#hJobs").textContent=jobs; $("#chipRun").textContent=run;
+  $("#chipMuse").textContent=`${S.models[3].run}/${S.models[3].grant}`;
+  $("#chipCodex").textContent=`${S.models[1].pct}%`;
+}
+
+/* ── owner controls ────────────────────────────────────────────────────── */
+function toggleFreeze(){
+  S.frozen=!S.frozen;
+  $("#stage").classList.toggle("frozen",S.frozen);
+  $("#frzState").textContent=S.frozen?"dispatch frozen":"dispatch running";
+  const jobs=S.comps.reduce((a,c)=>a+c.jobs.length,0);
+  $("#frzSub").textContent=S.frozen
+    ? `0 launches allowed · ${jobs} jobs finishing · frozen at ${stamp()}`
+    : "launch scripts may take slots · 12 sessions registered";
+  $("#frzBtn").textContent=S.frozen?"thaw":"freeze";
+}
+/* the mock runs on the story clock, not the wall clock */
+const WALL0=Date.now(), MIN0=14*60+7;
+const fmin=()=>MIN0+Math.floor((Date.now()-WALL0)/60000);
+const stamp=()=>String(Math.floor(fmin()/60)%24).padStart(2,"0")+":"+String(fmin()%60).padStart(2,"0");
+
+/* ── the event stream: nothing moves that did not happen ───────────────── */
+function beat(id){
+  const m=document.getElementById("mk"+id); if(!m||calm) return;
+  m.classList.add("beat"); setTimeout(()=>m.classList.remove("beat"),300);
+}
+function chipBeat(){ if(calm) return; const c=$("#chipLive");
+  c.classList.add("beat"); setTimeout(()=>c.classList.remove("beat"),300); }
+
+function runningJobs(){ const out=[]; S.comps.forEach(c=>c.jobs.forEach(j=>out.push([c,j]))); return out; }
+
+function evFileWrite(){
+  const pair=rnd(runningJobs()); if(!pair) return;
+  const [c,j]=pair; j.tr[TRACE-1]=(j.tr[TRACE-1]||0)+1; paintTrace(c,j);
+  const d=document.getElementById("jd-"+c.id+"-"+j.n);
+  if(d&&!calm){ d.classList.add("on","ping"); setTimeout(()=>d.classList.remove("ping","on"),560); }
+  const n=document.querySelector(`[data-now="${c.id}"]`);
+  const nf=1+Math.floor(Math.random()*3);
+  if(n&&c.state!=="halt"){ n.textContent=`${j.n} wrote ${nf} file${nf===1?"":"s"} in ${j.w}`;
+    n.classList.add("hot"); setTimeout(()=>n.classList.remove("hot"),900); }
+  beat(S.spaces.findIndex(s=>s.l==="sup·"+c.id)+1||4);
+}
+function evHeartbeat(){ const s=rnd(S.spaces.filter(x=>x.s!=="idle")); beat(s.n); chipBeat(); }
+
+function evJobFinished(){
+  const live=runningJobs().filter(([c,j])=>c.state!=="halt"); if(!live.length) return;
+  const [c,j]=rnd(live);
+  const row=document.getElementById("job-"+c.id+"-"+j.n);
+  if(c.built<c.total){ c.built++; c.ckDone=Math.min(c.total,c.ckDone+1); }
+  if(row){
+    row.classList.add("fin");
+    row.querySelector(".jname").textContent=j.n+"  ·  done";
+    row.querySelector(".sub").textContent=j.m;
+    const dot=row.querySelector(".jdot"); if(!calm){ dot.classList.add("pingG"); }
+  }
+  const bar=document.querySelector(`[data-now="${c.id}"]`);
+  if(bar) bar.textContent=`${j.n} returned · verdict queued for review`;
+  growBar(c);
+  setTimeout(()=>{
+    const i=c.jobs.indexOf(j); if(i<0) return;
+    if(S.frozen){ c.jobs.splice(i,1); if(bar) bar.textContent="frozen · no replacement dispatched"; }
+    else{
+      const nj={n:rnd(JOBPOOL),m:Math.random()<.75?"muse":"grok 4.6",
+        w:j.w.replace(/\d+$/,x=>String(+x+3)),min:0,to:rnd([20,25,30]),act:.55+Math.random()*.3,
+        tr:new Array(TRACE).fill(0)};
+      c.jobs.splice(i,1,nj);
+      if(bar) bar.textContent=`dispatched ${nj.n} → ${nj.m}`;
+    }
+    if(c.open) renderPlan(); else renderPlan();
+    renderSwarm();
+  },1400);
+}
+function growBar(c){
+  const row=[...document.querySelectorAll(".pbar")][S.comps.indexOf(c)];
+  if(!row) return;
+  row.querySelector(".built").style.width=(c.built/c.total*100)+"%";
+  const num=row.parentElement.querySelector(".pnum");
+  if(num) num.innerHTML=`<b>${c.landed}</b> landed · <b>${c.built}</b> built · ${c.total} items`;
+}
+function evVerdict(){
+  const up=Math.random()<.55;
+  S.mergeQ=Math.max(0,Math.min(7,S.mergeQ+(up?1:-1)));
+  const md=S.comps.find(c=>c.id==="merge-desk");
+  md.now=`queue depth ${S.mergeQ} · ${up?"branch handed off by sup·"+rnd(["api","corpus","reaper"]):"verdict passed, landing"}`;
+  const n=document.querySelector('[data-now="merge-desk"]');
+  if(n){ n.textContent=md.now; n.classList.add("hot"); setTimeout(()=>n.classList.remove("hot"),900); }
+  beat(6);
+  if(!up){ const c=rnd(S.comps.filter(x=>x.landed<x.built)); if(c){ c.landed++; growBar(c);
+    const bar=[...document.querySelectorAll(".pbar")][S.comps.indexOf(c)];
+    if(bar) bar.querySelector(".landed").style.width=(c.landed/c.total*100)+"%"; } }
+}
+function evQuota(){
+  const m=rnd([S.models[0],S.models[1]]);
+  m.pct=Math.min(99,m.pct+(Math.random()<.85?1:0));
+  const f=document.querySelector("#m-"+m.id+" .fill"), p=document.querySelector(`[data-pct="${m.id}"]`);
+  if(f){ f.style.width=m.pct+"%"; f.className="fill"+(m.pct>95?" crit":m.pct>=80?" warn":""); }
+  if(p) p.textContent=m.pct+"%";
+  $("#chipCodex").textContent=S.models[1].pct+"%";
+}
+
+const EVENTS=[[evFileWrite,58],[evHeartbeat,17],[evJobFinished,9],[evVerdict,9],[evQuota,7]];
+function fire(){
+  let r=Math.random()*100;
+  for(const [fn,w] of EVENTS){ if((r-=w)<0){ try{fn();}catch(e){} break; } }
+  schedule();
+}
+let timer=null;
+function schedule(){ timer=setTimeout(fire,500+Math.random()*2500); }
+
+/* collector tick: the traces scroll one bucket, the footer dot marks it */
+setInterval(()=>{
+  const d=$("#tickDot"); d.classList.add("on"); setTimeout(()=>d.classList.remove("on"),160);
+  S.comps.forEach(c=>c.jobs.forEach(j=>{ j.tr.shift(); j.tr.push(sample(j)); paintTrace(c,j); }));
+},2000);
+
+/* ages tick on the minute */
+setInterval(()=>{
+  S.alerts.forEach(a=>{ a.born++; const n=document.querySelector(`[data-age="${a.id}"]`); if(n) n.textContent=a.born+"m ago"; });
+  S.inbox.forEach(i=>{ i.born++; const n=document.querySelector(`[data-age="${i.id}"]`); if(n) n.textContent=`waited ${i.born} min`; });
+  S.comps.forEach(c=>c.jobs.forEach(j=>j.min++));
+  renderPlan();
+  $("#clock").textContent="Mon "+stamp();
+},60000);
+
+addEventListener("keydown",e=>{
+  if(e.key==="Escape"){ $("#stage").classList.toggle("closed"); }
+});
+
+/* the mock is a 2560×1440 screen; fit it to whatever window opens it */
+function fit(){ $("#stage").style.setProperty("--s",
+  Math.min(innerWidth/2560, innerHeight/1440).toFixed(4)); }
+addEventListener("resize",fit); fit();
+
+renderBar(); renderAlerts(); renderInbox(); renderPlan(); renderSwarm();
+$("#clock").textContent="Mon "+stamp();
+schedule();
+</script>
+</body>
+</html>
