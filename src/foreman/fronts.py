@@ -17,6 +17,7 @@ import dataclasses
 import json
 import re
 import shutil
+import subprocess
 import tomllib
 from pathlib import Path
 
@@ -30,6 +31,11 @@ _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 _SCOPE_PARTS = ("WHAT", "INPUTS", "OUTPUTS", "OUT OF SCOPE")
 
 _SENTENCE_ENDS = (".", "!", "?")
+
+#: An alert is a comparison operator and a number: `< 0.80`, `>= 5`, `!= 0`.
+_ALERT_RE = re.compile(
+    r"^\s*(?:<=|>=|==|!=|<|>)\s*[+-]?"
+    r"(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?\s*$")
 
 
 def _is_int(value: object) -> bool:
@@ -98,7 +104,33 @@ def _existing_fronts() -> set[str]:
     return {name for name in names if read_front_record(name) is not None}
 
 
-def _validate(data: dict, existing: set[str]) -> list[str]:
+def _branch_violation(directory: str, branch: str) -> str | None:
+    """None when refs/heads/<branch> exists in the repo holding directory.
+
+    One `git show-ref` at most; repo membership is a directory walk, not a
+    second subprocess. A directory outside any repository, or a missing git
+    binary, is its own violation rather than a silent pass.
+    """
+    node = Path(directory) if Path(directory).is_dir() else Path(directory).parent
+    if not any((parent / ".git").exists() for parent in (node, *node.parents)):
+        return (f"field 'land-on' branch '{branch}' cannot be checked: "
+                f"brief directory '{directory}' is not inside a git repository")
+    try:
+        completed = subprocess.run(
+            ["git", "show-ref", "--verify", "--quiet",
+             f"refs/heads/{branch}"],
+            cwd=str(directory),
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError:
+        return (f"field 'land-on' branch '{branch}' cannot be checked: "
+                f"git is not available")
+    if completed.returncode != 0:
+        return f"field 'land-on' branch '{branch}' does not exist"
+    return None
+
+
+def _validate(data: dict, existing: set[str],
+              directory: str | None = None) -> list[str]:
     """Every 4.3 violation at once, each naming the field or rule it breaks."""
     violations: list[str] = []
 
@@ -129,6 +161,10 @@ def _validate(data: dict, existing: set[str]) -> list[str]:
     land_on = data.get("land-on")
     if not (isinstance(land_on, str) and land_on.strip()):
         violations.append("field 'land-on' is required (a non-empty string)")
+    elif directory is not None:
+        problem = _branch_violation(directory, land_on.strip())
+        if problem is not None:
+            violations.append(problem)
 
     for key in ("order", "prefer"):
         if key in data and not _is_int(data[key]):
@@ -220,7 +256,8 @@ def _validate(data: dict, existing: set[str]) -> list[str]:
                 violations.append(f"{label}: field 'after' names unknown task "
                                   f"'{entry}'")
     graph = {title: [entry for entry in _task_after(tasks, title)
-                     if entry in known] for title in titles}
+                     if isinstance(entry, str) and entry in known]
+             for title in titles}
     cycle = _find_cycle(graph)
     if cycle is not None:
         violations.append("task 'after' graph has a cycle: "
@@ -238,6 +275,19 @@ def _validate(data: dict, existing: set[str]) -> list[str]:
             if not (isinstance(measure, str) and measure.strip()):
                 violations.append(f"monitor #{index + 1}: field 'measure' must be "
                                   f"a non-empty string")
+            unit = monitor.get("unit")
+            if not (isinstance(unit, str) and unit.strip()):
+                violations.append(f"monitor #{index + 1}: field 'unit' must be "
+                                  f"a non-empty string")
+            every = monitor.get("every")
+            if not (isinstance(every, str) and every.strip()):
+                violations.append(f"monitor #{index + 1}: field 'every' must be "
+                                  f"a non-empty string")
+            alert = monitor.get("alert")
+            if alert is not None and not (
+                    isinstance(alert, str) and _ALERT_RE.match(alert)):
+                violations.append(f"monitor #{index + 1}: field 'alert' does not "
+                                  f"parse (got '{alert}')")
     return violations
 
 
@@ -322,7 +372,7 @@ def front_add_main(directory: str, dry_run: bool = False) -> int:
     caller.check_role(me, "front add", violations=violations)
     data = _read_brief(directory, violations)
     if data is not None:
-        violations.extend(_validate(data, _existing_fronts()))
+        violations.extend(_validate(data, _existing_fronts(), directory))
     if violations:
         return Refusal(violations).report()
     assert data is not None
