@@ -160,6 +160,18 @@ def add_front(env, monkeypatch, capsys, name="flow"):
     capsys.readouterr()
 
 
+def make_self_landing(front):
+    """Flag a test front as one that lands itself, the way a brief with
+    `merge = "self"` records it: a revised copy of the front line, the way
+    every other front change is written."""
+    from foreman import fronts
+
+    record = fronts.read_front_record(front)
+    assert record is not None
+    store.append_ledger(paths.front_record_path(front),
+                        dict(record, merge="self"))
+
+
 def sup_session(sid, front, **fields):
     base = {
         "id": sid, "role": "supervisor", "pool": "opus", "model": "opus",
@@ -238,8 +250,14 @@ def test_flow_2_ready_to_landed(env, fake_pool, children,
                                 monkeypatch, capsys):
     """Flow 2 through the command line: ready, running, returned,
     verified, built, landed — with `foreman status` naming each state
-    as it changes and the successor releasing only on landing."""
+    as it changes and the successor releasing only on landing.
+
+    On a `merge = "self"` front, where the supervisor still lands
+    directly; every other front lands through a merge request the desk
+    consumes (see tests/v2/test_merge_desk.py).
+    """
     add_front(env, monkeypatch, capsys)
+    make_self_landing("flow")
     tasks = tasks_by_title("flow")
     first, second = tasks["first"]["id"], tasks["second"]["id"]
     assert tasks["first"]["state"] == "ready"
@@ -420,8 +438,12 @@ def test_landed_not_built_is_refused(env, monkeypatch, capsys):
 def test_successor_releases_on_landing_not_before(
         env, monkeypatch, capsys):
     """A successor stays waiting while its predecessor is only built and
-    becomes ready in the same call that lands it."""
+    becomes ready in the same call that lands it.
+
+    On a `merge = "self"` front, where the supervisor still lands
+    directly."""
     add_front(env, monkeypatch, capsys)
+    make_self_landing("flow")
     seed_supervisor("flow")
     first = tasks_by_title("flow")["first"]["id"]
     store.append_ledger(paths.front_jobs_path("flow"), {

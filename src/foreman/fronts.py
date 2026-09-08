@@ -180,6 +180,11 @@ def _validate(data: dict, existing: set[str],
         if problem is not None:
             violations.append(problem)
 
+    merge = data.get("merge")
+    if merge is not None and merge != "self":
+        violations.append(f"field 'merge' must be 'self' or absent "
+                          f"(got '{merge}')")
+
     for key in ("order", "prefer"):
         if key in data and not _is_int(data[key]):
             violations.append(f"field '{key}' must be an integer")
@@ -336,6 +341,7 @@ def _build(data: dict, name: str,
         supervisor=None,
         brief_path=str(paths.brief_path(name)),
         state="queued",
+        merge=data.get("merge") or "",
         fixture=fixture,
     )
     front_line = front.to_dict()

@@ -47,7 +47,7 @@ RULING = "Verify by re-running; a worker's word is PLAUSIBLE until then."
 SUPERVISOR_COMMANDS = (
     "foreman checkpoint --doing <doing> --next <next>",
     "foreman ask <question ...> --kind <kind> --recommend <recommend>",
-    "foreman launch <role> <pool> [<spec>]",
+    "foreman launch <role> [<pool>] [<spec>]",
     "foreman relaunch <session>",
     "foreman register --role <role> --pid <pid>",
     "foreman job verify <job> --confirmed --command <command> --output <output>",
@@ -59,6 +59,8 @@ SUPERVISOR_COMMANDS = (
     "foreman rule ack <id>",
     "foreman rule list",
     "foreman status",
+    "foreman merge request [<branch>] --front <front> --tasks <tasks ...> "
+    "--target <target>",
 )
 #: Verbs this checkout ships for somebody else. A supervisor told it may
 #: call one of these is told to walk into a refusal.
@@ -70,7 +72,7 @@ NOT_THE_SUPERVISORS = (
 #: The design's supervisor row that this checkout does not ship. Named as
 #: missing, never as callable.
 UNSHIPPED = ("task ready", "job plan", "job order", "measure",
-             "merge request", "front done")
+             "front done")
 
 
 @pytest.fixture()

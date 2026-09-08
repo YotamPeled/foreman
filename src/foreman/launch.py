@@ -65,7 +65,7 @@ import uuid
 from pathlib import Path
 
 from . import caller, capacity, cli, fronts, ids, paths, procs, store
-from .caller import FOREMAN, SUPERVISOR
+from .caller import FOREMAN, MERGE_DESK, SUPERVISOR
 from .cli import subcommand
 from . import entities
 from .entities import JOB_KINDS, JOB_ROLES, SESSION_ROLES, Session
@@ -120,10 +120,13 @@ def add_launch_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "role",
         help="worker role (one of: " + ", ".join(JOB_ROLES)
-        + "), or 'supervisor' for the second shape: launch supervisor <front>")
+        + "), 'supervisor' for the second shape: launch supervisor <front>, "
+        "or 'merge-desk' for the third: launch merge-desk")
     parser.add_argument(
-        "pool", help="pool to start the worker through; the front name when "
-                     "the role is 'supervisor'")
+        "pool", nargs="?", default=None,
+        help="pool to start the worker through; the front name when "
+             "the role is 'supervisor'; nothing when the role is "
+             "'merge-desk'")
     parser.add_argument("spec", nargs="?", default=None,
                         help="absolute path to the supervisor's spec file "
                              "(a supervisor launch takes none)")
@@ -464,6 +467,9 @@ def cmd_launch(args: argparse.Namespace) -> int:
     if args.role == SUPERVISOR:
         return launch_supervisor_main(
             args, frozen_problems + list(identity_violations))
+    if args.role == MERGE_DESK:
+        return launch_merge_desk_main(
+            args, frozen_problems + list(identity_violations))
     problems: list[str] = frozen_problems + list(identity_violations)
     if args.spec is None:
         problems.append(
@@ -471,10 +477,15 @@ def cmd_launch(args: argparse.Namespace) -> int:
             "or launch supervisor <front> for a supervisor")
 
     adapter = None
-    try:
-        adapter = get_pool(args.pool)
-    except ValueError as exc:
-        problems.append(str(exc))
+    if args.pool is None:
+        problems.append(
+            "pool is required: launch <role> <pool> <spec>, "
+            "or launch supervisor <front> for a supervisor")
+    else:
+        try:
+            adapter = get_pool(args.pool)
+        except ValueError as exc:
+            problems.append(str(exc))
     if args.role not in JOB_ROLES:
         problems.append(
             f"unknown role {args.role!r}; known roles: " + ", ".join(JOB_ROLES)
@@ -802,7 +813,7 @@ DESIGN_SUPERVISOR_ROW = (
 
 #: The role names the gates are written with, as they read in the source.
 _ROLE_CONSTANTS = {"OWNER": caller.OWNER, "FOREMAN": FOREMAN,
-                   "SUPERVISOR": SUPERVISOR}
+                   "SUPERVISOR": SUPERVISOR, "MERGE_DESK": MERGE_DESK}
 #: A refusal names the field it refuses on: ``field '--head' is required``.
 _FIELD_RE = re.compile(r"field '(-{0,2}[A-Za-z][A-Za-z0-9_-]*)'")
 
@@ -929,6 +940,7 @@ def registered_verbs() -> list[tuple[str, argparse.ArgumentParser, str]]:
     from . import collector as _collector  # noqa: F401
     from . import config as _config  # noqa: F401
     from . import fronts as _fronts  # noqa: F401
+    from . import merge as _merge  # noqa: F401
     from . import progress as _progress  # noqa: F401
     from . import status as _status  # noqa: F401
     from . import verbs as _verbs  # noqa: F401
@@ -1539,8 +1551,11 @@ def launch_supervisor_main(args: argparse.Namespace,
     if workspace is not None and not WORKSPACE_RE.fullmatch(str(workspace)):
         problems.append(
             f"bad workspace {workspace!r}; a workspace is digits, e.g. 6")
-    record = fronts.read_front_record(front)
-    if record is None:
+    record = fronts.read_front_record(front) if front is not None else None
+    if front is None:
+        problems.append(
+            "front is required: launch supervisor <front>")
+    elif record is None:
         problems.append(
             f"unknown front '{front}'; it has no record on the ledger "
             f"(add it with `foreman front add <dir>` first)")
@@ -1652,6 +1667,279 @@ def launch_supervisor_main(args: argparse.Namespace,
 
 
 # --------------------------------------------------------------------------
+# The third shape: summoning the merge desk.
+#
+# A desk is summoned the way a supervisor is: an interactive Claude session
+# whose identity is minted before its process exists, on the roster from the
+# moment it starts. It owns no front, so its prompt carries the merge queue
+# instead of a front's tasks, and one desk at a time holds the queue — a
+# second summon is refused by name, the way a second supervisor is.
+# --------------------------------------------------------------------------
+
+#: The design's merge-desk row (docs/DESIGN.md section 12), verbatim. What
+#: this checkout has not shipped is this row minus what the CLI registers
+#: for the role, computed at render time like the supervisor's.
+DESIGN_DESK_ROW = ("merge take", "merge land", "merge fail")
+
+
+def desk_verbs() -> list[tuple[str, str]]:
+    """(verb, rendered line) for every verb the merge desk may call.
+
+    Built the way :func:`supervisor_verbs` is: from the registered parser
+    and the gates in the code behind it, never from a hand-written list.
+    """
+    gates, required = _gate_tables()
+    lines: list[tuple[str, str]] = []
+    for path, parser, help_text in registered_verbs():
+        forms = sorted(verb for verb in gates
+                       if verb == path or verb.startswith(path + " "))
+        allowed = ([verb for verb in forms if MERGE_DESK in gates[verb]]
+                   if forms else [path])
+        for verb in allowed:
+            lines.append((verb, _verb_line(path, parser, help_text, verb,
+                                           required.get(verb, set()))))
+    return lines
+
+
+def desk_verbs_block() -> str:
+    verbs = desk_verbs()
+    lines = [line for _verb, line in verbs]
+    shipped = {verb for verb, _line in verbs}
+    missing = [verb for verb in DESIGN_DESK_ROW if verb not in shipped]
+    if missing:
+        lines.append(
+            "- The design gives your role "
+            + ", ".join(f"`{verb}`" for verb in missing)
+            + " as well; this version does not ship them, so do not call them "
+              "and do not invent a substitute.")
+    return "\n".join(lines)
+
+
+def merge_queue_block() -> str:
+    """The merge queue as the desk finds it: waiting oldest first, then
+    what already landed or failed. Task ids resolve to titles where a
+    front's ledger names them."""
+    from . import merge as _merge
+
+    titles: dict[str, str] = {}
+    try:
+        fronts = sorted(path.name for path in paths.fronts_dir().iterdir()
+                        if path.is_dir())
+    except OSError:
+        fronts = []
+    for front in fronts:
+        try:
+            records = store.read_ledger(paths.front_tasks_path(front))
+        except OSError:
+            continue
+        for record in store.fold_by_id(records):
+            if isinstance(record.get("id"), str) and \
+                    isinstance(record.get("title"), str):
+                titles.setdefault(record["id"], record["title"])
+    folded = store.fold_by_id(store.read_ledger(paths.merges_path()))
+    if not folded:
+        return "(the merge queue is empty)"
+    waiting = [row for row in folded
+               if not _merge.is_landed(row) and not _merge.is_failed(row)]
+    done = [row for row in folded
+            if _merge.is_landed(row) or _merge.is_failed(row)]
+    waiting.sort(key=lambda row: row.get("requested_at") or "")
+    lines = []
+    for row in waiting:
+        tasks = ", ".join(titles.get(task, task)
+                          for task in (row.get("tasks") or []))
+        lines.append(
+            f"- {row.get('id')}: {row.get('front') or '(no front)'}: "
+            f"{row.get('branch')} -> {row.get('target')}, "
+            f"lands {tasks or '(no tasks)'} "
+            f"(requested {row.get('requested_at') or 'at an unknown time'}"
+            + (f", held by {row.get('taken_by')}"
+               if row.get("taken_by") else "")
+            + ")")
+    for row in done:
+        if _merge.is_failed(row):
+            lines.append(
+                f"- {row.get('id')}: {row.get('branch')} -> "
+                f"{row.get('target')} failed: "
+                f"{row.get('fail_reason') or '(no reason recorded)'}")
+        else:
+            lines.append(
+                f"- {row.get('id')}: {row.get('branch')} -> "
+                f"{row.get('target')} landed at {row.get('head') or '?'}")
+    return "\n".join(lines)
+
+
+def desk_environment_block(*, repo: str, branch: str, session_id: str,
+                           role_prompt: str) -> str:
+    """Every path the desk needs, absolute, with none to reconstruct."""
+    return (
+        f"- repository: {repo} — you work in this checkout; the branches "
+        f"you rebase, check and push live here\n"
+        f"- branch: {branch} — the branch this checkout is on. The launcher "
+        f"refuses to summon you onto any other, and you never switch it "
+        f"underneath its owner except to land a merge.\n"
+        f"- state directory: {paths.state_dir()}\n"
+        f"- your session id: {session_id}\n"
+        f"- {caller.SESSION_ENV}: must be set to {session_id} on every "
+        f"`foreman` call. Your window exports it; a shell you open yourself "
+        f"must set it, or the CLI refuses you as an unregistered writer.\n"
+        f"- your role prompt: {role_prompt}\n"
+        f"- the merge ledger: {paths.merges_path()}\n"
+        f"- the rulings ledger: {paths.rulings_path()}\n"
+        f"- the roster: {paths.roster_path()}\n"
+        f"- the configuration (including the target's check command under "
+        f"`[merge]`): {paths.config_file()}"
+    )
+
+
+def render_merge_desk_prompt(*, session_id: str, repo: str, branch: str,
+                             role_prompt: Path) -> str:
+    return render_role_template(MERGE_DESK, {
+        "session_id": session_id,
+        "queue": merge_queue_block(),
+        "verbs": desk_verbs_block(),
+        "rulings": format_rulings(read_rulings(None)),
+        "environment": desk_environment_block(
+            repo=repo, branch=branch, session_id=session_id,
+            role_prompt=str(role_prompt)),
+    })
+
+
+def live_merge_desk(ignore: str | None = None
+                    ) -> list[tuple[str, dict]]:
+    """Every live merge desk: rostered as starting or running *and* still
+    that process. One desk at a time holds the queue."""
+    live: list[tuple[str, dict]] = []
+    sessions = caller.read_roster().get("sessions", {})
+    for session_id, entry in sessions.items():
+        if not isinstance(entry, dict) or session_id == ignore:
+            continue
+        if entry.get("role") != MERGE_DESK:
+            continue
+        if entry.get("state") not in ("starting", "running"):
+            continue
+        pid = entry.get("pid")
+        if pid is None or procs.same_process(pid, entry.get("pid_starttime")):
+            live.append((session_id, entry))
+    return live
+
+
+def _merge_desk_session(session_id: str, repo: str,
+                        launched_by: str | None) -> Session:
+    return Session(
+        id=session_id,
+        role=MERGE_DESK,
+        pool=SUPERVISOR_POOL,
+        model=SUPERVISOR_MODEL,
+        front=None,
+        job=None,
+        worktree=repo,
+        log=str(paths.session_log_path(session_id)),
+        launched_by=launched_by,
+        started_at=store.utcnow_iso(),
+        state="starting",
+    )
+
+
+def launch_merge_desk_main(args: argparse.Namespace,
+                           problems: list[str]) -> int:
+    """`foreman launch merge-desk [--workspace N] [--dry-run]`."""
+    if args.pool is not None:
+        problems.append(
+            f"a merge desk takes no pool (got {args.pool!r}): it is the "
+            f"desk, not work on one (`foreman launch merge-desk`)")
+    if args.spec is not None:
+        problems.append(
+            "a merge desk takes no spec file: it works the merge queue in "
+            "the repository")
+    workspace = args.workspace
+    if workspace is not None and not WORKSPACE_RE.fullmatch(str(workspace)):
+        problems.append(
+            f"bad workspace {workspace!r}; a workspace is digits, e.g. 6")
+    repo = os.path.abspath(args.repo or os.getcwd())
+    if not os.path.isdir(repo):
+        problems.append(f"repo {repo!r} is not a directory")
+    branch = _branch_of_checkout(repo, args.branch, problems)
+    # One desk at a time. A second live one is refused by name here,
+    # before anything is minted: two desks, both authorised to land, is
+    # the double-landing this runtime exists to prevent.
+    live = live_merge_desk()
+    if live:
+        held, entry = live[0]
+        problems.append(
+            f"a merge desk is already live as '{held}' "
+            f"({entry.get('state')}, pid {entry.get('pid')}); one desk at "
+            f"a time holds the queue, so reuse it instead of summoning "
+            f"a second")
+    if problems:
+        return refuse(*problems)
+    assert branch is not None
+
+    session_id = ids.mint("session")
+    vendor_id = str(uuid.uuid4())
+    session_dir = paths.session_dir(session_id)
+    role_prompt = session_dir / ROLE_PROMPT_FILE
+    try:
+        session_dir.mkdir(parents=True, exist_ok=True)
+        text = render_merge_desk_prompt(
+            session_id=session_id, repo=repo, branch=branch,
+            role_prompt=role_prompt)
+        write_no_symlink(str(role_prompt), text)
+        _write_vendor_session(session_id, vendor_id)
+    except Refused as exc:
+        return refuse(str(exc))
+    except OSError as exc:
+        return refuse(f"cannot write launch files: {exc.strerror or exc}")
+
+    if args.dry_run:
+        inner = supervisor_inner_command(
+            pid_path=paths.session_pid_path(session_id),
+            session_id=session_id, repo=repo, role_prompt=role_prompt,
+            vendor_id=vendor_id, resume=False)
+        argv = supervisor_outer_argv(
+            session_id, session_dir / RUN_SCRIPT_FILE, workspace)
+        _print_supervisor(session_id, vendor_id, role_prompt, workspace,
+                          None, argv, inner, branch=branch)
+        print()
+        print(text)
+        return 0
+
+    try:
+        store.update_snapshot(
+            paths.roster_path(),
+            lambda roster: _place_session(
+                roster,
+                _merge_desk_session(session_id, repo,
+                                    os.environ.get(caller.SESSION_ENV))),
+            default={"sessions": {}},
+        )
+    except OSError as exc:
+        return refuse(f"cannot record the session on the roster: "
+                      f"{exc.strerror or exc}")
+
+    argv_: list[str] = []
+    inner = ""
+    pid: int | None = None
+    failure: str | None = None
+    try:
+        argv_, inner, pid, failure = _start_supervisor(
+            session_id, repo=repo, role_prompt=role_prompt,
+            vendor_id=vendor_id, workspace=workspace, resume=False)
+    except Exception as exc:  # noqa: BLE001 - anything here is a refusal
+        failure = f"{type(exc).__name__}: {exc}"
+    starttime, dead = _confirm_started(pid)
+    if starttime is None:
+        _record_failed(session_id)
+        return refuse(f"the window launcher failed to start the merge desk: "
+                      f"{failure or dead}")
+    assert pid is not None
+    _record_running(session_id, pid, starttime)
+    _print_supervisor(session_id, vendor_id, role_prompt, workspace, pid,
+                      argv_, inner, branch=branch)
+    return 0
+
+
+# --------------------------------------------------------------------------
 # `foreman register`: a session Foreman did not start, made visible.
 # --------------------------------------------------------------------------
 
@@ -1675,9 +1963,10 @@ def _pool_and_model(role: str, pool: str | None,
     The two interactive roles run on Opus; a worker role names its own pool.
     """
     if pool is None:
-        pool = SUPERVISOR_POOL if role in (SUPERVISOR, FOREMAN) else role
+        pool = SUPERVISOR_POOL \
+            if role in (SUPERVISOR, FOREMAN, MERGE_DESK) else role
     if model is None:
-        if role in (SUPERVISOR, FOREMAN):
+        if role in (SUPERVISOR, FOREMAN, MERGE_DESK):
             model = SUPERVISOR_MODEL
         else:
             try:

@@ -46,6 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     from . import config as _config  # noqa: F401
     from . import fronts as _fronts  # noqa: F401
     from . import launch as _launch  # noqa: F401
+    from . import merge as _merge  # noqa: F401
     from . import progress as _progress  # noqa: F401
     from . import status as _status  # noqa: F401
     from . import verbs as _verbs  # noqa: F401

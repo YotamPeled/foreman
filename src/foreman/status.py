@@ -453,27 +453,38 @@ def _job_queue(now: datetime) -> list[str]:
 
 
 def _merge_queue(titles: dict[str, str], now: datetime) -> list[str]:
+    from .merge import is_failed, is_landed
+
     merges = _merges()
     if merges is None:
         return ["Merge queue: empty."]
-    waiting = [row for row in merges if row.get("landed_at") is None]
-    landed = [row for row in merges if row.get("landed_at") is not None]
-    if not waiting and not landed:
+    waiting = [row for row in merges
+               if not is_landed(row) and not is_failed(row)]
+    landed = [row for row in merges if is_landed(row)]
+    failed = [row for row in merges if is_failed(row)]
+    if not waiting and not landed and not failed:
         return ["Merge queue: empty."]
     lines = ["Merge queue:"]
+    waiting.sort(key=lambda row: row.get("requested_at") or "")
     for row in waiting:
         tasks = ", ".join(titles.get(task, task)
                           for task in (row.get("tasks") or []))
-        lines.append(f"  waiting: {row.get('branch')} -> "
+        lines.append(f"  waiting: {row.get('front') or '(no front)'}: "
+                     f"{row.get('branch')} -> "
                      f"{row.get('target')}, lands {tasks} "
                      f"(requested {_since(row.get('requested_at'), now)} "
                      f"ago)")
-    if landed:
-        landed.sort(key=lambda row: row.get("landed_at") or "")
-        last = landed[-1]
-        lines.append(f"  last landed: {last.get('branch')} -> "
-                     f"{last.get('target')} "
-                     f"({_since(last.get('landed_at'), now)} ago)")
+    landed.sort(key=lambda row: row.get("landed_at") or "")
+    for row in landed:
+        lines.append(f"  landed: {row.get('branch')} -> "
+                     f"{row.get('target')} at {row.get('head') or '?'} "
+                     f"({_since(row.get('landed_at'), now)} ago)")
+    failed.sort(key=lambda row: row.get("failed_at") or "")
+    for row in failed:
+        lines.append(f"  failed: {row.get('branch')} -> "
+                     f"{row.get('target')}: "
+                     f"{row.get('fail_reason') or '(no reason recorded)'} "
+                     f"({_since(row.get('failed_at'), now)} ago)")
     return lines
 
 

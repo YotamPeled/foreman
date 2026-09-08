@@ -18,7 +18,7 @@ from __future__ import annotations
 import argparse
 
 from . import caller, cli, entities, paths, store
-from .caller import OWNER, SUPERVISOR, Refusal
+from .caller import MERGE_DESK, OWNER, SUPERVISOR, Refusal
 
 CONFIRMED = "CONFIRMED"
 PLAUSIBLE = "PLAUSIBLE"
@@ -385,11 +385,37 @@ def task_reset_main(task_ref: str, reason: str | None = None) -> int:
     return 0
 
 
+def _front_merge_mode(front: str | None) -> str:
+    """How this front's built tasks land: "self" or the merge desk.
+
+    Foreman's own fronts land themselves, by owner ruling; every other
+    front lands through a merge request the desk consumes. Unknown fronts
+    read as the desk's, which only matters beside the unknown-task refusal
+    already on the violations.
+    """
+    if not front:
+        return ""
+    try:
+        from . import fronts as _fronts
+    except ImportError:  # pragma: no cover - the module is always present
+        return ""
+    record = _fronts.read_front_record(front)
+    return (record or {}).get("merge") or ""
+
+
 def task_landed_main(task_ref: str, head: str | None = None) -> int:
     verb = "task landed"
     me, violations = caller.resolve(verb)
     front, record = _resolve_task(task_ref, violations)
-    _check(me, front, verb, violations)
+    if front is not None and _front_merge_mode(front) != "self":
+        if me is not None and me.role == SUPERVISOR:
+            violations.append(
+                f"front '{front}' lands through the merge desk "
+                f"(request a merge instead of calling 'task landed')")
+        elif me is not None and me.role not in (OWNER, MERGE_DESK):
+            violations.append(f"role '{me.role}' may not call '{verb}'")
+    else:
+        _check(me, front, verb, violations)
     sha = (head or "").strip()
     if not sha:
         violations.append("field '--head' is required for 'task landed'")
