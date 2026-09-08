@@ -84,7 +84,7 @@ Local (this machine):
 - `/usr/share/omarchy/shell/services/PluginRegistry.qml`
 - `/usr/share/omarchy/shell/services/BarWidgetRegistry.qml`
 - `/usr/share/omarchy/config/omarchy/shell.json`
-- `/home/yotam/.config/omarchy/shell.json`
+- `~/.config/omarchy/shell.json`
 - `/usr/share/omarchy/config/omarchy/extensions/omarchy-menu.jsonc`
 - `/usr/share/omarchy/shell/Commons/Style.qml`
 - `/usr/share/omarchy/shell/Commons/Color.qml`
@@ -95,7 +95,7 @@ Local (this machine):
 - `/usr/share/omarchy/shell/plugins/agents/manifest.json`, `agents/Panel.qml`
 - `/usr/share/omarchy/shell/plugins/notifications/Service.qml`, `notifications/components/NotificationCard.qml`
 - `/usr/share/omarchy/bin/omarchy-notification-send`, `bin/omarchy-notification-wait`
-- `/usr/share/omarchy/config/hypr/bindings.lua`, `/home/yotam/.config/hypr/bindings.lua`
+- `/usr/share/omarchy/config/hypr/bindings.lua`, `~/.config/hypr/bindings.lua`
 - `/usr/share/omarchy/shell/Ui/PopupCard.qml`, `PanelHero.qml`, `PanelSectionHeader.qml`, `PanelSeparator.qml`, `ButtonGroup.qml`, `WidgetButton.qml`, `ConfirmDialog.qml`, `Dropdown.qml`, `BarIndicator.qml`
 - `/mnt/ssd/projects/omarchy-agent-workspaces/manifest.json`, `Workspaces.qml`, `bin/agent-ws`
 

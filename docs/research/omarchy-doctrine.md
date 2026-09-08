@@ -75,7 +75,7 @@ There is **no `omarchy doctor`**. Health is a set of narrow verbs with exit code
 | package.path state → config → package | a worker type resolves `~/.config/foreman/workers/<id>` over `/usr/share/foreman/default/workers/<id>` |
 | `shell.json` replaces defaults wholesale, three-deep fallback | `foreman.toml`: a valid user file with `version = 1` replaces the packaged one entirely; bad parse → packaged → compiled-in literal. No merge, so a broken config never yields a half-configured swarm. |
 | `refresh config` (backup + diff) | `foreman refresh config <p>`, same `.bak.<epoch>` + diff |
-| `plugin clone` + IPC re-routing | `foreman worker clone muse` → `yotam.muse`; running jobs' references re-route to the clone; removing it falls back |
+| `plugin clone` + IPC re-routing | `foreman worker clone muse` → `local.muse`; running jobs' references re-route to the clone; removing it falls back |
 
 ### Mutation surface — the `foreman <verb>` set
 
