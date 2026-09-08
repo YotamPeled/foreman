@@ -215,6 +215,14 @@ def _header(roster: dict, observed: dict | None, now: datetime) -> str:
         tick = f"collector {_since(observed.get('at'), now)} ago"
     else:
         tick = "collector never ticked"
+    try:
+        stale = any(record.get("kind") == "collector stale"
+                    for record in _open_anomalies(
+                        store.read_ledger(paths.anomalies_path())))
+    except OSError:
+        stale = False
+    if stale:
+        tick += " \u00b7 collector stale \u2014 foreman collector restart"
     return (f"Foreman status \u2014 {registered} sessions registered, "
             f"{seen} observed \u00b7 {frozen} \u00b7 {tick}")
 

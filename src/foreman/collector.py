@@ -4,9 +4,10 @@ One tick, every two seconds: read the process table, ask each live
 session's pool adapter for cpu seconds and finish marker, read each
 worktree mtime, write the observed fields back onto the roster snapshot,
 and recompute ``observed.json`` (docs/DESIGN.md section 7, only the
-numbers v0 has a source for). Then the six anomalies of this version
+numbers v0 has a source for). Then the seven anomalies of this version
 (section 10): supervisor silent, job stalled, job timeout (kill),
-job tail, intruder, unregistered writer. Dead supervisors are flagged
+job tail, intruder, unregistered writer, collector stale. Dead
+supervisors are flagged
 for a person to relaunch from the checkpoint; the collector never
 relaunches by itself.
 
@@ -24,6 +25,7 @@ import argparse
 import fcntl
 import os
 import shutil
+import subprocess
 import sys
 import time
 import tomllib
@@ -59,7 +61,17 @@ REASSERT_KINDS = (
     "job timeout",
     "job tail",
     "intruder",
+    "collector stale",
 )
+
+#: Opened when the checkout moved under a running collector: the screen it
+#: writes can be silently wrong, which weighs the same as a silent
+#: supervisor. The subject is the collector itself.
+COLLECTOR_STALE_KIND = "collector stale"
+COLLECTOR_SUBJECT = "collector"
+
+#: The systemd user unit the collector runs as where one is installed.
+COLLECTOR_UNIT = "foreman-collector.service"
 
 JOB_LEDGER_NAMES = ("tasks.jsonl", "jobs.jsonl", "evidence.jsonl",
                     "findings.jsonl", "measurements.jsonl")
@@ -220,6 +232,100 @@ def _worktree_mtime(worktree: str | None) -> float | None:
     except OSError:
         pass
     return newest
+
+
+def _package_dir() -> Path:
+    """The directory holding this package's source files."""
+    return Path(__file__).resolve().parent
+
+
+def _checkout_root() -> Path:
+    """The checkout this module was imported from (``src/`` layout)."""
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _git_head(checkout: Path | None = None) -> str | None:
+    """The checkout's git head, or None where there is none to record.
+
+    A missing ``git``, a directory that is not a checkout and an installed
+    wheel all degrade to None, never to an error: there is no head for the
+    collector to be stale against.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(checkout or _checkout_root()),
+             "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, ValueError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def _source_mtime(package: Path | None = None) -> float | None:
+    """Newest mtime across the package's source files, None if unreadable."""
+    newest: float | None = None
+    try:
+        for path in (package or _package_dir()).rglob("*.py"):
+            try:
+                moment = path.stat().st_mtime
+            except OSError:
+                continue
+            if newest is None or moment > newest:
+                newest = moment
+    except OSError:
+        return None
+    return newest
+
+
+def _check_collector_staleness(cstate: dict, now_iso: str,
+                               note_open, asserted: set) -> None:
+    """Open ``collector stale`` when the checkout moved under this process.
+
+    The record in collector.json is what this process started with: a fresh
+    collector baselines it and never flags, while a running one flags when
+    the head moved or a source file is newer than the recorded mtime. A
+    stale tick keeps the old record so the line stays open until a restart
+    re-records; a fresh tick adopts the current values.
+    """
+    recorded_head = cstate.get("code_head")
+    recorded_mtime = cstate.get("code_mtime")
+    current_head = _git_head()
+    current_mtime = _source_mtime()
+    head_stale = (
+        isinstance(recorded_head, str) and bool(recorded_head)
+        and isinstance(current_head, str) and bool(current_head)
+        and current_head != recorded_head)
+    mtime_stale = (
+        isinstance(recorded_mtime, (int, float))
+        and isinstance(current_mtime, (int, float))
+        and current_mtime > recorded_mtime)
+    if head_stale or mtime_stale:
+        note_open(
+            COLLECTOR_STALE_KIND, COLLECTOR_SUBJECT,
+            f"collector stale since {now_iso} — foreman collector restart",
+            asserted)
+        return
+    if "code_head" not in cstate or current_head is not None:
+        cstate["code_head"] = current_head
+    if "code_mtime" not in cstate or current_mtime is not None:
+        cstate["code_mtime"] = current_mtime
+
+
+def record_startup_version() -> None:
+    """Record the checkout this process started from.
+
+    The daemon calls this once at startup, never on a tick: a restarted
+    collector therefore starts fresh by construction, and the tick's resolve
+    pass closes the old ``collector stale`` line with nothing to close by
+    hand. Reading the head costs about a millisecond and the source scan
+    far less, so neither needs a cache.
+    """
+    state = _load_state()
+    state["code_head"] = _git_head()
+    state["code_mtime"] = _source_mtime()
+    store.write_snapshot(paths.collector_path(), state)
 
 
 def _load_state() -> dict:
@@ -451,6 +557,7 @@ def _tick_inner(moment: datetime, now_iso: str,
             open_now[(kind, subject)] = entry
 
     asserted: set[tuple[str, str]] = set()
+    _check_collector_staleness(cstate, now_iso, note_open, asserted)
     roster_updates: dict[str, dict] = {}
     session_view: dict[str, dict] = {}
     alive_count = 0
@@ -1001,6 +1108,52 @@ def render_unit() -> str:
             .replace("@CONFIG_DIR@", str(paths.config_dir())))
 
 
+def _service_active() -> bool:
+    """True when the collector runs as an active user service."""
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--user", "is-active", "--quiet", COLLECTOR_UNIT],
+            capture_output=True, timeout=10)
+    except (OSError, ValueError):
+        return False
+    return proc.returncode == 0
+
+
+def _service_restart() -> int:
+    """Restart the collector user service; never raises on a missing setup."""
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--user", "restart", COLLECTOR_UNIT],
+            capture_output=True, text=True, timeout=60)
+    except (OSError, ValueError) as exc:
+        print(f"foreman collector: cannot restart {COLLECTOR_UNIT}: {exc}")
+        return 1
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        print(f"foreman collector: restart failed"
+              f"{f': {detail}' if detail else ''}; run "
+              f"`systemctl --user restart {COLLECTOR_UNIT}` by hand")
+        return proc.returncode
+    return 0
+
+
+def restart_collector() -> int:
+    """Restart the collector where it runs as a user service.
+
+    Where it does not, say plainly what to run instead: the person reading
+    the stale screen is whoever must run it.
+    """
+    if _service_active():
+        if _service_restart() == 0:
+            print(f"collector service {COLLECTOR_UNIT} restarting")
+            return 0
+        return 1
+    print(f"collector is not running as a user service; start it with "
+          f"`systemctl --user start {COLLECTOR_UNIT}`, or run "
+          f"`foreman collector run` in the foreground")
+    return 0
+
+
 def collector_main(action: str) -> int:
     if action == "unit":
         print(render_unit(), end="")
@@ -1008,6 +1161,9 @@ def collector_main(action: str) -> int:
     if action == "once":
         tick()
         return 0
+    if action == "restart":
+        return restart_collector()
+    record_startup_version()
     config = load_config()
     while True:
         try:
@@ -1024,9 +1180,9 @@ def collector_main(action: str) -> int:
 
 
 def add_collector_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("action", choices=("run", "once", "unit"),
-                        help="run the daemon, run one tick, or print the "
-                             "systemd user unit")
+    parser.add_argument("action", choices=("run", "once", "unit", "restart"),
+                        help="run the daemon, run one tick, print the "
+                             "systemd user unit, or restart the daemon")
 
 
 @subcommand("collector", help="Observe the swarm, flag anomalies.")
@@ -1034,7 +1190,10 @@ def _collector_entry(args: argparse.Namespace) -> int:
     from . import caller as _caller
 
     me, violations = _caller.resolve("collector")
-    _caller.check_role(me, "collector", violations=violations)
+    if args.action != "restart":
+        _caller.check_role(me, "collector", violations=violations)
+    # Restart is the owner's verb, and any caller with a role may call it
+    # too: the person who notices the stale screen is whoever reads it.
     if violations:
         from .caller import Refusal as _Refusal
         return _Refusal(violations).report()
