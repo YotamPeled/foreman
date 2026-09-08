@@ -391,7 +391,7 @@ worktrees vs jobs, slot ledger vs process table, config vs schema.
 | header | sessions registered/observed, frozen, collector age | roster.json, `frozen`, observed.json |
 | Needs you | question · recommendation · kind · age · approve/decline/answer | inbox.jsonl |
 | Problems | one sentence per anomaly · action | anomalies.jsonl |
-| Working | per front: name · supervisor · landed/built/total · rate · left · `doing now` (age) | observed.json |
+| Working | per front: what it is (want, one line) · where it stands (landed/built/total, `doing now` with age) · **remaining** (tasks not landed, by title) · **estimate** (projected finish with its basis: rate over N hours) · blocked on the owner (open inbox items from this front) | observed.json, tasks, inbox |
 | | per task: title · state · units · jobs (model, worktree, elapsed/timeout) · after | tasks.jsonl, jobs.jsonl |
 | | monitors: question · value/of · trend · measured N ago | measurements.jsonl |
 | Job queue | per front, in the supervisor's order: job, role it waits for, waited | jobs.jsonl, slots.jsonl |
@@ -399,7 +399,9 @@ worktrees vs jobs, slot ledger vs process table, config vs schema.
 | Merge queue | merging, waiting, last landed with target and review | merges.jsonl |
 | Capacity | per pool: held/total · meter · avg/p90 · waiting | observed.json |
 Same rendering in `foreman status` (text) and the Quickshell panel (`Super+M`). Every key on the panel
-maps to a CLI verb.
+maps to a CLI verb. `foreman status` ends with an **Overall** line: fronts done / active / queued, next
+milestone across fronts, oldest thing waiting on the owner. Remaining and estimate are required per
+front, never omitted (the owner had to ask for them once; that is the reason).
 
 ---
 
