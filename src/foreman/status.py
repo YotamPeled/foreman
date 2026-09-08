@@ -123,6 +123,39 @@ def _jobs(name: str) -> list[dict]:
         return []
 
 
+def _front_record(name: str) -> dict | None:
+    """The folded front line, or None for a front that predates `front add`.
+
+    A front with no record renders exactly as it always has: the caller adds
+    nothing, so the v0 golden file holds byte for byte.
+    """
+    try:
+        folded = _fold_by_id(store.read_ledger(paths.front_record_path(name)))
+    except OSError:
+        return None
+    return folded[-1] if folded else None
+
+
+def _slots_held() -> dict[tuple[str, str], int]:
+    """Open slot grants per (front, role), folded last-wins like every reader.
+
+    A grant counts while its `released_at` is null; a missing slot ledger
+    holds nothing.
+    """
+    try:
+        records = store.read_ledger(paths.slots_path())
+    except OSError:
+        return {}
+    held: dict[tuple[str, str], int] = {}
+    for grant in _fold_by_id(records):
+        front, role = grant.get("front"), grant.get("role")
+        if grant.get("released_at") is None and \
+                isinstance(front, str) and front and \
+                isinstance(role, str) and role:
+            held[(front, role)] = held.get((front, role), 0) + 1
+    return held
+
+
 def _merges() -> list[dict] | None:
     """None when the ledger was never written; [] when written but empty."""
     try:
@@ -324,6 +357,18 @@ def _working(roster: dict, observed: dict | None, now: datetime,
             tail = f" \u00b7 doing now: {doing}" if doing else ""
             lines.append(f"  {name} \u2014 supervisor attached "
                          f"\u00b7 {progress}{tail}")
+        front_record = _front_record(name)
+        if front_record is not None:
+            done_when = front_record.get("done_when") or ""
+            if isinstance(done_when, str) and done_when.strip():
+                lines.append(f"    {done_when.strip()}")
+            allocation = front_record.get("allocation") or {}
+            if isinstance(allocation, dict) and allocation:
+                open_grants = _slots_held()
+                parts = [f"{role} {open_grants.get((name, role), 0)}/"
+                         f"{allocation[role]}"
+                         for role in sorted(allocation)]
+                lines.append(f"    allocation: {', '.join(parts)}")
         for task in tasks:
             lines.append(f"    {_task_line(task, titles)}")
             for job in jobs:
