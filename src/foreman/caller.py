@@ -64,6 +64,15 @@ def read_roster() -> dict:
 
 
 def _record_unregistered_writer(session_id: str, verb: str) -> None:
+    """Record one open anomaly per unknown session, not one per refusal."""
+    try:
+        for line in store.read_ledger(paths.anomalies_path()):
+            if line.get("kind") == "unregistered writer" and \
+                    line.get("subject") == session_id and \
+                    line.get("resolved_at") is None:
+                return
+    except OSError:
+        pass
     anomaly = entities.Anomaly(
         kind="unregistered writer",
         subject=session_id,

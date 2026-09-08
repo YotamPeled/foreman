@@ -24,7 +24,7 @@ WHAT: an Omarchy shell plugin directory (manifest with kinds panel + bar-widget)
 `omarchy-shell shell toggle foreman`, FileView watchers on observed.json and the ledgers with a 2 s fallback
 poll, a QML model layer exposing §13 blocks; theme from the Color/Style singletons.
 INPUTS: docs/research/omarchy-shell-surfaces.md; /mnt/ssd/projects/omarchy-agent-workspaces for conventions;
-a fixture state directory from the runtime component.
+a fixture state directory from the runtime front.
 OUTPUTS: the plugin loads, toggles, and shows raw block counts from the fixture.
 OUT OF SCOPE: layout, keys.
 """
@@ -35,7 +35,7 @@ after   = []
 [[task]]
 title   = "blocks in the v0 layout"
 scope   = """
-WHAT: render Needs you, Problems, Working (component cards with tasks, jobs, monitors), Job queue, Component
+WHAT: render Needs you, Problems, Working (front cards with tasks, jobs, monitors), Job queue, Front
 queue, Merge queue, Capacity exactly as docs/mock/v0-tree.html, from the model layer.
 INPUTS: the mock; §13.
 OUTPUTS: pixel-comparable rendering of the fixture; phone-width not required.

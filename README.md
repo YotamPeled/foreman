@@ -25,10 +25,44 @@ could launch anything, and a wedged agent looked exactly like a working one.
 ## What lives here
 
 - `docs/DESIGN.md` — the object model, the roles, the report-back contract, the seed rulebook, the page.
+- `src/foreman/` — version zero: the launcher, the collector, the rulings ledger, the inbox and `foreman status`.
+- `packaging/foreman-collector.service` — the collector as a systemd user service.
+
+## Running version zero
+
+Version zero is Python 3.12 and the standard library, nothing else. Install it however you keep tools;
+from a checkout, `pip install -e .` puts `foreman` on your path.
+
+Two directories hold everything. State lives in `~/.local/state/foreman` and configuration in
+`~/.config/foreman`; set `FOREMAN_STATE` and `FOREMAN_CONFIG` to put them elsewhere, which is how you try
+this out without touching your real ones.
+
+Start a worker, watch it, read the screen:
+
+```
+foreman launch muse muse /path/to/spec.md --front <name> --task "<title>" \
+    --repo /path/to/repo --timeout 20m
+foreman collector run          # or `once` for a single tick
+foreman status
+```
+
+`launch` mints the session, builds its worktree and a log that is never reused, writes the job file the
+worker reads and the role prompt it works under, starts the process, and records the job. `collector`
+observes every two seconds and writes what it sees; it flags a silent supervisor, a stalled job, a job
+past its timeout (which it kills), a job whose work is done but whose processes linger, an unclaimed
+vendor process inside the swarm's own directories, and a ledger line written by a session nobody minted.
+`status` prints one screen answering, in order, what needs you, what is wrong, what is working and what
+capacity is left; `--fixture <dir>` renders any state directory, which is how the golden test reads it.
+
+Add `--window` to a launch you want to watch in a terminal. Without it a worker takes no desktop
+workspace. `foreman rule`, `foreman ask` and `foreman answer` keep the rulings and the inbox; an answer
+becomes a ruling in the same call. A verb called with a session id the roster does not know is refused,
+and the attempt is recorded where the collector can see it.
 
 ## Status
 
-Design stage. Nothing runs yet.
+Version zero runs. A real worker has been launched by the launcher, observed to completion by the
+collector, and read off `foreman status`.
 
 ## License
 

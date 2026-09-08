@@ -10,14 +10,14 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-COMPONENT_STATES = ("queued", "active", "done", "halted", "frozen")
+FRONT_STATES = ("queued", "active", "done", "halted", "frozen")
 TASK_STATES = ("waiting", "ready", "active", "built", "landed")
 JOB_STATES = ("planned", "queued", "running", "returned", "verified", "failed", "killed")
 JOB_KINDS = ("implement", "review", "merge", "research", "verify")
 JOB_ROLES = ("opus", "muse", "astra", "grok")
 MERGE_STATES = ("requested", "merging", "landed", "failed")
 SESSION_STATES = ("running", "exited", "stalled", "killed")
-RULING_SCOPES = ("swarm", "component")
+RULING_SCOPES = ("swarm", "front")
 RULING_SOURCES = ("owner", "foreman", "supervisor")
 EVIDENCE_STATUSES = ("CONFIRMED", "PLAUSIBLE")
 INBOX_KINDS = ("money", "irreversible", "scope", "error")
@@ -46,7 +46,7 @@ class Entity:
 
 
 @dataclass(frozen=True)
-class Component(Entity):
+class Front(Entity):
     id: str | None = None
     name: str = ""
     order: int = 0
@@ -65,7 +65,7 @@ class Component(Entity):
 @dataclass(frozen=True)
 class Task(Entity):
     id: str | None = None
-    component: str | None = None
+    front: str | None = None
     title: str = ""
     scope: str = ""
     verify: str = ""
@@ -123,10 +123,11 @@ class Session(Entity):
     role: str = ""
     pool: str = ""
     model: str = ""
-    component: str | None = None
+    front: str | None = None
     job: str | None = None
     pid: int | None = None
     pgid: int | None = None
+    pid_starttime: int | None = None
     worktree: str = ""
     log: str = ""
     timeout: str = ""
@@ -153,7 +154,7 @@ class Pool(Entity):
 
 @dataclass(frozen=True)
 class Allocation(Entity):
-    component: str = ""
+    front: str = ""
     role: str = ""
     count: int = 0
 
@@ -161,7 +162,7 @@ class Allocation(Entity):
 @dataclass(frozen=True)
 class SlotGrant(Entity):
     pool: str = ""
-    component: str = ""
+    front: str = ""
     role: str = ""
     job: str | None = None
     session: str | None = None

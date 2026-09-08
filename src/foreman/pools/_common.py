@@ -5,7 +5,7 @@ leader writes its own pid first, then runs the vendor CLI with the finish
 marker ``### finished rc=$?`` inside the redirected stream (a marker echoed
 after the pipe never reaches the log), tee'd to the session log::
 
-    setsid bash -c 'echo $$ > <pid file>; { <vendor ...>; echo "### finished rc=$?"; } 2>&1 | tee <log>'
+    setsid --wait bash -c 'echo $$ > <pid file>; { <vendor ...>; echo "### finished rc=$?"; } 2>&1 | tee <log>'
 
 ``observe`` recognises completion only as a line of its own reading
 ``### finished rc=<n>``: a spec quoting the marker, or prose mentioning it,
@@ -82,29 +82,67 @@ def wrap_inner(vendor_argv: list[str], *, pid_path: Path | str,
         "{ " + vendor + '; echo "### finished rc=$?"; '
         "} 2>&1 | tee " + shlex.quote(str(log_path))
     )
-    return "setsid bash -c " + shlex.quote(worker)
+    # setsid --wait, never plain setsid: the headless spawn is a
+    # transient systemd unit with --collect, and plain setsid forks and
+    # lets its parent exit at once, so systemd sees the unit's main
+    # process finish and tears the cgroup down with the worker inside it.
+    # Proven 2026-09-08: the pid file was never written and the job never
+    # ran; with --wait the same command runs to completion.
+    return "setsid --wait bash -c " + shlex.quote(worker)
 
 
 def wrap_outer(session_id: str | None, inner: str, *,
-               window: bool = False) -> list[str]:
+               window: bool = False,
+               script_path: Path | str | None = None) -> list[str]:
     """Detached spawn: headless, unless this launch asked for a window.
 
     Owner ruling: swarm sessions do not take the owner's desktop
     workspaces. A window is for watching one run and is asked for per
     launch; a configured window launcher on its own never opens one.
+
+    The worker's shell is handed over as a script file, never as text on
+    the command line, because ``systemd-run`` builds a systemd command
+    line, where ``$$`` is the escape for a literal dollar and ``$WORD``
+    is a unit variable. Proven 2026-09-08: passed as text, the worker
+    wrote the two characters ``$`` and a newline into its pid file
+    instead of its pid, and the launcher declared a launch failed while
+    the job it had started ran to completion unobserved. A file has no
+    such syntax.
     """
+    run = ["bash", str(script_path)] if script_path else ["bash", "-c", inner]
     launcher = window_launcher() if window else None
     if launcher:
-        return [launcher, f"foreman-{session_id}", "bash", "-c", inner]
+        return [launcher, f"foreman-{session_id}", *run]
     return [
         "systemd-run",
         "--user",
         "--collect",
         f"--unit=foreman-{session_id}",
-        "bash",
-        "-c",
-        inner,
+        *run,
     ]
+
+
+def printable_command(argv: list[str], inner: str) -> str:
+    """What a dry run shows: how it is spawned, and what the worker runs.
+
+    The spawn hands the worker over as a script file, so the argv alone
+    would hide the vendor command; both lines are printed.
+    """
+    return (" ".join(shlex.quote(part) for part in argv)
+            + "\n  worker script: " + inner)
+
+
+def write_worker_script(path: Path | str, inner: str) -> Path:
+    """Put the worker's shell on disk, where no other syntax touches it.
+
+    Called only when a launch really starts; a dry run prints the same
+    command and writes nothing.
+    """
+    script = Path(path)
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("#!/bin/bash\n" + inner + "\n", encoding="utf-8")
+    script.chmod(0o700)
+    return script
 
 
 def spawn_and_wait(argv: list[str], *, pid_path: Path,
@@ -132,23 +170,19 @@ def spawn_and_wait(argv: list[str], *, pid_path: Path,
 
 
 def cpu_seconds(pid: int | None) -> float:
-    """CPU seconds of the wrapping shell, not of the job.
+    """CPU seconds over the whole process tree below the recorded pid.
 
-    The recorded pid is the wrapper started by the launcher, which does
-    nothing but wait on its pipeline; its own utime/stime never include
-    the seconds the vendor child burns (those are cutime/cstime, unread
-    here). The pid still identifies the job's process group for a later
-    kill, which is what it is recorded for.
+    The recorded pid is the wrapper shell started by the launcher, which
+    does nothing but wait on its pipeline; its own utime and stime stay
+    near zero while the vendor child burns seconds. Reading that pid
+    alone makes every healthy job look idle and fires the stall
+    detector on live work, so the tree below it is summed instead. The
+    pid still identifies the job's process group for a later kill, which
+    is what it is recorded for.
     """
-    if pid is None:
-        return 0.0
-    try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
-            parts = handle.read().rsplit(")", 1)[1].split()
-        ticks = float(parts[11]) + float(parts[12])
-        return ticks / os.sysconf(os.sysconf_names["SC_CLK_TCK"])
-    except (OSError, ValueError, IndexError, KeyError):
-        return 0.0
+    from .. import procs
+
+    return procs.tree_cpu_seconds(pid)
 
 
 def observe_session(session: Any) -> dict:

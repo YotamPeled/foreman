@@ -117,7 +117,7 @@ def test_launch_records_session_worktree_log_and_roster(env, fake_pool, capsys):
     worktree = str(env / "wt-one")
 
     rc = launch(["muse", "fake", spec, "--repo", str(repo),
-                 "--worktree", worktree, "--component", "corpus",
+                 "--worktree", worktree, "--front", "corpus",
                  "--task", "second reads", "--job", "job-1",
                  "--units", "2-4", "--scope", "WHAT: x\nINPUTS: y\n"])
     assert rc == 0
@@ -138,7 +138,7 @@ def test_launch_records_session_worktree_log_and_roster(env, fake_pool, capsys):
     role_file = Path(worktree) / "FOREMAN-ROLE.md"
     job_text = job_file.read_text(encoding="utf-8")
     role_text = role_file.read_text(encoding="utf-8")
-    assert '# Job job-1 \u00b7 implement \u00b7 task "second reads" \u00b7 component corpus' in job_text
+    assert '# Job job-1 \u00b7 implement \u00b7 task "second reads" \u00b7 front corpus' in job_text
     assert "units: 2-4" in job_text
     assert SPEC_OK in job_text
     assert "WHAT: x\nINPUTS: y\n" in job_text
@@ -167,7 +167,7 @@ def test_launch_records_session_worktree_log_and_roster(env, fake_pool, capsys):
     assert record["role"] == "muse"
     assert record["pool"] == "fake"
     assert record["model"] == "fake-test-model"
-    assert record["component"] == "corpus"
+    assert record["front"] == "corpus"
     assert record["job"] == "job-1"
     assert record["state"] == "running"
     assert isinstance(record["pid"], int)
@@ -445,9 +445,9 @@ def test_muse_detach_uses_the_window_launcher_only_when_asked(env, monkeypatch):
     ctx = make_ctx(env, window=True)
     monkeypatch.setenv("FOREMAN_WINDOW_LAUNCHER", "test-launcher")
     argv = muse_pool.outer_argv(ctx)
-    assert argv[:4] == ["test-launcher", f"foreman-{ctx.session.id}",
-                        "bash", "-c"]
-    assert "muse exec" in argv[4]
+    assert argv == ["test-launcher", f"foreman-{ctx.session.id}", "bash",
+                    str(ctx.pid_path.parent / "run.sh")]
+    assert "muse exec" in muse_pool.inner_command(ctx)
 
 
 def test_a_configured_launcher_alone_opens_no_window(env, monkeypatch):
@@ -461,9 +461,12 @@ def test_muse_detach_defaults_to_systemd_run(env, monkeypatch):
     ctx = make_ctx(env)
     monkeypatch.delenv("FOREMAN_WINDOW_LAUNCHER", raising=False)
     argv = muse_pool.outer_argv(ctx)
-    assert argv[:6] == ["systemd-run", "--user", "--collect",
-                        f"--unit=foreman-{ctx.session.id}", "bash", "-c"]
-    assert "muse exec" in argv[6]
+    # The worker is handed over as a script file, never as text on a
+    # systemd command line, where $$ means a literal dollar.
+    assert argv == ["systemd-run", "--user", "--collect",
+                    f"--unit=foreman-{ctx.session.id}", "bash",
+                    str(ctx.pid_path.parent / "run.sh")]
+    assert "muse exec" in muse_pool.inner_command(ctx)
 
 
 def test_muse_detach_reads_config_file(env, monkeypatch):
@@ -600,7 +603,7 @@ def test_launch_records_process_group(env, fake_pool, capsys):
     record = _roster_sessions()[sid]
     assert record["pid"] == os.getpid()
     assert record["pgid"] == record["pid"]
-    assert muse_pool.inner_command(make_ctx(env)).startswith("setsid ")
+    assert muse_pool.inner_command(make_ctx(env)).startswith("setsid --wait ")
 
 
 @pytest.mark.parametrize("name", ["FOREMAN-JOB.md", "FOREMAN-ROLE.md"])
@@ -806,7 +809,7 @@ def test_only_swarm_and_own_rulings_injected(env, fake_pool, capsys):
     worktree = env / "wt-rulings"
     assert launch(["muse", "fake", spec, "--repo", str(repo),
                    "--worktree", str(worktree),
-                   "--component", "corpus"]) == 0
+                   "--front", "corpus"]) == 0
     capsys.readouterr()
     job_text = (worktree / "FOREMAN-JOB.md").read_text(encoding="utf-8")
     assert "swarm rule one" in job_text

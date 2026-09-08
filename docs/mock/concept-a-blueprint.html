@@ -275,7 +275,7 @@ kbd{font:inherit;font-size:11px;color:var(--light_foreground);border:1px solid v
     <span class="brand">foreman<b></b></span>
     <span class="sheet">SWARM SITE PLAN · SHEET 1/1</span>
     <span class="topR">
-      <span><span class="n" id="tComps">6</span> components</span><span class="sep">·</span>
+      <span><span class="n" id="tComps">6</span> fronts</span><span class="sep">·</span>
       <span><span class="n" id="tJobs">7</span> jobs running</span><span class="sep">·</span>
       <span>slots <span class="n" id="tSlots">10/11</span></span><span class="sep">·</span>
       <span>roster <span class="n" id="tRoster">12</span> of <span class="n" id="tSeen">13</span> registered</span>
@@ -332,10 +332,10 @@ kbd{font:inherit;font-size:11px;color:var(--light_foreground);border:1px solid v
 "use strict";
 /* ══════════════════════════════════════════════════════════════════════════
    FOREMAN — CONCEPT A · THE LIVING BLUEPRINT
-   The project is drawn as an isometric site plan. Each component is a plot of
+   The project is drawn as an isometric site plan. Each front is a plot of
    ground; each checklist item is one cell of that plot. A cell is an outline
    while it is planned, a flat filled tile once it is CONFIRMED (built), and a
-   solid extruded block once it is merged (landed). So a component's mass is
+   solid extruded block once it is merged (landed). So a front's mass is
    its landed work: you read progress as built volume, not as a bar.
    Nothing on this page moves that was not caused by an event.
    ══════════════════════════════════════════════════════════════════════════ */
@@ -394,7 +394,7 @@ const COMPS = [
   cx:500, cy:1030, cols:5, rows:4, total:18, built:9, landed:9, vel:0,
   eta:"DISPATCH STOPPED", state:"halt",
   note:"halted · webhook destination ×3 · rule 10",
-  ck:[["landed","the source registry reads from the component ledger"],
+  ck:[["landed","the source registry reads from the front ledger"],
       ["landed","replay is idempotent on a duplicate delivery id"],
       ["open","the webhook destination resolves from config, not code"],
       ["open","the backfill window is bounded and stated"],
@@ -406,7 +406,7 @@ const COMPS = [
   ck:[["landed","every label carries its reader and its moment of reading"],
       ["landed","the second read disagrees on 4% of rows, and says which"],
       ["landed","export matches the ledger schema byte for byte"],
-      ["built","the sampling plan is written on the component, not in chat"],
+      ["built","the sampling plan is written on the front, not in chat"],
       ["built","a row with no evidence cannot be marked CONFIRMED"],
       ["open","drift between the two readers is reported hourly"]]},
 
@@ -422,11 +422,11 @@ const COMPS = [
  {id:"merge-desk", name:"MERGE DESK", sup:"merge", model:"claude opus",
   cx:1620, cy:700, cols:3, rows:3, total:9, built:7, landed:7, vel:1.1,
   eta:"FINISH ~15:15", state:"", note:"queue depth 3",
-  ck:[["landed","one queue for the whole swarm, not one per component"],
+  ck:[["landed","one queue for the whole swarm, not one per front"],
       ["landed","every landing writes one merge-ledger line"],
       ["landed","review rounds per job are bounded at two"],
       ["built","a failed second round returns a finding about the spec"],
-      ["open","branch handoff frees the component immediately"]]}
+      ["open","branch handoff frees the front immediately"]]}
 ];
 const byId = id=>COMPS.find(c=>c.id===id);
 
@@ -512,7 +512,7 @@ COMPS.forEach(c=>{
     .sort((a,b)=>((a%c.cols)+(a/c.cols|0)) - ((b%c.cols)+(b/c.cols|0)));
 });
 
-/* jobs live on the frontier cell of their component */
+/* jobs live on the frontier cell of their front */
 let JID = 0;
 function frontier(c){
   for(let k=0;k<c.cells.length;k++) if(c.cells[k].st<2 && !c.cells[k].dead) return k;
@@ -780,7 +780,7 @@ function drawForeman(t){
   g.strokeStyle=C("accent",.30); g.lineWidth=1;
   g.beginPath(); g.moveTo(x,y+30); g.lineTo(x,y); g.stroke();
 
-  /* six notches around the ring, one per component it holds */
+  /* six notches around the ring, one per front it holds */
   g.strokeStyle=C("accent",.85); g.lineWidth=2;
   g.beginPath(); g.arc(x,y,26,0,6.2832); g.stroke();
   g.strokeStyle=C("accent",.35); g.lineWidth=1;
@@ -990,7 +990,7 @@ function drawTotals(){
   g.fillText("SITE TOTAL", x, 104);
   g.textAlign="right";
   g.fillStyle=C("light_foreground",.6);
-  g.fillText(`${COMPS.length} components · ${live} building · ${blind} stopped`, R, 104);
+  g.fillText(`${COMPS.length} fronts · ${live} building · ${blind} stopped`, R, 104);
   g.textAlign="left";
 
   g.font=FONT(23); g.fillStyle=C("green",1);
@@ -1016,7 +1016,7 @@ function drawTotals(){
 
   g.font=FONT(11); g.fillStyle=C("light_foreground",.6);
   const lt=`${String((last/60|0)).padStart(2,"0")}:${String(last%60).padStart(2,"0")}`;
-  g.fillText(`${vel.toFixed(1)} items/h across the swarm · last component lands ~${lt}`
+  g.fillText(`${vel.toFixed(1)} items/h across the swarm · last front lands ~${lt}`
     + (blind?` · ${blind} with no horizon`:""), x, 174);
 }
 
@@ -1330,7 +1330,7 @@ function evWrite(){
   feed("observed", `${j.w}  +${n} file${n>1?"s":""}  ${j.n}`);
 }
 function evCommit(){
-  /* a component never piles up more than a handful of unmerged confirmations —
+  /* a front never piles up more than a handful of unmerged confirmations —
      the merge desk is the bottleneck, and the supervisor waits for it */
   const live=COMPS.filter(c=>c.state===""&&c.built<c.total&&c.built-c.landed<6);
   if(!live.length) return;
@@ -1485,7 +1485,7 @@ function showAnnot(c){
   const shown=c.ck.length, rest=c.total-shown;
   annot.innerHTML=`<div class="ah"><span class="an">${c.name}</span>
       <span class="am">${c.landed} landed · ${c.built} built · ${c.total} items · ${c.vel.toFixed(1)}/h</span></div>
-    ${rows}${rest>0?`<div class="more">+${rest} more items on the component ledger · ${c.sup} maintains this checklist</div>`:""}`;
+    ${rows}${rest>0?`<div class="more">+${rest} more items on the front ledger · ${c.sup} maintains this checklist</div>`:""}`;
   const px=clamp(c.g.E.x+30, 40, 2560-472);
   const py=clamp(c.g.N.y-40, 76, 1440-360);
   annot.style.left=px+"px"; annot.style.top=py+"px";

@@ -6,7 +6,7 @@ role-scoped tools over the same library, pool plugins with adapters, summoning s
 identities and generate role prompts, a collector daemon that observes and relaunches, and
 `foreman status` printing the panel's text. Everything in docs/DESIGN.md §3–§12 and §14.
 """
-done-when = "Version zero: a real component (the corpus push) runs on the launcher + collector + rulings ledger + inbox + `foreman status`, with every job launched by the launcher, every session on the roster, every anomaly of §10 that occurs detected, and the owner reading status instead of asking. The remaining tasks (MCP, plugin pools, merge, e2e) are admitted only after that."
+done-when = "Version zero: a real front (the corpus push) runs on the launcher + collector + rulings ledger + inbox + `foreman status`, with every job launched by the launcher, every session on the roster, every anomaly of §10 that occurs detected, and the owner reading status instead of asking. The remaining tasks (MCP, plugin pools, merge, e2e) are admitted only after that."
 land-on   = "main"
 reviews   = "on request"
 after     = []
@@ -56,12 +56,12 @@ size    = 1
 after   = ["v0: launcher, collector, rulings, inbox, status"]
 
 [[task]]
-title   = "brief validation and component add"
+title   = "brief validation and front add"
 scope   = """
-WHAT: parse brief.toml (§4.2), validate per §4.3 reporting every violation at once, write the component,
-tasks and allocation to the ledger, enqueue the component.
+WHAT: parse brief.toml (§4.2), validate per §4.3 reporting every violation at once, write the front,
+tasks and allocation to the ledger, enqueue the front.
 INPUTS: §4, the store package.
-OUTPUTS: `foreman component add|list|prefer|close`; a fixture set of valid and invalid briefs with the exact
+OUTPUTS: `foreman front add|list|prefer|close`; a fixture set of valid and invalid briefs with the exact
 refusal text for each invalid one.
 OUT OF SCOPE: admission and launching (next task).
 """
@@ -73,7 +73,7 @@ after   = ["state directory and ledgers"]
 title   = "pools, summoning and identity"
 scope   = """
 WHAT: pool plugin directories (§8) with the five adapter executables and manifest; the launcher: pop a job
-whose role has a free worker in the component's allocation, mint a session id, create worktree and log,
+whose role has a free worker in the front's allocation, mint a session id, create worktree and log,
 generate FOREMAN-JOB.md (§5.2) and FOREMAN-ROLE.md (§12) from templates with rulings and environment
 injected, start the process via the pool's `launch`, record the slot grant; `admit` for supervisors;
 `relaunch` from checkpoint; refusal of unknown session ids and of verbs outside the caller's role.
@@ -83,14 +83,14 @@ OUT OF SCOPE: real vendor adapters (separate task).
 """
 verify  = "python -m pytest tests/launch -q"
 size    = 1
-after   = ["brief validation and component add"]
+after   = ["brief validation and front add"]
 
 [[task]]
 title   = "supervisor, merge and foreman verbs"
 scope   = """
 WHAT: every remaining verb in §12 for supervisor, merge desk and foreman roles: checkpoint, task ready/built,
 job verify/fail, evidence, finding, measure, ask (with ruling-coverage refusal), merge request/take/land/fail,
-component done, answer, route, rule, digest (computed part).
+front done, answer, route, rule, digest (computed part).
 INPUTS: §3, §5.4, §12, §14 flows 2, 3, 6, 7.
 OUTPUTS: the verbs; tests that drive flows 2, 3, 6 and 7 through the CLI alone.
 OUT OF SCOPE: the MCP server (next task), the collector.
@@ -130,7 +130,7 @@ after   = ["pools, summoning and identity"]
 title   = "status and doctor"
 scope   = """
 WHAT: `foreman status` printing the §13 layout from observed.json and ledgers (the same text the panel will
-render); `foreman queues`; `foreman ledger <component>`; `foreman doctor` cross-checking observed against
+render); `foreman queues`; `foreman ledger <front>`; `foreman doctor` cross-checking observed against
 recorded (processes vs roster, worktrees vs jobs, slot ledger vs process table, config vs schema).
 INPUTS: §13, the collector's observed.json.
 OUTPUTS: the verbs; a golden-file test of status output for a fixture state directory.
@@ -159,7 +159,7 @@ after   = ["pools, summoning and identity"]
 [[task]]
 title   = "end-to-end fake swarm"
 scope   = """
-WHAT: one test that stands up a state directory with fake pools, adds two components (one `after` the other,
+WHAT: one test that stands up a state directory with fake pools, adds two fronts (one `after` the other,
 one preferred), runs the collector, and drives all seven flows of §14 through verbs only, asserting ledger
 contents and `foreman status` output at each step.
 INPUTS: everything above.

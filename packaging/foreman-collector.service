@@ -1,0 +1,21 @@
+# Foreman collector daemon, systemd user unit template.
+# Placeholders (@NAME@) are filled in by `foreman collector unit`, which
+# prints this file with the real paths: never put a home directory here,
+# this repository is public.
+# Install: mkdir -p ~/.config/systemd/user && foreman collector unit >
+#   ~/.config/systemd/user/foreman-collector.service, then
+#   systemctl --user daemon-reload && systemctl --user enable --now foreman-collector
+[Unit]
+Description=Foreman collector daemon (observe, flag, relaunch)
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=@FOREMAN_BIN@ collector run
+Environment=FOREMAN_STATE=@STATE_DIR@
+Environment=FOREMAN_CONFIG=@CONFIG_DIR@
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=default.target
