@@ -314,6 +314,8 @@ in the shipped config, and supervisors are not.
 12. Capacity: pools cap the system and are shared first come, first served; a component's allocation is a
     ceiling per role, never a reservation; within a component the supervisor's job queue is a priority
     queue it orders; across components the component queue is ordered by owner preference.
+15. Merge to main only when a component is done: jobs land on the component's branch; one pull request per
+    component at the end. Per-job pull requests to main do not exist.
 14. Every owner-facing line (doing now, a finding's title, an inbox question, a digest sentence) is
     self-contained: named by what it does, no code names, no ids the owner did not introduce. Enforced as
     a warning at write time, not a refusal.
