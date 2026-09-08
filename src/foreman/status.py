@@ -9,10 +9,11 @@ held/total and the swarm counts all come from ``observed.json``. Names,
 questions, details and checkpoints come straight from the ledgers through
 ``paths.py`` — nothing here builds a path or opens a state file by hand.
 
-Two version notes. Monitors (``measurements.jsonl``) and the front
-queue (front admission) have no writer in v0, so those blocks are left
-out entirely rather than printed empty. Every other block with nothing in
-it prints one line saying so, never an empty heading.
+Two version notes. The front queue (front admission) has no writer in
+v0, so that block is left out entirely rather than printed empty. Every
+other block with nothing in it prints one line saying so, never an empty
+heading. Monitors (``measurements.jsonl``) render under each front in
+Working, one line per declared monitor plus the two free ones.
 
 ``foreman status --fixture <dir>`` reads a state directory from that path
 instead of the real one. ``FOREMAN_NOW`` (an ISO timestamp) pins the clock
@@ -327,6 +328,111 @@ def _task_line(task: dict, titles: dict[str, str]) -> str:
     return head
 
 
+def _measurements(name: str) -> list[dict]:
+    try:
+        return store.read_ledger(paths.front_measurements_path(name))
+    except OSError:
+        return []
+
+
+def _declared_monitors(front_record: dict | None) -> list[dict]:
+    if not isinstance(front_record, dict):
+        return []
+    declared = front_record.get("monitors")
+    if not isinstance(declared, list):
+        return []
+    return [entry for entry in declared if isinstance(entry, dict)]
+
+
+def _doing_monitor_line(name: str, roster: dict, sessions_view: dict,
+                        now: datetime) -> str:
+    """The free `doing now` monitor, in the declared-monitor shape."""
+    held = _supervisor_for(name, roster)
+    if held is None:
+        return "    doing now \u2014 no supervisor"
+    sid, record = held
+    checkpoint = _checkpoint(sid)
+    doing = (checkpoint or {}).get("doing")
+    if not (isinstance(doing, str) and doing.strip()):
+        return "    doing now \u2014 no checkpoint yet"
+    observed_age = sessions_view.get(sid, {}).get("seconds_since_declared")
+    if isinstance(observed_age, (int, float)):
+        age = _age(observed_age)
+    else:
+        age = _since(record.get("last_declared_at"), now)
+    return f"    doing now \u2014 {doing.strip()} \u00b7 {age} ago"
+
+
+def _progress_monitor_line(tasks: list[dict]) -> str:
+    """The free progress monitor, in the declared-monitor shape."""
+    if not tasks:
+        return "    progress \u2014 no tasks yet"
+    landed = sum(1 for task in tasks if task.get("state") == "landed")
+    return f"    progress \u2014 {landed}/{len(tasks)} tasks"
+
+
+def _monitor_lines(name: str, front_record: dict | None,
+                   tasks: list[dict], roster: dict,
+                   sessions_view: dict, now: datetime) -> list[str]:
+    """Declared monitors plus the two free ones, one line each.
+
+    A declared line reads ``<question> \u2014 <value>/<of> \u00b7 <age> ago
+    \u00b7 <trend>``, with the trailing trend omitted when only one
+    measurement exists and the denominator omitted when none is known.
+    The free monitors render in the same shape from what the runtime
+    already knows, so a front with no declared monitors still shows two
+    lines.
+    """
+    from . import monitors as _monitors
+
+    lines = []
+    ledger = _measurements(name)
+    for decl in _declared_monitors(front_record):
+        question = decl.get("question") or decl.get("measure") or "?"
+        question = str(question).strip() or "?"
+        matched = _monitors.matching_measurements(ledger, decl)
+        if not matched:
+            lines.append(f"    {question} \u2014 no measurements yet")
+            continue
+        latest = matched[-1]
+        value = latest.get("value")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            lines.append(f"    {question} \u2014 no measurements yet")
+            continue
+        denominator = latest.get("of")
+        if denominator is None:
+            denominator = decl.get("of")
+        if isinstance(denominator, bool) or not isinstance(
+                denominator, (int, float)):
+            denominator = None
+        if denominator is None:
+            reading = _monitors.format_number(value)
+        else:
+            reading = (f"{_monitors.format_number(value)}/"
+                       f"{_monitors.format_number(denominator)}")
+        unit = decl.get("unit")
+        if isinstance(unit, str) and unit.strip():
+            reading += f" {unit.strip()}"
+        age = _since(latest.get("at"), now)
+        previous = matched[-2] if len(matched) > 1 else None
+        prev_value = previous.get("value") if isinstance(
+            previous, dict) else None
+        if isinstance(prev_value, bool) or not isinstance(
+                prev_value, (int, float)):
+            prev_value = None
+        trend = _monitors.trend_of(
+            float(prev_value) if prev_value is not None else None,
+            float(value))
+        if trend:
+            lines.append(f"    {question} \u2014 {reading} "
+                         f"\u00b7 {age} ago \u00b7 {trend}")
+        else:
+            lines.append(f"    {question} \u2014 {reading} \u00b7 {age} ago")
+    lines.append(_doing_monitor_line(name, roster, sessions_view, now))
+    lines.append(_progress_monitor_line(tasks))
+    return lines
+
+
 def _load_fronts() -> tuple[list[tuple[str, list[dict], list[dict]]],
                           dict[str, str], dict[str, str]]:
     """Every front with its folded tasks and jobs, plus the global
@@ -413,6 +519,8 @@ def _working(roster: dict, observed: dict | None, now: datetime,
             lines.append(f"    evidence: {len(evidence)} "
                          f"({confirmed} confirmed) "
                          f"\u00b7 findings: {len(findings)}")
+        lines.extend(_monitor_lines(name, front_record, tasks, roster,
+                                    sessions_view, now))
         for task in tasks:
             lines.append(f"    {_task_line(task, titles)}")
             for job in jobs:
