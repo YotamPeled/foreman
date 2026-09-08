@@ -44,11 +44,14 @@ def main(argv: list[str] | None = None) -> int:
     # built is what makes `python -m foreman.cli <verb>` find the verb at all.
     from . import collector as _collector  # noqa: F401
     from . import config as _config  # noqa: F401
+    from . import doctor as _doctor  # noqa: F401
     from . import fronts as _fronts  # noqa: F401
+    from . import hooks as _hooks  # noqa: F401
     from . import launch as _launch  # noqa: F401
     from . import mcp as _mcp  # noqa: F401
     from . import measure as _measure  # noqa: F401
     from . import merge as _merge  # noqa: F401
+    from . import migrate as _migrate  # noqa: F401
     from . import pool as _pool  # noqa: F401
     from . import progress as _progress  # noqa: F401
     from . import status as _status  # noqa: F401

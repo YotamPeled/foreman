@@ -1,3 +1,5 @@
 # Pool plugin directories travel with the source: each packaged pool's
 # manifest and skill live beside its adapter module.
 recursive-include src/foreman/pools *.toml *.md
+# Migrations travel the same way: standalone scripts, never imports.
+recursive-include src/foreman/migrations *.py

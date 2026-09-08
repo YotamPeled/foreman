@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import argparse
 
-from . import caller, cli, entities, paths, store
+from . import caller, cli, entities, hooks, paths, store
 from .caller import MERGE_DESK, OWNER, SUPERVISOR, Refusal
 
 CONFIRMED = "CONFIRMED"
@@ -248,6 +248,8 @@ def job_verify_main(job_id: str, confirmed: bool,
         # credited a real front's task with a probe job's spec, and nothing
         # on the ledger said which spec had earned it.
         print(f"from spec: {spec}")
+    hooks.fire("on-return", {"job": key, "front": front,
+                             "outcome": "verified"})
     return 0
 
 
@@ -291,6 +293,8 @@ def job_fail_main(job_id: str, finding: str | None = None) -> int:
         session_id=who,
     )
     print(f"{key} failed")
+    hooks.fire("on-return", {"job": key, "front": front,
+                             "outcome": "failed"})
     return 0
 
 
@@ -456,6 +460,10 @@ def task_landed_main(task_ref: str, head: str | None = None) -> int:
     print(f"{record.get('id')} landed {sha}")
     for rid in released:
         print(f"{rid} ready")
+    # Merge land lands through this same gate, one task at a time, so one
+    # landing is one event no matter which verb the operator called.
+    hooks.fire("on-land", {"task": record.get("id"), "front": front,
+                           "head": sha})
     return 0
 
 

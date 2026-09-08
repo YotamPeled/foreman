@@ -52,8 +52,11 @@ def _ensure_verbs() -> None:
     """
     from . import collector as _collector  # noqa: F401
     from . import config as _config  # noqa: F401
+    from . import doctor as _doctor  # noqa: F401
     from . import fronts as _fronts  # noqa: F401
+    from . import hooks as _hooks  # noqa: F401
     from . import launch as _launch  # noqa: F401
+    from . import migrate as _migrate  # noqa: F401
     from . import progress as _progress  # noqa: F401
     from . import status as _status  # noqa: F401
     from . import verbs as _verbs  # noqa: F401
