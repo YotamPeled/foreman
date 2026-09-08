@@ -11,3 +11,4 @@ JobQueueBlock 1.0 JobQueueBlock.qml
 FrontQueueBlock 1.0 FrontQueueBlock.qml
 MergeQueueBlock 1.0 MergeQueueBlock.qml
 CapacityBlock 1.0 CapacityBlock.qml
+WorkingBlock 1.0 WorkingBlock.qml
