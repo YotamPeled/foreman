@@ -531,6 +531,68 @@ def front_close_main(name: str) -> int:
     return 0
 
 
+def front_take_main(name: str) -> int:
+    """Move the calling supervisor's roster entry to another front.
+
+    A supervisor that carries a front to done and is then given the next
+    one had no way to say so: the roster is written by the launcher and by
+    `register`, and neither moves a session. The only way through was to
+    mint a second identity for the same process and leave a silent
+    supervisor behind on a closed front — one process claiming to be two
+    sessions, which is the lie the roster exists to prevent.
+
+    The front it leaves must be done, so this can never quietly abandon a
+    live front, and the front it takes must have no live supervisor of its
+    own, which is the same limit `launch supervisor` enforces.
+    """
+    from . import launch
+
+    verb = "front take"
+    me, violations = caller.resolve(verb)
+    caller.check_role(me, verb, caller.SUPERVISOR, violations=violations)
+    key = (name or "").strip()
+    record = None
+    if not key:
+        violations.append("field 'front' is required")
+    else:
+        record = read_front_record(key)
+        if record is None:
+            violations.append(f"unknown front '{key}'")
+    mine = str((me.session if me is not None else {}).get("front") or "")
+    if me is not None and mine:
+        leaving = read_front_record(mine)
+        if mine == key:
+            violations.append(f"session '{me.session_id}' already "
+                              f"supervises '{key}'")
+        elif leaving is not None and leaving.get("state") != "done":
+            violations.append(
+                f"session '{me.session_id}' supervises '{mine}', which is "
+                f"'{leaving.get('state')}': close it with `foreman front "
+                f"close {mine}` before taking another")
+    if record is not None and me is not None:
+        held = launch.live_supervisors(key, ignore=me.session_id)
+        if held:
+            other = held[0][0]
+            violations.append(
+                f"front '{key}' already has a live supervisor '{other}'; "
+                f"one front has one supervisor")
+    if violations:
+        return Refusal(violations).report()
+    assert me is not None and me.session_id
+    sid = me.session_id
+
+    def move(roster):
+        sessions = (roster or {}).get("sessions")
+        if isinstance(sessions, dict) and sid in sessions:
+            sessions[sid] = dict(sessions[sid], front=key)
+        return roster
+
+    store.update_snapshot(paths.roster_path(), move,
+                          default={"sessions": {}})
+    print(f"{sid} supervises {key}")
+    return 0
+
+
 def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     verbs = sub.add_subparsers(dest="front_verb", required=True)
     add = verbs.add_parser("add", help="Validate a brief and append its front.")
@@ -549,9 +611,12 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     prefer.add_argument("prefer", help="new preference (integer)")
     close = verbs.add_parser("close", help="Mark a front done.")
     close.add_argument("name", help="front name")
+    take = verbs.add_parser(
+        "take", help="Move the calling supervisor to this front.")
+    take.add_argument("name", help="front name")
 
 
-@cli.subcommand("front", help="Add, list, prefer or close a front.")
+@cli.subcommand("front", help="Add, list, prefer, close or take a front.")
 def _front_entry(args: argparse.Namespace) -> int:
     if args.front_verb == "add":
         return front_add_main(args.directory, dry_run=args.dry_run,
@@ -562,6 +627,8 @@ def _front_entry(args: argparse.Namespace) -> int:
         return front_prefer_main(args.name, args.prefer)
     if args.front_verb == "close":
         return front_close_main(args.name)
+    if args.front_verb == "take":
+        return front_take_main(args.name)
     raise AssertionError(f"unknown front verb {args.front_verb!r}")
 
 
