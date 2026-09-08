@@ -282,3 +282,44 @@ def test_new_lines_stay_within_the_readable_width(monkeypatch, capsys,
                                "    ESTIMATE", "    Blocked", "Overall:"))]
     assert len(own) == 5
     assert all(len(line) <= 100 for line in own)
+
+
+def test_the_overall_line_is_never_clipped(monkeypatch, capsys, tmp_path):
+    """The line he reads first keeps its ending.
+
+    Clipping took the tail, and the tail is what needs him: "needs you:
+    nothing need..." says less than nothing. The detail is dropped before
+    the sentence is.
+    """
+    from foreman import status as status_module
+
+    rendered = run_status(monkeypatch, capsys,
+                          ["status", "--fixture", FIXTURE], tmp_path)
+    for line in rendered.splitlines():
+        if line.startswith("Overall:"):
+            assert len(line) <= status_module.LINE_WIDTH
+            assert not line.endswith("...")
+            assert line.endswith(".")
+            return
+    raise AssertionError("no Overall line on the screen")
+
+
+def test_remaining_tasks_are_never_clipped():
+    """A remaining task the owner cannot see is one he does not know is
+    left, so a long list continues on an indented line rather than ending
+    in an ellipsis. Seven real task titles overflow one terminal line.
+    """
+    from foreman import status as status_module
+
+    titles = ["merge desk", "MCP server with role-scoped tools",
+              "pools as plugin directories", "monitors",
+              "doctor, hooks, migrations",
+              "status: required fields and overall line", "the proof"]
+    lines = status_module._wrapped(f"REMAINING ({len(titles)}):", titles)
+    assert len(lines) > 1
+    for line in lines:
+        assert len(line) <= status_module.LINE_WIDTH
+        assert not line.endswith("...")
+    joined = " ".join(line.strip() for line in lines)
+    for title in titles:
+        assert title in joined

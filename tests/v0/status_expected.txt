@@ -38,4 +38,4 @@ Merge queue:
 Capacity:
   grok: 1/1 held
   muse: 1/5 held
-Overall: 2 of 2 fronts moving (0 done), nearest finish about 2d (atlas); needs you: 2 items, olde...
+Overall: 2 of 2 fronts moving (0 done), nearest finish about 2d (atlas); needs you: 2 items.

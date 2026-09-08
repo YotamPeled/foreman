@@ -58,6 +58,28 @@ def _fit(line: str) -> str:
     return line[:LINE_WIDTH - 3] + "..."
 
 
+def _wrapped(label: str, items: list[str], indent: str = "    ") -> list[str]:
+    """``label`` and its items over as many lines as they need.
+
+    A list clipped at the width loses exactly the items at its end, and the
+    remaining tasks are the point of the line. Nothing is dropped: the list
+    continues on an indented line instead.
+    """
+    lines: list[str] = []
+    current = f"{indent}{label}"
+    lead = indent + " " * 4
+    for index, item in enumerate(items):
+        piece = item if index == len(items) - 1 else f"{item},"
+        if len(current) + 1 + len(piece) > LINE_WIDTH and \
+                current.strip() not in (label.strip(),):
+            lines.append(current)
+            current = f"{lead}{piece}"
+        else:
+            current = f"{current} {piece}"
+    lines.append(current)
+    return lines
+
+
 def _count(n: int, word: str) -> str:
     return f"{n} {word}" if n == 1 else f"{n} {word}s"
 
@@ -575,8 +597,10 @@ def _front_tail_lines(name: str, front_record: dict | None,
         lines.append(_fit(f"    REMAINING: none \u2014 all "
                           f"{_count(len(tasks), 'task')} landed"))
     else:
-        lines.append(_fit(f"    REMAINING ({len(left)}): "
-                          f"{', '.join(left)}"))
+        # Never clipped: a remaining task the owner cannot see is a task he
+        # does not know is left.
+        lines.extend(_wrapped(f"REMAINING ({len(left)}):",
+                              [str(title) for title in left]))
     remaining, total, finished, hours = _estimate_for(tasks, jobs, now)
     if not tasks:
         lines.append("    ESTIMATE: no rate yet \u2014 no tasks yet")
@@ -713,7 +737,19 @@ def _overall(loaded: list[tuple[str, list[dict], list[dict]]],
     else:
         owner = (f"{_count(len(inbox), 'item')}, "
                  f"oldest {_since(inbox[0].get('asked_at'), now)}")
-    return _fit(f"Overall: {head}, {finish}; needs you: {owner}.")
+    # The one line he reads first is never clipped. Clipping took the tail,
+    # and the tail is what needs him — "needs you: nothing need..." says
+    # less than nothing. The detail goes before the sentence does.
+    line = f"Overall: {head}, {finish}; needs you: {owner}."
+    if len(line) > LINE_WIDTH and inbox:
+        line = (f"Overall: {head}, {finish}; needs you: "
+                f"{_count(len(inbox), 'item')}.")
+    if len(line) > LINE_WIDTH:
+        line = f"Overall: {head}; needs you: {owner}."
+    if len(line) > LINE_WIDTH:
+        line = f"Overall: {head}; needs you: {_count(len(inbox), 'item')}." \
+            if inbox else f"Overall: {head}; nothing needs you."
+    return line
 
 
 def _job_queue(now: datetime) -> list[str]:
