@@ -27,7 +27,7 @@ could launch anything, and a wedged agent looked exactly like a working one.
 - `docs/DESIGN.md` — the object model, the roles, the report-back contract, the seed rulebook, the page.
 - `src/foreman/` — the runtime: the launcher, the collector, capacity, the progress verbs, the
   ledgers and `foreman status`.
-- `src/foreman/pools/` — one module per pool: how a session becomes a process.
+- `src/foreman/pools/` — one directory per pool: how a session becomes a process.
 - `briefs/` — the briefs fronts are added from.
 - `packaging/foreman-collector.service` — the collector as a systemd user service.
 
@@ -114,13 +114,75 @@ refuses a caller who is not the front's supervisor.
 Reviews run as jobs on the `codex` pool with the `astra` role, and the reviewer's verdict is read from a
 schema-checked file that is never the same path as the model's last message.
 
+## Running version two
+
+Version two is the rest of the runtime: work lands through a merge desk, a supervisor's verbs arrive as
+MCP tools instead of shell commands, pools are directories anyone can add one to, monitors put numbers on
+the screen, and `doctor`, hooks and migrations keep a machine honest between runs.
+
+**The merge desk.** A front's supervisor no longer lands its own work unless its brief says so:
+
+```
+foreman merge request <branch> --front <name> --tasks "<title>" --target main
+foreman launch merge-desk            # summons the desk, one at a time, in a window
+foreman merge take <id>              # first come, first served by request time
+foreman merge land <id>              # rebase onto the target, run the check, push, land the tasks
+foreman merge fail <id> --reason "<why>"
+```
+
+Landing rebases in a worktree the desk opens for the branch and removes afterwards, so it never disturbs
+the checkout anyone else is working in, and it runs the target's check from `[merge] check` in
+`foreman.toml` before it pushes: the desk lands nothing it cannot check. A brief opts into the desk with
+`merge = "desk"`; a front that says nothing lands itself with `task landed`.
+
+**The MCP server.** `foreman mcp` speaks JSON-RPC over stdio and offers each connected session exactly the
+verbs its role may call — read off the same gates the CLI refuses by, so the two can never disagree. A
+summoned supervisor gets `--mcp-config <session>/mcp.json --strict-mcp-config` and its verbs as tools; a
+worker launch carries no server at all and is offered nothing but `foreman version`.
+
+**Pools as directories.** A pool is a directory with a `manifest.toml` and a `SKILL.md`. The four shipped
+ones live in the package; a directory of the same name under `~/.config/foreman/pools/` replaces one
+entirely, and a user copy whose manifest does not parse falls back to the packaged pool with one warning.
+
+```
+foreman pool list                    # name, model, where it came from, its roles
+foreman pool clone <name>            # copy a packaged pool to edit it
+foreman pool add <name> --from <dir>
+foreman pool remove <name>           # a clone falls back to the packaged pool
+```
+
+**Monitors.** A brief declares them; the front's supervisor measures them, with the command behind each
+number:
+
+```
+foreman measure <front> "<monitor>" --value 497 --of 497 --command "<the check>" --output "<what it said>"
+```
+
+They render under the front as `question — value/of · age · trend`, the collector flags one that has not
+been measured in twice its cadence, and an alert expression is parsed, never evaluated.
+
+**Keeping a machine honest.**
+
+```
+foreman doctor                       # every divergence between what is recorded and what is there
+foreman migrate                      # each migration once, markers under the state directory
+```
+
+`doctor` cross-checks the roster against the process table, worktrees against jobs, slot grants against
+running sessions, the configuration against the registered pools, and the collector against the checkout.
+Each divergence prints the command that fixes it, and the exit code makes it a shell condition. Hooks are
+executables you put under `~/.config/foreman/hooks/<event>/`; they receive the event as JSON on stdin, and
+one that fails prints and is stepped over. A migration that cannot repair what it finds prints a notice
+and exits 0, so nothing queued behind it is blocked.
+
 ## Status
 
-Version one runs. On this machine a front was added from its brief, its supervisor was summoned by
-`foreman launch supervisor` and appeared on the roster, a second summon and a launch past both a pool cap
-and a front allocation were refused by name, an Astra review ran through `foreman launch` and reported
-findings that were fixed, and a real Muse worker was carried from launch through `job verify` to
-`task built` with its units counted on `foreman status`.
+Version two runs. On this machine, on an isolated state directory: a fixture front was added with two
+monitors and a merge target, a job ran on a fifth pool added as a directory, its task was verified and
+built, the supervisor's own `task landed` was refused by name, the merge desk took the request and landed
+it — rebase, check, push, task landed with its head — an on-land hook fired with the event on stdin, both
+monitors rendered with their values and ages, `foreman doctor` named four divergences with a fix for each,
+and a migration moved a v1 state directory forward and did nothing on the second run.
 
 ## License
 
