@@ -48,8 +48,12 @@ source. A job requests a pool. The Opus pool is supervisors only and takes no jo
 Project ⊃ Component ⊃ Task ⊃ Job
 ```
 - **Component**: the owner's unit of scope. Order (the plan), a done-when sentence, one supervisor.
-- **Task**: one countable item of the done-when; the unit of progress. Written by the supervisor with a title
-  and how to verify it — no verification, no task.
+- **Task**: one line of the component's checklist; the unit of progress. Written by the supervisor with a
+  title, how to verify it (no verification, no task), a size (how many units it holds, 1 for a single item,
+  N for a batch such as "second-read 600 cases"), and **its own worker pool**: which models may work it, how
+  many slots at once, and the stage order when reads are chained (e.g. "first read: Muse, 6 slots; second
+  read: Grok medium, 2 slots"). Slots are granted per task; the per-model header is the sum of lit slots
+  across tasks, so the quota view and the task view are one truth.
 - **Job**: one dispatch to one worker, serving exactly one task. Kinds: `implement`, `review`, `merge`,
   `research`, `verify`. Carries spec, pool, worktree, timeout, verify command, slot, timestamps, artifact, verdict.
   Reviews are optional: the supervisor dispatches one or two review jobs only when it judges them worthwhile.
@@ -89,7 +93,9 @@ A stalled queue points at exactly one role.
 ### Admission — when a thing is drawn
 A thing appears on the page the moment its ledger line exists with its required fields; the fields are the
 contract. Component: name, order, supervisor, done-when → an empty ring marked planning. Task: title,
-verification → a segment. Job: kind, task, pool, spec, timeout, verify command → in the lane; slot minted →
+verification, size, pool → an arc of the ring sized by its share, filled by its progress, with one socket per
+slot (lit = job running, empty = capacity, none = frozen); jobs orbit their task wearing their model's glyph;
+a chained task shows its stages so units waiting for a second reader are visible. Job: kind, task, pool, spec, timeout, verify command → in the lane; slot minted →
 in a berth. Session: minted id → on the roster; in the process table without one → intruder. Planning done
 anywhere else enters through the same CLI; there is no second path.
 
