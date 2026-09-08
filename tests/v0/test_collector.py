@@ -130,10 +130,19 @@ def later(seconds: float) -> datetime:
     return NOW + timedelta(seconds=seconds)
 
 
-def vendor_exe(tmp_path: Path, children, name: str) -> subprocess.Popen:
-    """An unclaimed process whose executable basename is ``name``."""
+def vendor_exe(tmp_path: Path, children, name: str,
+               cwd: Path | None = None) -> subprocess.Popen:
+    """An unclaimed process whose executable basename is ``name``.
+
+    It runs inside the state directory by default, which is the swarm's
+    own territory: a vendor process elsewhere on the machine is somebody
+    else's business and must not reach the screen.
+    """
     assert name.replace("-", "").replace("_", "").isalnum(), name
-    proc = subprocess.Popen(["bash", "-c", f"exec -a {name} sleep 30"])
+    where = Path(cwd) if cwd is not None else Path(str(paths.state_dir()))
+    where.mkdir(parents=True, exist_ok=True)
+    proc = subprocess.Popen(["bash", "-c", f"exec -a {name} sleep 30"],
+                            cwd=str(where))
     children.append(proc)
     for _ in range(50):
         try:
@@ -533,6 +542,27 @@ def test_intruder_then_resolved(env, fake_pool, children):
     proc.wait()
     tick(now=NOW)
     assert lines_for("intruder", str(proc.pid))[-1]["resolved_at"] == iso(NOW)
+
+
+def test_a_vendor_process_outside_the_swarm_is_not_an_intruder(
+        env, fake_pool, children, tmp_path):
+    """The owner's own editor session is not the swarm's business.
+
+    Flagging every vendor process on the machine filled Problems with
+    sixteen lines on 2026-09-08, the owner's own session among them,
+    which is how a person learns to stop reading the screen. Only a
+    process working inside a Foreman worktree or the state directory
+    counts.
+    """
+    write_config(base_config())
+    elsewhere = tmp_path / "somewhere-else"
+    elsewhere.mkdir()
+    proc = vendor_exe(env, children, MARKER, cwd=elsewhere)
+    seed_roster({})
+
+    tick(now=NOW)
+
+    assert lines_for("intruder", str(proc.pid)) == []
 
 
 def test_claimed_processes_are_not_intruders(env, fake_pool, children):

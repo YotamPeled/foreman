@@ -174,6 +174,18 @@ def tree_cpu_seconds(pid: int | None,
     return sum(table[member]["cpu_s"] for member in descendants(pid, table))
 
 
+def working_directory(pid: int) -> str | None:
+    """Where a process is working, or None when it cannot be read.
+
+    A process whose cwd cannot be read is somebody else's: the swarm
+    only ever asks about processes it might own.
+    """
+    try:
+        return os.readlink(f"/proc/{pid}/cwd")
+    except OSError:
+        return None
+
+
 def executable_of(cmdline: str) -> str:
     """Basename of the executable: the first cmdline token's final component."""
     first = cmdline.split()[0] if cmdline.split() else ""

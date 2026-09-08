@@ -307,6 +307,29 @@ def _tick_lock_path() -> Path:
     return paths.state_dir() / "collector.lock"
 
 
+def _territory(sessions: dict) -> list[str]:
+    """The directories a swarm process would be working in."""
+    places = [str(paths.state_dir())]
+    for record in sessions.values():
+        if isinstance(record, dict) and record.get("worktree"):
+            places.append(str(record["worktree"]))
+    return places
+
+
+def _inside(cwd: str | None, places: list[str]) -> bool:
+    if not cwd:
+        return False
+    for place in places:
+        try:
+            if os.path.commonpath([os.path.realpath(cwd),
+                                   os.path.realpath(place)]) == \
+                    os.path.realpath(place):
+                return True
+        except (ValueError, OSError):
+            continue
+    return False
+
+
 def _is_vendor_cmdline(cmdline: str, markers) -> bool:
     """True when the executable (not a substring) is a known vendor binary."""
     if not cmdline:
@@ -648,9 +671,17 @@ def _tick_inner(moment: datetime, now_iso: str,
                 moment - _parse_time(active_at)).total_seconds()
         session_view[sid] = entry
 
-    # Intruders: vendor processes no roster session claims. The executable
-    # (first cmdline token's basename) must be a shipped vendor binary;
-    # a substring match would flag any command merely mentioning one.
+    # Intruders: vendor processes working inside the swarm's own
+    # territory that no roster session claims. The executable (first
+    # cmdline token's basename) must be a shipped vendor binary — a
+    # substring match would flag any command merely mentioning one — and
+    # the process must be working inside a Foreman worktree or the state
+    # directory. Every vendor process on the machine is not the swarm's
+    # business: on 2026-09-08 the unscoped rule filled Problems with
+    # sixteen lines, including the owner's own editor session and this
+    # supervisor, which is exactly how a person learns to stop reading
+    # the screen.
+    territory = _territory(sessions)
     for pid, info in table.items():
         if info["state"] == "Z" or pid == os.getpid():
             continue
@@ -658,6 +689,8 @@ def _tick_inner(moment: datetime, now_iso: str,
         if not _is_vendor_cmdline(cmdline, config.vendor_markers):
             continue
         if any(pid in members for members in trees.values()):
+            continue
+        if not _inside(procs.working_directory(pid), territory):
             continue
         note_open("intruder", str(pid),
                   f"unclaimed vendor process {pid}: {cmdline[:200]}",
