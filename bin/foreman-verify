@@ -1040,7 +1040,9 @@ def check_keys_once(tmp: Path, label: str, session: str | None) -> dict:
             if match:
                 queue = match.group(1).split(",")
                 continue
-            match = re.search(r"(CHEAT-OPEN|CHEAT-ESC|PENDING|PENDING-ESC|"
+            # The lookbehind keeps WRONGROW-PENDING from matching as
+            # PENDING: the probe's markers are parsed below, never here.
+            match = re.search(r"(?<![A-Z-])(CHEAT-OPEN|CHEAT-ESC|PENDING|PENDING-ESC|"
                               r"NEEDSYOU-BEFORE|NEEDSYOU-AFTER|"
                               r"FROZEN-BEFORE|FROZEN-AFTER) (\S+)\s*$",
                               cleaned)
