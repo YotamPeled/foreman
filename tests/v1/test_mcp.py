@@ -40,8 +40,9 @@ PANEL_BRIEF = ROOT / "briefs" / "panel"
 #: disagreeing with the table.
 SUPERVISOR_TOOLS = frozenset({
     "ask", "checkpoint", "evidence", "finding", "front_take", "job_fail",
-    "job_verify", "launch", "measure", "register", "relaunch", "rule",
-    "status", "task_built", "task_landed", "task_reset", "version",
+    "job_verify", "launch", "measure", "merge_request", "register",
+    "relaunch", "rule", "status", "task_built", "task_landed", "task_reset",
+    "version",
 })
 #: The foreman role's own row: answers and rules, never front or job verbs.
 FOREMAN_TOOLS = frozenset({
@@ -147,7 +148,7 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     assert "mcp" not in names
     assert SUPERVISOR_TOOLS | FOREMAN_TOOLS | {"front_add", "cap",
                                               "collector"} <= names
-    assert len(names) == 25
+    assert len(names) == 29
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):
@@ -562,3 +563,45 @@ def test_a_gate_written_with_a_qualified_role_is_still_read(env):
 
     gates, _required = launch_module._gate_tables()
     assert "supervisor" in gates["front take"]
+
+
+def test_a_worker_is_offered_no_verb_however_the_gate_is_written(env):
+    """A worker holds one open verb, whatever shape a module's gate takes.
+
+    Two ways a gate went unread, both found by merging real work into this
+    branch. A module that puts its gate in a helper — `_check_desk(me,
+    verb, violations)` — names the verb by a parameter, so the gate read as
+    absent and `merge land`, which rebases and pushes, was offered to every
+    worker. And the reader looks its modules up in `sys.modules`, so a
+    module nothing had imported yet had no gates at all: which verbs were
+    open depended on what had been imported first.
+    """
+    from foreman import mcp as mcp_module
+
+    assert {tool["name"] for tool in mcp_module.tools_for("muse")} == \
+        WORKER_TOOLS
+    desk = {tool["name"] for tool in mcp_module.tools_for("merge-desk")}
+    assert {"merge_take", "merge_land", "merge_fail"} <= desk
+    assert "task_built" not in desk
+
+
+def test_the_gate_reader_imports_the_modules_it_reads(env):
+    """Reading gates out of sys.modules alone made the answer depend on
+    import order. Every verb module is imported first, so it does not.
+
+    A fresh interpreter is the only honest way to ask: unloading modules
+    inside this one leaves two copies of every class behind and breaks the
+    tests that run after it.
+    """
+    import subprocess
+    import sys
+
+    code = (
+        "from foreman import launch\n"
+        "gates, _ = launch._gate_tables()\n"
+        "print(sorted(gates['merge land']), sorted(gates['measure']))\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code],
+                          capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip() == "['merge-desk'] ['supervisor']"

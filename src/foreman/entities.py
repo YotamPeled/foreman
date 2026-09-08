@@ -17,7 +17,7 @@ JOB_KINDS = ("implement", "review", "merge", "research", "verify")
 JOB_ROLES = ("opus", "muse", "astra", "grok")
 #: Roles a roster session may carry: every worker role, plus the two
 #: interactive ones the launcher and `register` mint.
-SESSION_ROLES = JOB_ROLES + ("supervisor", "foreman")
+SESSION_ROLES = JOB_ROLES + ("supervisor", "foreman", "merge-desk")
 MERGE_STATES = ("requested", "merging", "landed", "failed")
 SESSION_STATES = ("running", "exited", "stalled", "killed")
 RULING_SCOPES = ("swarm", "front")
@@ -63,6 +63,10 @@ class Front(Entity):
     supervisor: str | None = None
     brief_path: str = ""
     state: str = "queued"
+    #: How this front's built tasks land: "" (the merge desk lands them
+    #: from a merge request) or "self" (the front's own supervisor calls
+    #: `task landed` itself — Foreman's own fronts, by owner ruling).
+    merge: str = ""
     #: A front that exists to try the runtime out, not to ship anything.
     #: It is marked wherever the front appears, so nobody reads a task a
     #: probe job moved as work the front actually did.
@@ -115,6 +119,7 @@ class Job(Entity):
 @dataclass(frozen=True)
 class Merge(Entity):
     id: str | None = None
+    front: str = ""
     branch: str = ""
     tasks: list[str] = field(default_factory=list)
     target: str = ""
@@ -124,6 +129,12 @@ class Merge(Entity):
     requested_at: str | None = None
     landed_at: str | None = None
     by: str | None = None
+    #: The desk session holding this record between `take` and `land`/`fail`.
+    taken_by: str | None = None
+    taken_at: str | None = None
+    #: Why a `fail` refused the landing; the tasks stay built.
+    fail_reason: str = ""
+    failed_at: str | None = None
 
 
 @dataclass(frozen=True)
