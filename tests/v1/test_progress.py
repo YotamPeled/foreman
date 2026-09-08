@@ -748,3 +748,49 @@ def test_a_fixture_front_is_marked_wherever_it_appears(
     out = status_out(monkeypatch, capsys)
     assert "real —" in out
     assert "real (fixture)" not in out
+
+
+def test_a_job_that_names_no_task_can_still_be_verified(
+        env, monkeypatch, capsys):
+    """Front work outside the brief's tasks is closable.
+
+    `foreman launch --front <f>` takes no task, and work commissioned
+    outside a brief arrives that way. `job verify` had no task to add units
+    to and refused with "names unknown task ''", so the job stayed
+    `returned` on the screen for good — a lie about work that was merged.
+    It verifies now, adding its units to nothing, because there is nothing
+    for them to be units of. A job naming a task the ledger does not have
+    is still refused.
+    """
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    store.append_ledger(paths.front_jobs_path("flow"), {
+        "id": "job-notask", "task": "", "kind": "implement",
+        "role": "muse", "priority": 1, "spec_path": "/tmp/specs/extra.md",
+        "session": None, "worktree": "", "branch": "", "log": "",
+        "timeout": "20m", "units": [], "attempt": 1, "state": "returned",
+        "planned_at": iso(NOW - timedelta(minutes=10)),
+        "queued_at": iso(NOW - timedelta(minutes=9)),
+        "started_at": iso(NOW - timedelta(minutes=8)),
+        "returned_at": iso(NOW - timedelta(minutes=2)),
+        "verified_at": None, "artifact": "", "verdict_path": "",
+    })
+    assert run(monkeypatch, ["job", "verify", "job-notask", "--confirmed",
+                             "--command", "make check", "--output",
+                             "ok"], SUP) == 0
+    assert "no task" in capsys.readouterr().out
+    assert folded_job("flow", "job-notask")["state"] == "verified"
+
+    store.append_ledger(paths.front_jobs_path("flow"), {
+        "id": "job-ghost", "task": "a task nobody wrote", "kind": "implement",
+        "role": "muse", "priority": 1, "spec_path": "", "session": None,
+        "worktree": "", "branch": "", "log": "", "timeout": "20m",
+        "units": [], "attempt": 1, "state": "returned",
+        "planned_at": iso(NOW), "queued_at": iso(NOW), "started_at": iso(NOW),
+        "returned_at": iso(NOW), "verified_at": None,
+        "artifact": "", "verdict_path": "",
+    })
+    assert run(monkeypatch, ["job", "verify", "job-ghost", "--confirmed",
+                             "--command", "make check", "--output",
+                             "ok"], SUP) == 1
+    assert "unknown task" in capsys.readouterr().err

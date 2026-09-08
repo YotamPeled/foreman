@@ -203,16 +203,23 @@ def job_verify_main(job_id: str, confirmed: bool,
         elif state != "returned":
             violations.append(f"job '{key}' is '{state}', not 'returned' "
                               "(only a returned job can be verified)")
-        task, task_violation = _task_of_job(front or "", record)
-        if task is None:
-            violations.append(task_violation)
+        # A job that names no task at all is not a broken record: the
+        # launcher takes `--front` without `--task`, and work commissioned
+        # outside a brief arrives that way. It is verified like any other
+        # and adds its units to nothing, because there is nothing for them
+        # to be units of. A job naming a task the ledger does not have is
+        # still a refusal.
+        if str(record.get("task") or "").strip():
+            task, task_violation = _task_of_job(front or "", record)
+            if task is None:
+                violations.append(task_violation)
     if violations:
         return _refuse(violations)
-    assert front is not None and record is not None and task is not None
+    assert front is not None and record is not None
     units = record.get("units")
     add = len(units) if isinstance(units, list) else 0
-    done = (task.get("units_done") or 0) + add
-    total = task.get("units_total") or 0
+    done = ((task.get("units_done") or 0) + add) if task is not None else add
+    total = (task.get("units_total") or 0) if task is not None else 0
     who = caller.by_line(me)
     now = store.utcnow_iso()
     store.append_ledger(
@@ -227,11 +234,15 @@ def job_verify_main(job_id: str, confirmed: bool,
     store.append_ledger(paths.front_jobs_path(front),
                         dict(record, state="verified", verified_at=now),
                         session_id=who)
-    store.append_ledger(paths.front_tasks_path(front),
-                        _moved(task, units_done=done), session_id=who)
+    if task is not None:
+        store.append_ledger(paths.front_tasks_path(front),
+                            _moved(task, units_done=done), session_id=who)
     spec = str(record.get("spec_path") or "")
-    print(f"{key} verified "
-          f"({add} units on task '{task.get('title')}': {done}/{total})")
+    if task is not None:
+        print(f"{key} verified "
+              f"({add} units on task '{task.get('title')}': {done}/{total})")
+    else:
+        print(f"{key} verified (on front '{front}', no task)")
     if spec:
         # What was verified, not just that something was. A proof run
         # credited a real front's task with a probe job's spec, and nothing
