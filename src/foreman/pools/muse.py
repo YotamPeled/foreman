@@ -26,50 +26,38 @@ worker runs through ``systemd-run --user --collect
 asks to be watched (``foreman launch --window``) goes through the window
 launcher named by the ``FOREMAN_WINDOW_LAUNCHER`` environment variable
 (wins) or the ``window_launcher`` key in the config file's ``[launch]``
-table, invoked as ``<launcher> <name> bash -c <command>``. Configuring a
-launcher does not by itself open windows.
+table. Configuring a launcher does not by itself open windows.
+
+Wrapping, pid file, finish marker and ``observe`` live in
+:mod:`foreman.pools._common`, shared with the grok and claude adapters;
+this module keeps the vendor argv and the public names it always had.
+
+Muse publishes no token counter, so ``usage`` returns ``None``.
 """
 
 from __future__ import annotations
 
-import os
-import re
-import shlex
-import time
-import tomllib
 from pathlib import Path
-from subprocess import DEVNULL, Popen
+from shlex import quote as _quote
+from subprocess import Popen
 
 from . import LaunchContext, PoolAdapter
-from .. import paths
+from . import _common
 from ..entities import Session
 
 MODEL = "muse-spark-1.3-contributor"
 EFFORTS = ("high", "xhigh")
-#: Completion is a line of its own: the marker, ``rc=`` and the worker's
-#: exit code. A mention anywhere else — a spec describing the marker, a
-#: quoted line, a bare marker with no code — is not completion.
-FINISH_RE = re.compile(r"^### finished rc=(\d+)$", re.MULTILINE)
-WINDOW_LAUNCHER_ENV = "FOREMAN_WINDOW_LAUNCHER"
-PID_WAIT_SECONDS = 30.0
+
+# Shared names, re-exported so this module keeps the surface it always had.
+FINISH_RE = _common.FINISH_RE
+WINDOW_LAUNCHER_ENV = _common.WINDOW_LAUNCHER_ENV
+PID_WAIT_SECONDS = _common.PID_WAIT_SECONDS
+_cpu_seconds = _common.cpu_seconds
 
 
 def window_launcher() -> str | None:
     """Name of the configured window launcher, or None for systemd-run."""
-    override = os.environ.get(WINDOW_LAUNCHER_ENV, "").strip()
-    if override:
-        return override
-    try:
-        with open(paths.config_file(), "rb") as handle:
-            config = tomllib.load(handle)
-    except (FileNotFoundError, tomllib.TOMLDecodeError, OSError, ValueError):
-        return None
-    launch = config.get("launch")
-    if isinstance(launch, dict) and launch.get("window_launcher"):
-        return str(launch["window_launcher"])
-    if config.get("window_launcher"):
-        return str(config["window_launcher"])
-    return None
+    return _common.window_launcher()
 
 
 def muse_argv(ctx: LaunchContext) -> list[str]:
@@ -95,42 +83,21 @@ def inner_command(ctx: LaunchContext) -> str:
     ``setsid`` makes the shell that writes the pid file a process group
     leader, so the recorded pid is the group to signal later.
     """
-    vendor = " ".join(shlex.quote(part) for part in muse_argv(ctx))
-    worker = (
-        f"echo $$ > {shlex.quote(str(ctx.pid_path))}; "
-        "{ " + vendor + '; echo "### finished rc=$?"; '
-        "} 2>&1 | tee " + shlex.quote(str(ctx.log_path))
+    return _common.wrap_inner(
+        muse_argv(ctx),
+        pid_path=ctx.pid_path,
+        log_path=ctx.log_path,
     )
-    return "setsid bash -c " + shlex.quote(worker)
 
 
 def outer_argv(ctx: LaunchContext) -> list[str]:
-    """Detached spawn: headless, unless this launch asked for a window.
-
-    Owner ruling: swarm sessions do not take the owner's desktop
-    workspaces. A window is for watching one run and is asked for per
-    launch; a configured window launcher on its own never opens one.
-    """
-    inner = inner_command(ctx)
-    launcher = window_launcher() if ctx.window else None
-    if launcher:
-        return [launcher, f"foreman-{ctx.session.id}", "bash", "-c", inner]
-    return [
-        "systemd-run",
-        "--user",
-        "--collect",
-        f"--unit=foreman-{ctx.session.id}",
-        "bash",
-        "-c",
-        inner,
-    ]
+    """Detached spawn: headless, unless this launch asked for a window."""
+    return _common.wrap_outer(ctx.session.id, inner_command(ctx),
+                              window=ctx.window)
 
 
 def read_pid_file(path: Path) -> int | None:
-    try:
-        return int(path.read_text(encoding="utf-8").strip().split()[0])
-    except (OSError, ValueError, IndexError):
-        return None
+    return _common.read_pid_file(path)
 
 
 class MuseAdapter(PoolAdapter):
@@ -140,66 +107,17 @@ class MuseAdapter(PoolAdapter):
     interactive = False
 
     def command_str(self, ctx: LaunchContext) -> str:
-        return " ".join(shlex.quote(part) for part in outer_argv(ctx))
+        return " ".join(_quote(part) for part in outer_argv(ctx))
 
     def launch(self, ctx: LaunchContext) -> int:
-        argv = outer_argv(ctx)
-        Popen(argv, stdin=DEVNULL, stdout=DEVNULL, stderr=DEVNULL,
-              start_new_session=True, close_fds=True)
-        deadline = time.monotonic() + PID_WAIT_SECONDS
-        while time.monotonic() < deadline:
-            pid = read_pid_file(ctx.pid_path)
-            if pid is not None:
-                return pid
-            time.sleep(0.1)
-        raise RuntimeError(
-            f"worker for session {ctx.session.id} wrote no pid file "
-            f"at {ctx.pid_path} within {PID_WAIT_SECONDS:g}s; launch failed"
+        return _common.spawn_and_wait(
+            outer_argv(ctx), pid_path=ctx.pid_path,
+            session_id=ctx.session.id, popen=Popen,
         )
 
     def observe(self, session: Session) -> dict:
-        # A launch with --log elsewhere writes completion there, so the
-        # session carries its log path; the default covers older records.
-        raw_log = session.log or str(paths.session_log_path(session.id or ""))
-        log = Path(raw_log)
-        try:
-            transcript_mtime: float | None = log.stat().st_mtime
-        except OSError:
-            transcript_mtime = None
-        finish_present = False
-        finish_rc: int | None = None
-        if transcript_mtime is not None:
-            try:
-                text = log.read_text(encoding="utf-8", errors="replace")
-            except OSError:
-                text = ""
-            codes = FINISH_RE.findall(text)
-            if codes:
-                finish_present = True
-                finish_rc = int(codes[-1])
-        return {
-            "transcript_mtime": transcript_mtime,
-            "cpu_s": _cpu_seconds(session.pid),
-            "finish_present": finish_present,
-            "finish_rc": finish_rc,
-        }
+        return _common.observe_session(session)
 
-
-def _cpu_seconds(pid: int | None) -> float:
-    """CPU seconds of the wrapping shell, not of the job.
-
-    The recorded pid is the wrapper started by the launcher, which does
-    nothing but wait on its pipeline; its own utime/stime never include
-    the seconds the vendor child burns (those are cutime/cstime, unread
-    here). The pid still identifies the job's process group for a later
-    kill, which is what it is recorded for.
-    """
-    if pid is None:
-        return 0.0
-    try:
-        with open(f"/proc/{pid}/stat", encoding="utf-8") as handle:
-            parts = handle.read().rsplit(")", 1)[1].split()
-        ticks = float(parts[11]) + float(parts[12])
-        return ticks / os.sysconf(os.sysconf_names["SC_CLK_TCK"])
-    except (OSError, ValueError, IndexError, KeyError):
-        return 0.0
+    def usage(self, session: Session) -> dict | None:
+        """Muse publishes no token counter: no number."""
+        return None

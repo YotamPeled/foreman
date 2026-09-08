@@ -35,7 +35,7 @@ from .caller import FOREMAN, SUPERVISOR
 from .cli import subcommand
 from .entities import JOB_KINDS, JOB_ROLES, Session
 from .pools import LaunchContext, get as get_pool
-from .pools.muse import EFFORTS
+from .pools._common import LAUNCH_EFFORTS as EFFORTS
 
 JOB_FILE = "FOREMAN-JOB.md"
 ROLE_FILE = "FOREMAN-ROLE.md"
@@ -444,6 +444,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
             timeout=timeout,
             effort=args.effort,
             units=tuple(units),
+            kind=args.kind,
             window=bool(getattr(args, "window", False)),
         )
         # A dry run starts nothing, so it records nothing: the roster is
