@@ -129,3 +129,38 @@ def test_skill_has_frontmatter_name_and_description():
     frontmatter = text.split("---\n", 2)[1]
     assert "name: foreman-plan" in frontmatter
     assert "description:" in frontmatter
+
+
+def brief_keys(path: Path) -> set[str]:
+    """Every key and table name an example brief actually uses.
+
+    Read from the file's own text rather than from a parsed table, so a
+    table header (``[[task]]``) counts as the token the skill has to
+    teach, exactly as the planner will type it.
+    """
+    keys: set[str] = set()
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if line.startswith("[") and line.endswith("]"):
+            keys.add(line)
+        elif "=" in line and not line.startswith("#"):
+            keys.add(line.split("=", 1)[0].strip())
+    return keys
+
+
+def test_skill_names_every_field_the_examples_use():
+    """The skill teaches the validator's field names, not synonyms.
+
+    Prose anchors alone let the skill rename a field the planner must
+    type — ``done-when`` to ``finished-when``, say — and stay green while
+    teaching a brief ``front add`` refuses. Deriving the list from the
+    examples means a field can only be renamed in both places at once,
+    and the examples are dry-run against the real validator.
+    """
+    text = SKILL.read_text(encoding="utf-8")
+    used: set[str] = set()
+    for example in sorted(EXAMPLES.iterdir()):
+        used |= brief_keys(example / "brief.toml")
+    assert used, "no example briefs to derive field names from"
+    missing = sorted(key for key in used if key not in text)
+    assert not missing, f"skill never names {missing}"
