@@ -343,11 +343,12 @@ def capacity_lines(observed: dict | None) -> list[str]:
     and who is waiting on a pool that has nothing left to give.
 
     Held comes from the slot ledger, so the block is right whether or not
-    the collector has ticked. A pool's cap comes from the collector's total
-    where it has one and from the configuration otherwise — the two are the
-    same number, and reading the collector's copy first keeps this screen
-    from opening the configuration to answer a question the tick already
-    answered.
+    the collector has ticked. Every pool's cap comes from the configuration
+    read at the moment this runs, never from the collector's cached copy:
+    the collector wrote its totals with the caps in force when it started,
+    so reading them here would keep showing the old ceiling after `foreman
+    cap` until the collector is restarted. Only the held counts ride along
+    in observed.json.
     """
     pool_view = (observed or {}).get("pools")
     pool_view = pool_view if isinstance(pool_view, dict) else {}
@@ -359,26 +360,12 @@ def capacity_lines(observed: dict | None) -> list[str]:
     names.update(name for name in pool_view if isinstance(name, str))
     names.update(pool_for_role(role) for _front, role, _n in allocations)
 
-    def observed_total(pool: str):
-        entry = pool_view.get(pool)
-        total = entry.get("total") if isinstance(entry, dict) else None
-        return total if isinstance(total, int) and not isinstance(
-            total, bool) else None
-
-    # The configuration is opened only for a pool the collector has no
-    # total for: a status run against a state directory alone must not
-    # reach into the machine's config to render a block it can already
-    # answer.
-    settings = None
-    if any(observed_total(pool) is None for pool in names):
-        settings = config.load()
+    settings = config.load()
 
     waiting = waiting_by_pool()
     lines: list[str] = []
     for pool in sorted(names):
-        total = observed_total(pool)
-        if total is None and settings is not None:
-            total = settings.cap(pool)
+        total = settings.cap(pool)
         held = held_pool.get(pool, 0)
         if total is None and held == 0:
             # Nothing configured and nothing held: an empty row about a

@@ -28,5 +28,5 @@ Merge queue:
   waiting: (no front): foreman/job-b1 -> dev, lands Light the beacon (requested 22m ago)
   landed: foreman/job-a4 -> dev at a1b2c3d (2h ago)
 Capacity:
-  grok: 1/2 held
+  grok: 1/1 held
   muse: 1/5 held

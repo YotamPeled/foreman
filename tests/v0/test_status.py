@@ -23,28 +23,35 @@ ORDER = ["Foreman status", "Needs you", "Problems", "Working",
          "Job queue", "Merge queue", "Capacity"]
 
 
-def run_status(monkeypatch, capsys, argv):
+def run_status(monkeypatch, capsys, argv, tmp_path):
     monkeypatch.chdir(ROOT)
     monkeypatch.setenv(NOW_ENV, PINNED_NOW)
     monkeypatch.delenv("FOREMAN_SESSION", raising=False)
+    # The Capacity block reads the pool caps from the configuration at the
+    # moment status runs, so the fixture pins an empty config directory and
+    # the packaged defaults answer: without this the golden output would
+    # follow whatever caps the machine running it happens to carry.
+    monkeypatch.setenv("FOREMAN_CONFIG", str(tmp_path / "config"))
     assert cli.main(argv) == 0
     return capsys.readouterr().out
 
 
-def test_golden_fixture_output(monkeypatch, capsys):
+def test_golden_fixture_output(monkeypatch, capsys, tmp_path):
     """The full screen for the fixture, byte for byte. A reordered block,
     a reworded line or a recomputed age fails here; an intended layout
     change updates the golden file in the same commit."""
-    out = run_status(monkeypatch, capsys, ["status", "--fixture", FIXTURE])
+    out = run_status(monkeypatch, capsys, ["status", "--fixture", FIXTURE],
+                     tmp_path)
     expected = (ROOT / "tests" / "v0" / "status_expected.txt").read_text(
         encoding="utf-8")
     assert out == expected
 
 
-def test_blocks_render_in_section_order(monkeypatch, capsys):
+def test_blocks_render_in_section_order(monkeypatch, capsys, tmp_path):
     """The owner's four questions top to bottom: needs-me above wrong,
     wrong above working, working above capacity, queues between."""
-    out = run_status(monkeypatch, capsys, ["status", "--fixture", FIXTURE])
+    out = run_status(monkeypatch, capsys, ["status", "--fixture", FIXTURE],
+                     tmp_path)
     positions = [out.index(heading) for heading in ORDER]
     assert positions == sorted(positions)
 
@@ -54,7 +61,8 @@ def test_fixture_flag_overrides_real_state(monkeypatch, capsys, tmp_path):
     directory exists and says something else. Pointing the environment at
     an empty state dir must not change one byte of fixture output."""
     monkeypatch.setenv("FOREMAN_STATE", str(tmp_path))
-    out = run_status(monkeypatch, capsys, ["status", "--fixture", FIXTURE])
+    out = run_status(monkeypatch, capsys, ["status", "--fixture", FIXTURE],
+                     tmp_path)
     expected = (ROOT / "tests" / "v0" / "status_expected.txt").read_text(
         encoding="utf-8")
     assert out == expected
@@ -64,7 +72,7 @@ def test_empty_state_prints_nothing_lines(monkeypatch, capsys, tmp_path):
     """No state files at all: every block collapses to one line saying so,
     never an empty heading, and the v0-absent blocks stay out entirely."""
     monkeypatch.setenv("FOREMAN_STATE", str(tmp_path / "empty"))
-    out = run_status(monkeypatch, capsys, ["status"])
+    out = run_status(monkeypatch, capsys, ["status"], tmp_path)
     assert "collector never ticked" in out
     assert "Needs you: nothing needs you." in out
     assert "Problems: none." in out
@@ -76,9 +84,10 @@ def test_empty_state_prints_nothing_lines(monkeypatch, capsys, tmp_path):
     assert "Monitor" not in out
 
 
-def test_status_carries_no_colour_codes(monkeypatch, capsys):
+def test_status_carries_no_colour_codes(monkeypatch, capsys, tmp_path):
     """The panel renders this text later: no ANSI escapes on stdout, so a
     pipe gets exactly what a terminal gets."""
-    out = run_status(monkeypatch, capsys, ["status", "--fixture", FIXTURE])
+    out = run_status(monkeypatch, capsys, ["status", "--fixture", FIXTURE],
+                     tmp_path)
     assert "\x1b" not in out
     assert all(line == line.strip("\x00") for line in out.splitlines())

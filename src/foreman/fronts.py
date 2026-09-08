@@ -1,11 +1,11 @@
-"""`foreman front add|list|prefer|close`: a brief becomes a front on the ledger.
+"""`foreman front add|list|prefer|allocate|close`: a brief becomes a front on the ledger.
 
 ``front add <dir>`` reads ``<dir>/brief.toml`` with :mod:`tomllib`, refuses
 with every violation named at once (docs/DESIGN.md section 4.3), and otherwise
 appends one front line to ``fronts/<name>/front.jsonl`` plus one line per task
 to ``fronts/<name>/tasks.jsonl``, then copies the brief (and ``plan.md`` when
 the directory has one) beside the config so the front no longer depends on the
-directory it came from. ``front prefer`` and ``front close`` never edit: they
+directory it came from. ``front prefer``, ``front allocate`` and ``front close`` never edit: they
 append a revised copy of the front line and readers fold last-wins, exactly
 like every other ledger in the state directory.
 """
@@ -21,7 +21,7 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-from . import caller, cli, entities, ids, paths, store
+from . import caller, cli, config, entities, ids, paths, store
 from .caller import Refusal
 from .entities import JOB_ROLES
 
@@ -519,6 +519,65 @@ def front_prefer_main(name: str, prefer: str | int) -> int:
     return 0
 
 
+def front_allocate_main(name: str, role: str, count: str | int) -> int:
+    """Set a front's ceiling for one role, appending a revised copy.
+
+    The allocation used to change only by a hand-written front line, and
+    the hand-written line carried the allocation and not ``state`` or
+    ``prefer`` — folding is last-wins over whole records, so the front
+    lost both. Like ``prefer`` and ``close`` this appends a revised copy
+    of the whole record instead, built by ``dataclasses.replace`` over
+    ``entities.Front.from_dict``, so every other field stays byte-identical.
+
+    A ceiling below what the front currently holds is a refusal naming
+    both numbers, not a silent over-subscription.
+    """
+    from . import capacity
+
+    me, violations = caller.resolve("front allocate")
+    caller.check_role(me, "front allocate", caller.FOREMAN,
+                      violations=violations)
+    record = _revised(name, violations)
+    key_role = role.strip() if isinstance(role, str) else ""
+    if not key_role:
+        violations.append("field 'role' is required")
+    elif config.load().pool_for_role(key_role) is None:
+        violations.append(f"field 'role' names unknown role '{key_role}' "
+                          f"(no pool serves it)")
+    try:
+        number = int(str(count).strip())
+    except (TypeError, ValueError, AttributeError):
+        violations.append(f"field 'count' must be an integer (got '{count}')")
+        number = None
+    else:
+        if number < 0:
+            violations.append(
+                f"field 'count' must not be negative (got {number})")
+            number = None
+    if (record is not None and key_role and number is not None):
+        held = capacity.held_by_front_role().get(
+            (name.strip(), key_role), 0)
+        if number < held:
+            violations.append(
+                f"role '{key_role}' on front '{name.strip()}': "
+                f"{held} held, ceiling {number}")
+    if violations:
+        return Refusal(violations).report()
+    assert record is not None and key_role and number is not None
+    key = name.strip()
+    allocation = dict(entities.Front.from_dict(record).allocation or {})
+    allocation[key_role] = number
+    updated = dataclasses.replace(
+        entities.Front.from_dict(record),
+        allocation=allocation).to_dict()
+    if "monitors" in record:
+        updated["monitors"] = record["monitors"]
+    store.append_ledger(paths.front_record_path(key), updated,
+                        session_id=caller.by_line(me))
+    print(f"{key}: {key_role} ceiling {number}")
+    return 0
+
+
 def front_close_main(name: str) -> int:
     me, violations = caller.resolve("front close")
     caller.check_role(me, "front close", violations=violations)
@@ -615,6 +674,11 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     prefer = verbs.add_parser("prefer", help="Set a front's queue preference.")
     prefer.add_argument("name", help="front name")
     prefer.add_argument("prefer", help="new preference (integer)")
+    allocate = verbs.add_parser(
+        "allocate", help="Set a front's ceiling for one role.")
+    allocate.add_argument("name", help="front name")
+    allocate.add_argument("role", help="worker role")
+    allocate.add_argument("count", help="new ceiling (non-negative integer)")
     close = verbs.add_parser("close", help="Mark a front done.")
     close.add_argument("name", help="front name")
     take = verbs.add_parser(
@@ -631,6 +695,8 @@ def _front_entry(args: argparse.Namespace) -> int:
         return front_list_main()
     if args.front_verb == "prefer":
         return front_prefer_main(args.name, args.prefer)
+    if args.front_verb == "allocate":
+        return front_allocate_main(args.name, args.role, args.count)
     if args.front_verb == "close":
         return front_close_main(args.name)
     if args.front_verb == "take":
