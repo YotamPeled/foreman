@@ -1,15 +1,20 @@
 import QtQuick
+import QtQuick.Layouts
 import Quickshell
 import Quickshell.Wayland
 import qs.Commons
 import "." as Foreman
+import "ui" as Ui
 
 // The Foreman panel: one full-screen layer-shell surface, summoned and
-// dismissed by `omarchy-shell shell toggle foreman`. This job builds the
-// surface and proves the feed reaches it; the layout job replaces the rows
-// below with the real cards. No colour is written here — every one comes
-// from the shell's Color and Style singletons, so a theme change repaints
-// the panel with no work on our side.
+// dismissed by `omarchy-shell shell toggle foreman`. The mock's page
+// (docs/mock/v0-tree.html): a centred column at the mock's max width and
+// padding, the header row, one slot per section-13 block in the mock's
+// order, and the footer row. Each slot is a Loader over its block file,
+// guarded so a block that has not landed yet leaves an empty space rather
+// than an error. Every block file is an Item that sizes itself to its
+// content and reads Model directly. No colour is written here — every one
+// comes from the shell's Color and Style singletons.
 Item {
   id: root
 
@@ -20,6 +25,19 @@ Item {
   property bool opened: false
 
   readonly property string pluginId: (root.manifest && root.manifest.id) ? root.manifest.id : "foreman"
+
+  // The slots in the supervisor's order. needsYou and problems land with
+  // this job; working and the four queue/capacity blocks arrive from the
+  // other layout jobs and drop in with no change here.
+  readonly property var slots: [
+    "ui/NeedsYouBlock.qml",
+    "ui/ProblemsBlock.qml",
+    "ui/WorkingBlock.qml",
+    "ui/JobQueueBlock.qml",
+    "ui/FrontQueueBlock.qml",
+    "ui/MergeQueueBlock.qml",
+    "ui/CapacityBlock.qml"
+  ]
 
   function open(payloadJson) {
     root.opened = true
@@ -39,18 +57,6 @@ Item {
     if (root.opened) root.dismiss()
     else root.open("{}")
   }
-
-  // One row per section 13 block: the name, and how many rows came back.
-  readonly property var blocks: [
-    { name: "header", label: "header", count: Foreman.Model.header.count },
-    { name: "needsYou", label: "needs you", count: Foreman.Model.needsYou.count },
-    { name: "problems", label: "problems", count: Foreman.Model.problems.count },
-    { name: "working", label: "working", count: Foreman.Model.working.count },
-    { name: "jobQueue", label: "job queue", count: Foreman.Model.jobQueue.count },
-    { name: "frontQueue", label: "front queue", count: Foreman.Model.frontQueue.count },
-    { name: "mergeQueue", label: "merge queue", count: Foreman.Model.mergeQueue.count },
-    { name: "capacity", label: "capacity", count: Foreman.Model.capacity.count }
-  ]
 
   PanelWindow {
     id: panel
@@ -83,44 +89,79 @@ Item {
       Keys.onEscapePressed: root.dismiss()
     }
 
-    Column {
-      anchors.centerIn: parent
-      spacing: Style.spacing.sm
+    Flickable {
+      anchors.fill: parent
+      contentWidth: width
+      contentHeight: page.height
+      flickableDirection: Flickable.VerticalFlick
+      boundsBehavior: Flickable.StopAtBounds
 
-      Text {
-        text: "foreman"
-        color: Color.accent
-        font.family: Style.font.family
-        font.pixelSize: Style.font.title
-      }
+      Column {
+        id: page
+        width: Math.min(1100, parent.width - 64)
+        anchors.horizontalCenter: parent.horizontalCenter
+        topPadding: 36
+        bottomPadding: 60
+        spacing: Style.space(24)
 
-      Text {
-        text: Foreman.Model.stateDir
-        color: Color.muted
-        font.family: Style.font.family
-        font.pixelSize: Style.font.caption
-        bottomPadding: Style.spacing.sm
-      }
+        Ui.PanelHeader {
+          width: parent.width
+        }
 
-      Repeater {
-        model: root.blocks
+        Repeater {
+          model: root.slots
+          delegate: Loader {
+            width: page.width
+            source: modelData
+            active: true
+            visible: status === Loader.Ready
+            height: (status === Loader.Ready && item) ? item.height : 0
+            onStatusChanged: if (status === Loader.Error) active = false
+          }
+        }
 
-        Row {
-          spacing: Style.spacing.md
+        RowLayout {
+          width: parent.width
+          spacing: Style.space(6)
+
+          Ui.KeyChip { key: "F" }
 
           Text {
-            text: modelData.label
-            color: Color.menu.text
+            text: "freeze everything"
+            color: Color.muted
             font.family: Style.font.family
-            font.pixelSize: Style.font.body
-            width: Style.space(160)
+            font.pixelSize: Style.font.bodySmall
           }
 
+          Item { width: Style.space(12) }
+
+          Ui.KeyChip { key: "?" }
+
           Text {
-            text: String(modelData.count)
-            color: modelData.count > 0 ? Color.menu.text : Color.muted
+            text: "keys"
+            color: Color.muted
             font.family: Style.font.family
-            font.pixelSize: Style.font.body
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Item { width: Style.space(12) }
+
+          Ui.KeyChip { key: "esc" }
+
+          Text {
+            text: "close"
+            color: Color.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
+          }
+
+          Item { Layout.fillWidth: true }
+
+          Text {
+            text: "same text as foreman status"
+            color: Color.muted
+            font.family: Style.font.family
+            font.pixelSize: Style.font.bodySmall
           }
         }
       }

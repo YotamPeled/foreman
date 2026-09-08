@@ -11,9 +11,12 @@ One front is implemented, `panel`, and two of its checks:
                    no Wayland display
   --blocks-count   how many of those eight blocks came back non-empty, as one
                    integer and nothing else
+  --blocks         the panel headlessly rendered against the fixture: the
+                   header numbers, and for each rendered block the number
+                   of cards and the title text of each
 
-`--blocks`, `--keys` and `--install-roundtrip` belong to jobs that have not
-run yet and exit 2.
+`--keys` and `--install-roundtrip` belong to jobs that have not run yet
+and exit 2.
 
 Standard library only, so this runs wherever the repository is checked out.
 """
@@ -21,6 +24,7 @@ Standard library only, so this runs wherever the repository is checked out.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import shutil
@@ -31,6 +35,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 PLUGIN = REPO / "plugin" / "foreman"
 HARNESS = PLUGIN / "Harness.qml"
+PANEL_HARNESS = PLUGIN / "PanelHarness.qml"
 FIXTURE = PLUGIN / "test" / "fixture"
 FIXTURE_LIVE = PLUGIN / "test" / "fixture-live"
 
@@ -156,6 +161,51 @@ EXPECTED_LIVE_ROWS = {
 }
 #: The one row fact read back as a float rather than compared as text.
 EXPECTED_LIVE_RATE = 14 / 3
+
+#: What `panel --blocks` must read off the headless render against the
+#: mock fixture in plugin/foreman/test/fixture. Hand-derived from the
+#: fixture bytes, never from a run of the panel under test:
+#:
+#:   header      the header row left to right: the word foreman, the
+#:               collector clock in UTC (observed.json `at`
+#:               2026-05-11T14:07:00+00:00, a Monday), "10 sessions, all
+#:               registered" (10 registered and 10 observed), "not
+#:               frozen" (no `frozen` file), and the collector state.
+#:               The collector age is measured against the wall clock,
+#:               so the May fixture always reads stale, where the mock
+#:               shows alive.
+#:   needsYou    inbox.jsonl sorted by asked_at, answered rows dropped:
+#:               inb-tokens01 then inb-reaper01 (inb-theme001 is answered
+#:               by the later line)
+#:   problems    anomalies.jsonl in ledger order, resolved rows dropped:
+#:               supervisor silent, intruder, defect repeated (the "job
+#:               stalled" pair is resolved by the later line); the title
+#:               on screen is each row's detail sentence
+EXPECTED_PANEL_HEADER = [
+    "foreman",
+    "Monday 14:07",
+    "10 sessions, all registered",
+    "not frozen",
+    "collector stale",
+]
+EXPECTED_PANEL_NEEDSYOU = [
+    "Buy 2M extra Codex tokens so the review pool keeps two reviewers overnight?",
+    "Ship the reaper without the dead-worktree sweep?",
+]
+EXPECTED_PANEL_PROBLEMS = [
+    "Engine supervisor has been silent for 14 minutes with no jobs running,"
+    " still holding an Opus slot",
+    "A Codex process is running that Foreman did not launch:"
+    " workspace 9, no session id",
+    "Ingestion is halted: the webhook destination defect came back a third"
+    " time, the supervisor must write what changed before dispatching again",
+]
+
+#: The slots the panel renders, in Panel.qml's order. needsYou and
+#: problems arrived with the shell job; the rest land with the other
+#: layout jobs and are reported, not asserted, until they do.
+PANEL_SLOTS = ["needsYou", "problems", "working", "jobQueue",
+               "frontQueue", "mergeQueue", "capacity"]
 
 BLOCKS = list(EXPECTED)
 
@@ -290,6 +340,12 @@ def run_harness(state_dir: Path) -> dict:
     for line in output.splitlines():
         stripped = line.strip()
         if stripped.startswith("ERROR"):
+            # Host-runtime noise, never the model layer: quickshell failing
+            # to create its /run directory or bind its IPC socket (as in a
+            # sandbox without AF_UNIX) says nothing about the panel.
+            if re.match(r"ERROR quickshell\.(paths|ipc|logging|tooling):",
+                        stripped):
+                continue
             trouble.append(stripped)
         elif "unresolvable import" in stripped:
             if EXPECTED_DANGLING_IMPORT not in stripped:
@@ -394,8 +450,170 @@ def blocks_count(state_dir: Path) -> int:
     return 0
 
 
+def run_panel_harness(state_dir: Path) -> dict:
+    """The panel's header and blocks with a window on them, against
+    `state_dir`.
+
+    The panel binds qs.Commons, which only resolves inside the Omarchy
+    shell's own config root, so the run gets a QML import path holding a
+    `qs` entry that points at the shell — the same arrangement check_lint
+    uses. Pass or fail comes from the output, never from the status."""
+    quickshell = find_quickshell()
+    if not PANEL_HARNESS.is_file():
+        raise Failure("harness: missing " + str(PANEL_HARNESS))
+    if not state_dir.is_dir():
+        raise Failure("harness: no such state directory: " + str(state_dir))
+
+    imports = REPO / ".foreman-verify-imports"
+    imports.mkdir(exist_ok=True)
+    link = imports / "qs"
+    shell = OMARCHY / "shell"
+    try:
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        if shell.is_dir():
+            link.symlink_to(shell)
+
+        env = headless_env(state_dir)
+        existing = env.get("QML2_IMPORT_PATH", "")
+        env["QML2_IMPORT_PATH"] = (str(imports) + (os.pathsep + existing
+                                                   if existing else ""))
+        result = subprocess.run(
+            [quickshell, "-p", str(PANEL_HARNESS)],
+            capture_output=True, text=True, timeout=120,
+            env=env)
+    finally:
+        if link.is_symlink():
+            link.unlink()
+        try:
+            imports.rmdir()
+        except OSError:
+            pass
+
+    output = _clean(result.stdout + result.stderr)
+
+    trouble = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("ERROR"):
+            if re.match(r"ERROR quickshell\.(paths|ipc|logging|tooling):",
+                        stripped):
+                continue
+            trouble.append(stripped)
+        elif "unresolvable import" in stripped:
+            # The static scanner does not see the runtime qs -> shell
+            # mapping, so it warns about qs.Commons while the engine
+            # resolves it. Any other unresolvable import is a real failure.
+            if EXPECTED_DANGLING_IMPORT not in stripped:
+                trouble.append(stripped)
+        elif "TypeError" in stripped or "ReferenceError" in stripped:
+            trouble.append(stripped)
+        elif stripped.startswith("SLOT-ERROR"):
+            trouble.append("harness: " + stripped)
+    if trouble:
+        raise Failure("panel harness: the render reported errors:\n  "
+                      + "\n  ".join(trouble[:10]))
+
+    counts: dict = {}
+    renders: dict = {}
+    for line in output.splitlines():
+        cleaned = _clean(line)
+        match = re.search(r"BLOCK ([A-Za-z]+) (-?\d+)\s*$", cleaned)
+        if match:
+            counts[match.group(1)] = int(match.group(2))
+            continue
+        match = re.search(r"RENDER (\S+) (\S+) (\d+) (\{.*\})\s*$", cleaned)
+        if match:
+            try:
+                shown = json.loads(match.group(4))
+                titles = shown["titles"]
+                empty = shown["empty"]
+            except (ValueError, KeyError, TypeError):
+                raise Failure("panel harness: unparsable render: %r"
+                              % match.group(4))
+            renders[match.group(1)] = {
+                "status": match.group(2),
+                "cards": int(match.group(3)),
+                "titles": titles,
+                "empty": empty,
+            }
+    if "HARNESS-DONE" not in output:
+        raise Failure("panel harness: did not finish; output was:\n"
+                      + output[-2000:])
+    return {"counts": counts, "renders": renders}
+
+
+def panel_blocks(state_dir: Path) -> int:
+    """Header numbers and, for each block of this job's scope, the card
+    count and title text of every card, read off the headless render.
+    Slots whose files have not landed yet are reported, never asserted,
+    so this stays meaningful as the other layout jobs arrive. The strict
+    assertions hold the mock fixture; an explicit --state only reports
+    what the render shows."""
+    result = run_panel_harness(state_dir)
+    renders = result["renders"]
+
+    missing = [name for name in ["header", *PANEL_SLOTS]
+               if name not in renders]
+    if missing:
+        raise Failure("blocks: the panel never rendered %s"
+                      % ", ".join(missing))
+    broken = ["%s (%s)" % (name, renders[name]["status"])
+              for name in renders if renders[name]["status"] == "error"]
+    if broken:
+        raise Failure("blocks: %d block file(s) failed to load:\n  %s"
+                      % (len(broken), "\n  ".join(broken)))
+
+    strict = state_dir.resolve() == FIXTURE.resolve()
+    if strict:
+        check_panel_strict(renders)
+
+    header = renders["header"]
+    print("header: %s" % " · ".join(header["titles"]))
+    for name in PANEL_SLOTS:
+        slot = renders[name]
+        if slot["status"] != "ready":
+            print("%s: not yet rendered (%s)" % (name, slot["status"]))
+            continue
+        print("%s: %d card(s)" % (name, slot["cards"]))
+        for title in slot["titles"]:
+            print("  %s" % title)
+        for voice in slot["empty"]:
+            print("  empty: %s" % voice)
+    if strict:
+        print("blocks: the header and this job's blocks render as the"
+              " fixture holds them")
+    else:
+        print("blocks: reported without assertions (not the mock fixture)")
+    return 0
+
+
+def check_panel_strict(renders: dict) -> None:
+    """The mock-fixture assertions: header numbers, and for each block of
+    this job's scope the card count, every title, and a silent empty
+    voice."""
+    header = renders["header"]
+    if header["titles"] != EXPECTED_PANEL_HEADER:
+        raise Failure("blocks: header: got %r, the fixture holds %r"
+                      % (header["titles"], EXPECTED_PANEL_HEADER))
+
+    for name, expected in (("needsYou", EXPECTED_PANEL_NEEDSYOU),
+                           ("problems", EXPECTED_PANEL_PROBLEMS)):
+        slot = renders[name]
+        if slot["status"] != "ready":
+            raise Failure("blocks: %s: not rendered (%s)"
+                          % (name, slot["status"]))
+        if slot["cards"] != len(expected) or slot["titles"] != expected:
+            raise Failure("blocks: %s: got %d card(s) %r, the fixture holds"
+                          " %d with %r"
+                          % (name, slot["cards"], slot["titles"],
+                             len(expected), expected))
+        if slot["empty"]:
+            raise Failure("blocks: %s: empty voice shows beside %d card(s)"
+                          % (name, slot["cards"]))
+
+
 NOT_IMPLEMENTED = {
-    "--blocks": "the block layout job has not run yet",
     "--keys": "the keys and actions job has not run yet",
     "--install-roundtrip": "the install/uninstall job has not run yet",
 }
@@ -412,7 +630,7 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--state", default=str(FIXTURE),
                         help="state directory to read (default: the fixture)")
 
-    known = set(NOT_IMPLEMENTED) | {"--loads", "--blocks-count"}
+    known = set(NOT_IMPLEMENTED) | {"--loads", "--blocks-count", "--blocks"}
     rest, check = [], None
     for token in argv:
         if token in known and check is None:
@@ -436,7 +654,8 @@ def main(argv: list[str]) -> int:
               % (args.check, NOT_IMPLEMENTED[args.check]), file=sys.stderr)
         return 2
 
-    checks = {"--loads": loads, "--blocks-count": blocks_count}
+    checks = {"--loads": loads, "--blocks-count": blocks_count,
+              "--blocks": panel_blocks}
     if args.check not in checks:
         print("foreman-verify: unknown check %r for front panel" % args.check,
               file=sys.stderr)

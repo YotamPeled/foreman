@@ -1,0 +1,9 @@
+singleton Palette 1.0 Palette.qml
+Card 1.0 Card.qml
+SectionHeading 1.0 SectionHeading.qml
+KeyChip 1.0 KeyChip.qml
+Pill 1.0 Pill.qml
+MeterBar 1.0 MeterBar.qml
+PanelHeader 1.0 PanelHeader.qml
+NeedsYouBlock 1.0 NeedsYouBlock.qml
+ProblemsBlock 1.0 ProblemsBlock.qml
