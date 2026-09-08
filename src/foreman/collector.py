@@ -473,17 +473,22 @@ def _tick_inner(moment: datetime, now_iso: str,
         if alive:
             alive_count += 1
 
+        # Observe whatever the adapter can see, dead process or not: a
+        # finish marker is a line in a log file and needs no live pid.
+        # Gating observation on process identity meant a job that had
+        # finished could never be marked returned, because by then the
+        # pid was gone; identity gates believing a process is alive and
+        # aiming a kill, nothing else.
         observed: dict | None = None
-        if pid is not None and identity_ok:
+        try:
+            adapter = get_pool(record.get("pool") or "")
+        except ValueError:
+            adapter = None
+        if adapter is not None:
             try:
-                adapter = get_pool(record.get("pool") or "")
-            except ValueError:
-                adapter = None
-            if adapter is not None:
-                try:
-                    observed = adapter.observe(Session.from_dict(record))
-                except Exception:  # noqa: BLE001 - a broken adapter
-                    observed = None  # must not take the daemon down
+                observed = adapter.observe(Session.from_dict(record))
+            except Exception:  # noqa: BLE001 - a broken adapter
+                observed = None  # must not take the daemon down
         cpu = observed.get("cpu_s") if observed else None
         cpu = float(cpu) if isinstance(cpu, (int, float)) else None
         finish = bool(observed.get("finish_present")) if observed else False

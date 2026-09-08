@@ -1021,3 +1021,39 @@ def test_tail_ignores_output_draining():
     }
     assert _tail_children({10, 11}, 10, table) == set()
     assert _tail_children({10, 11, 12}, 10, table) == {12}
+
+
+def test_a_finished_job_is_returned_after_its_process_is_gone(
+        env, fake_pool, children):
+    """The marker outlives the process, and so must the observation.
+
+    Gating observation on process identity meant the adapter was never
+    asked once the pid was gone, so `finish_present` was always false by
+    the time a job had actually finished and the job stayed "running" on
+    the owner's screen forever. Identity gates believing a process alive
+    and aiming a kill; reading a line from a log file needs neither.
+    """
+    write_config(base_config())
+    proc = sleeper(children)
+    pid = proc.pid
+    sid = "ses-donedone"
+    FakeAdapter.script[sid] = {"transcript_mtime": NOW.timestamp(),
+                               "cpu_s": 1.0,
+                               "finish_present": True, "finish_rc": 0}
+    # The launcher records the process start time beside the pid; that is
+    # what makes the identity check real here, and the identity check is
+    # what used to silence the adapter once the process was gone.
+    seed_roster({sid: worker_session(sid, pid, component="comp",
+                                     job="job-done",
+                                     pid_starttime=procs.proc_starttime(pid))})
+    store.append_ledger(paths.component_jobs_path("comp"), {
+        "id": "job-done", "state": "running", "started_at": at(30)})
+    proc.kill()
+    proc.wait()
+
+    tick(now=NOW)
+
+    jobs = store.read_ledger(paths.component_jobs_path("comp"))
+    latest = [job for job in jobs if job.get("id") == "job-done"][-1]
+    assert latest["state"] == "returned"
+    assert latest["returned_at"] == iso(NOW)

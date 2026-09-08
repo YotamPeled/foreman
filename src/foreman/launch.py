@@ -33,6 +33,7 @@ from pathlib import Path
 from . import caller, ids, paths, procs, store
 from .caller import FOREMAN, SUPERVISOR
 from .cli import subcommand
+from . import entities
 from .entities import JOB_KINDS, JOB_ROLES, Session
 from .pools import LaunchContext, get as get_pool
 from .pools._common import LAUNCH_EFFORTS as EFFORTS
@@ -416,13 +417,18 @@ def cmd_launch(args: argparse.Namespace) -> int:
         )
         write_no_symlink(role_path, role_text)
 
+        # The job id is minted before the session so both records name
+        # each other: without the job on the session the collector cannot
+        # tell which job a finish marker belongs to, and a finished job
+        # stays "running" on the screen forever.
+        job_id = args.job or (ids.mint("job") if args.component else None)
         starting = Session(
             id=session_id,
             role=args.role,
             pool=args.pool,
             model=adapter.model,
             component=args.component,
-            job=args.job,
+            job=job_id,
             pid=None,
             pgid=None,
             worktree=worktree,
@@ -491,6 +497,21 @@ def cmd_launch(args: argparse.Namespace) -> int:
                 pid_starttime=starttime),
             default={"sessions": {}},
         )
+        # In v0 the launcher is the only thing that makes a job exist, so
+        # it records the one it just started: without that line the owner
+        # sees a session counted in the header and nothing on the screen
+        # saying what is running, which is the whole point of the screen.
+        if args.component:
+            job = entities.Job(
+                id=job_id, task=args.task,
+                kind=args.kind, role=args.role,
+                spec_path=os.path.abspath(args.spec), session=session_id,
+                worktree=worktree, branch=branch, log=log_path,
+                timeout=timeout, state="running",
+                started_at=store.utcnow_iso(),
+            )
+            store.append_ledger(paths.component_jobs_path(args.component),
+                                job.to_dict(), session_id=session_id)
     command = adapter.command_str(ctx)
 
     print(f"session: {session_id}")

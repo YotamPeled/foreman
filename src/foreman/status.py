@@ -343,6 +343,16 @@ def _working(roster: dict, observed: dict | None, now: datetime,
                     continue
                 detail = _job_detail(job, observed_jobs, roster, now)
                 lines.append(f"      {detail}")
+        # A job whose task no ledger names is still running on the
+        # owner's machine, and a screen that hides it is worse than no
+        # screen. In v0 nothing plans tasks yet, so this is every job.
+        for job in jobs:
+            if job.get("task") in titles or job.get("state") in QUEUE_STATES:
+                continue
+            detail = _job_detail(job, observed_jobs, roster, now)
+            named = job.get("task") or "no task named"
+            lines.append(f"    {named}")
+            lines.append(f"      {detail}")
     return lines
 
 
