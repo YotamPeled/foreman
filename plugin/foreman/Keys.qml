@@ -182,7 +182,7 @@ QtObject {
     if (root.queue.length === 0) return
     var head = root.queue[0]
     root.currentId = head.id
-    runner.command = ["foreman"].concat(head.argv)
+    runner.command = ["env", "-u", "FOREMAN_SESSION", "foreman"].concat(head.argv)
     runner.running = true
   }
 
@@ -257,6 +257,10 @@ QtObject {
     return out
   }
 
+  // The panel acts for the owner, never for whatever session launched
+  // the shell: an inherited FOREMAN_SESSION names a writer the ledger
+  // does not know and the verb is refused. The runner strips it from
+  // the verb's environment, so every key lands as the owner.
   property Process runner: Process {
     running: false
     onExited: (code, signal) => { root.onRunnerExited(code) }
