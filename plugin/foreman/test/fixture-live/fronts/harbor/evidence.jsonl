@@ -1,0 +1,1 @@
+{"on":"tas-hb-1","claim":"The manifest has one row per berth and no duplicate ids","status":"CONFIRMED","command":"make check harbor-manifest","output_ref":"evidence/harbor-manifest-1140","at":"2026-06-02T11:40:00+00:00"}

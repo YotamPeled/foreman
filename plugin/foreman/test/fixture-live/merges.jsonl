@@ -1,0 +1,2 @@
+{"id":"mrg-hb001","branch":"soundings-batch","from":"harbor","tasks":["tas-hb-2"],"target":"main","review_refs":["codex"],"head":"","result":"merging","requested_at":"2026-06-02T14:45:00+00:00","landed_at":null,"by":"ses-hb0001","at":"2026-06-02T14:45:00+00:00"}
+{"id":"mrg-hb002","branch":"manifest","from":"harbor","tasks":["tas-hb-1"],"target":"main","review_refs":["codex"],"head":"7b40c92","result":"landed","requested_at":"2026-06-02T10:05:00+00:00","landed_at":"2026-06-02T11:40:00+00:00","by":"ses-hb0001","at":"2026-06-02T11:40:00+00:00"}

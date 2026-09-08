@@ -5,9 +5,10 @@
 
 One front is implemented, `panel`, and two of its checks:
 
-  --loads          the plugin's QML lints clean and its model layer folds the
-                   fixture into the eight blocks of DESIGN section 13, run
-                   headlessly with no Wayland display
+  --loads          the plugin's QML lints clean and its model layer folds
+                   both fixtures (the mock and the live shape) into the
+                   eight blocks of DESIGN section 13, run headlessly with
+                   no Wayland display
   --blocks-count   how many of those eight blocks came back non-empty, as one
                    integer and nothing else
 
@@ -31,6 +32,7 @@ REPO = Path(__file__).resolve().parent.parent
 PLUGIN = REPO / "plugin" / "foreman"
 HARNESS = PLUGIN / "Harness.qml"
 FIXTURE = PLUGIN / "test" / "fixture"
+FIXTURE_LIVE = PLUGIN / "test" / "fixture-live"
 
 #: Where Omarchy is installed. Read only, never written, never edited.
 OMARCHY = Path(os.environ.get("OMARCHY_PATH", "/usr/share/omarchy"))
@@ -67,6 +69,93 @@ EXPECTED = {
     "mergeQueue": 5,
     "capacity": 4,
 }
+
+#: The eight blocks and the count each one must report against the
+#: live-shape fixture in plugin/foreman/test/fixture-live. Hand-derived the
+#: same way, never from a run of the parser under test. That fixture copies
+#: what the runtime actually writes: observed.json has no `fronts` key,
+#: doing-now lives in sessions/<id>/checkpoint.json, two jobs reference
+#: their task by title, and the astra role waits on the codex pool:
+#:
+#:   header       3  observed.json swarm.sessions_registered; roster.json has
+#:                   the same three sessions
+#:   needsYou     2  inbox.jsonl has 3 lines and 3 ids; inb-hb003 is answered,
+#:                   leaving inb-hb001 (asked by a worker, ses-hb0002) and
+#:                   inb-hb002 open
+#:   problems     1  anomalies.jsonl has 3 lines and 2 (kind, subject) pairs;
+#:                   the later "job stalled/ses-hb0002" line resolves it,
+#:                   leaving the intruder pid-5521
+#:   working      1  two directories under fronts/; quay is state "queued",
+#:                   so harbor alone
+#:   jobQueue     2  planned or queued jobs after folding: harbor job-hb-3
+#:                   (queued, task by id) and job-hb-4 (planned, task by
+#:                   title "tide window"); job-hb-1 is verified and job-hb-2
+#:                   is running
+#:   frontQueue   1  quay
+#:   mergeQueue   2  mrg-hb001 merging, mrg-hb002 landed
+#:   capacity     2  observed.json pools: codex, muse
+EXPECTED_LIVE = {
+    "header": 3,
+    "needsYou": 2,
+    "problems": 1,
+    "working": 1,
+    "jobQueue": 2,
+    "frontQueue": 1,
+    "mergeQueue": 2,
+    "capacity": 2,
+}
+
+#: Row-level facts the live-shape fixture must produce, hand-derived from
+#: its bytes the same way. Each one names the break it catches — the old
+#: model, written against the entity definitions, gets it wrong:
+#:
+#:   harbor.doingNow        the supervisor checkpoint's `doing`, not
+#:                          observed.fronts (which the live fixture omits)
+#:   harbor.remaining       the built task "buoy labels" stays listed:
+#:                          section 13 wants every task not landed
+#:   tas-hb-2.jobs          job-hb-2 references its task by title
+#:                          ("second soundings"), not by id
+#:   tas-hb-4.jobs          job-hb-3 by id plus job-hb-4 by title
+#:                          ("tide window"), in ledger order
+#:   codex.waiting          job-hb-3 waits as role astra on pool codex,
+#:                          via the slots ledger mapping
+#:   job-hb-N.model         projected from the roster row of the job's
+#:                          session (hb-1, hb-2); no session attached yet:
+#:                          honest "unknown" (hb-3, hb-4)
+#:   harbor.blockedOnOwner  inb-hb001 asked by worker ses-hb0002, joined
+#:                          through roster.front, in inbox order
+#:   harbor.rateWindowH     oldest unlanded creation stamp 12:00 to the
+#:                          15:00 collector clock: 3 hours. (A rewrite keeps
+#:                          its task's creation `at`, as the runtime does for
+#:                          tas-hb-2's second line, so the window is work age,
+#:                          not a progress span.)
+#:   harbor.ratePerHour     unlanded output so far, 8 + 6 + 0 = 14 units,
+#:                          over that window: 14 / 3, read back as a float
+#:   harbor.projectedFinish 7 units left at that rate from the 15:00
+#:                          collector clock: 15:00 + 1:30 = 16:30 UTC
+#:   quay.doingNow          no checkpoint and no observed.fronts: empty,
+#:                          not an error
+EXPECTED_LIVE_ROWS = {
+    "front.harbor.doingNow": "Second soundings running, 8 of 12 read",
+    "front.harbor.remaining": "second soundings|buoy labels|tide window",
+    "task.harbor.tas-hb-1.jobs": "job-hb-1",
+    "task.harbor.tas-hb-2.jobs": "job-hb-2",
+    "task.harbor.tas-hb-4.jobs": "job-hb-3|job-hb-4",
+    "capacity.codex.waiting": "1",
+    "capacity.muse.waiting": "1",
+    "job.job-hb-1.model": "muse",
+    "job.job-hb-2.model": "muse",
+    "job.job-hb-3.model": "unknown",
+    "job.job-hb-4.model": "unknown",
+    "front.harbor.blockedOnOwner":
+        "Sound the north channel first or the south?"
+        "|Buy one more night of survey boat time?",
+    "front.harbor.rateWindowH": "3",
+    "front.harbor.projectedFinish": "2026-06-02T16:30:00.000Z",
+    "front.quay.doingNow": "",
+}
+#: The one row fact read back as a float rather than compared as text.
+EXPECTED_LIVE_RATE = 14 / 3
 
 BLOCKS = list(EXPECTED)
 
@@ -212,44 +301,90 @@ def run_harness(state_dir: Path) -> dict:
                       + "\n  ".join(trouble[:10]))
 
     counts = {}
+    details = {}
     nonempty = None
     for line in output.splitlines():
-        match = re.search(r"BLOCK ([A-Za-z]+) (-?\d+)\s*$", _clean(line))
+        cleaned = _clean(line)
+        match = re.search(r"BLOCK ([A-Za-z]+) (-?\d+)\s*$", cleaned)
         if match:
             counts[match.group(1)] = int(match.group(2))
             continue
-        match = re.search(r"NONEMPTY (-?\d+)\s*$", _clean(line))
+        match = re.search(r"DETAIL (\S+?)(?: (.*))?\s*$", cleaned)
+        if match:
+            details[match.group(1)] = match.group(2) or ""
+            continue
+        match = re.search(r"NONEMPTY (-?\d+)\s*$", cleaned)
         if match:
             nonempty = int(match.group(1))
     if "HARNESS-DONE" not in output:
         raise Failure("harness: did not finish; output was:\n" + output[-2000:])
     if nonempty is None:
         raise Failure("harness: printed no NONEMPTY line")
-    return {"counts": counts, "nonempty": nonempty}
+    return {"counts": counts, "details": details, "nonempty": nonempty}
 
 
-def check_blocks(state_dir: Path) -> dict:
+def check_blocks(state_dir: Path, expected: dict, label: str) -> dict:
     result = run_harness(state_dir)
     counts = result["counts"]
     missing = [name for name in BLOCKS if name not in counts]
     if missing:
-        raise Failure("blocks: the model never reported " + ", ".join(missing))
+        raise Failure("blocks (%s): the model never reported %s"
+                      % (label, ", ".join(missing)))
     wrong = ["%s: got %d, the fixture holds %d"
-             % (name, counts[name], EXPECTED[name])
-             for name in BLOCKS if counts[name] != EXPECTED[name]]
+             % (name, counts[name], expected[name])
+             for name in BLOCKS if counts[name] != expected[name]]
     if wrong:
-        raise Failure("blocks: " + str(len(wrong)) + " count(s) wrong:\n  "
-                      + "\n  ".join(wrong))
+        raise Failure("blocks (%s): %d count(s) wrong:\n  %s"
+                      % (label, len(wrong), "\n  ".join(wrong)))
     return result
+
+
+def check_live_rows(details: dict) -> None:
+    """The live-shape rows each fix owns, against hand-derived literals."""
+    missing = [key for key in EXPECTED_LIVE_ROWS if key not in details]
+    if missing:
+        raise Failure("rows (live-shape): the model never reported "
+                      + ", ".join(missing))
+    if "front.harbor.ratePerHour" not in details:
+        raise Failure("rows (live-shape): the model never reported "
+                      "front.harbor.ratePerHour")
+    wrong = ["%s: got %r, the fixture holds %r"
+             % (key, details[key], EXPECTED_LIVE_ROWS[key])
+             for key in EXPECTED_LIVE_ROWS
+             if details[key] != EXPECTED_LIVE_ROWS[key]]
+    try:
+        rate = float(details["front.harbor.ratePerHour"])
+    except ValueError:
+        raise Failure("rows (live-shape): front.harbor.ratePerHour: got %r, "
+                      "the fixture holds %r"
+                      % (details["front.harbor.ratePerHour"],
+                         EXPECTED_LIVE_RATE))
+    if abs(rate - EXPECTED_LIVE_RATE) > 1e-9:
+        wrong.append("front.harbor.ratePerHour: got %r, the fixture holds %r"
+                     % (details["front.harbor.ratePerHour"],
+                        EXPECTED_LIVE_RATE))
+    if wrong:
+        raise Failure("rows (live-shape): %d row(s) wrong:\n  %s"
+                      % (len(wrong), "\n  ".join(wrong)))
 
 
 def loads(state_dir: Path) -> int:
     files = check_lint()
     print("qmllint: %d QML file(s) clean" % len(files))
-    result = check_blocks(state_dir)
+    # Both fixtures, each against its own hand-derived counts: the mock
+    # proves the fixture renders, the live shape proves the runtime's real
+    # output does. An explicit --state replaces the mock fixture only; the
+    # live shape is always checked at its own path.
+    mock = check_blocks(state_dir, EXPECTED, "mock")
     for name in BLOCKS:
-        print("%s %d" % (name, result["counts"][name]))
-    print("loads: the plugin lints and its model folds the fixture "
+        print("mock %s %d" % (name, mock["counts"][name]))
+    live = check_blocks(FIXTURE_LIVE, EXPECTED_LIVE, "live-shape")
+    for name in BLOCKS:
+        print("live %s %d" % (name, live["counts"][name]))
+    check_live_rows(live["details"])
+    print("live rows: %d row fact(s) as the fixture holds them"
+          % (len(EXPECTED_LIVE_ROWS) + 1))
+    print("loads: the plugin lints and its model folds both fixtures "
           "into all eight blocks")
     return 0
 

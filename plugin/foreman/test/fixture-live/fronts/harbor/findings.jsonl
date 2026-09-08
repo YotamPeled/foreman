@@ -1,0 +1,1 @@
+{"on":"job-hb-2","class":"correctness","title":"A second sounding reuses the first sounding's cached reading","detail":"The reader keys its cache by berth id alone, so the second sounding gets the first sounding's answer back instead of reading again.","evidence_ref":"evidence/harbor-second-soundings-1355","at":"2026-06-02T13:55:00+00:00"}

@@ -16,11 +16,14 @@ import "Ledger.js" as Ledger
 // The state directory is $FOREMAN_STATE when set, ~/.local/state/foreman
 // otherwise. That single switch is how a fixture is fed to this model.
 //
-// Feeding is a file watcher per file plus one 2 second re-read. The watcher
-// misses two things that happen constantly here: a ledger created after the
-// panel started (a front's first task), and an atomic replace, which swaps
-// the inode out from under an inotify watch. The poll is the floor under
-// both, not the primary path.
+// Feeding is a file watcher per file plus one 2 second re-read as the
+// fallback the spec calls it. A watch notification only means the bytes
+// changed: FileView.text() is cached, and reload() keeps returning the old
+// text until onLoaded delivers the new data. So onFileChanged only asks for
+// the re-read and onLoaded does the fold; the poll just calls reload() for
+// the two things a watch can miss: a ledger created after the panel started
+// (a front's first task), and an atomic replace swapping the inode out from
+// under the watch.
 QtObject {
   id: root
 
@@ -31,6 +34,7 @@ QtObject {
     return root.home + "/.local/state/foreman"
   }
   readonly property string frontsDir: root.stateDir + "/fronts"
+  readonly property string sessionsDir: root.stateDir + "/sessions"
 
   // The collector's own clock where it has one, so every age on the panel is
   // measured from the same tick rather than from when a binding happened to
@@ -92,8 +96,17 @@ QtObject {
   property var feeds: ({})
   property var frontNames: []
 
+  // session id -> { doing, next }, read out of sessions/<id>/checkpoint.json
+  // (see CheckpointFeed). Rebuilt like the feeds when session directories
+  // come and go.
+  property var checkpoints: ({})
+  property var checkpointFeeds: ({})
+  property var sessionNames: []
+
   // ---- reading ------------------------------------------------------------
 
+  // Ask for every re-read. The fold happens in onLoaded, on the new data,
+  // never here across a mix of old and new.
   function reload() {
     rosterFile.reload()
     observedFile.reload()
@@ -105,8 +118,10 @@ QtObject {
     frozenFile.reload()
     frontsFolder.folder = ""
     frontsFolder.folder = "file://" + root.frontsDir
+    sessionsFolder.folder = ""
+    sessionsFolder.folder = "file://" + root.sessionsDir
     for (var name in root.feeds) root.feeds[name].reload()
-    root.refold()
+    for (var sid in root.checkpointFeeds) root.checkpointFeeds[sid].reload()
   }
 
   function refold() {
@@ -226,9 +241,14 @@ QtObject {
       for (var t = 0; t < tasks.length; t++) {
         var task = tasks[t]
         if (task.id) taskTitles[task.id] = task.title || task.id
+        // Section 13 wants every task not landed in remaining, so the
+        // not-landed filter and the built count are independent: a built
+        // task is counted AND listed.
         if (task.state === "landed") landed += 1
-        else if (task.state === "built") built += 1
-        else remaining.push(task.title || task.id || "")
+        else {
+          remaining.push(task.title || task.id || "")
+          if (task.state === "built") built += 1
+        }
         taskRows.push({
           id: task.id || "",
           title: task.title || "",
@@ -236,26 +256,35 @@ QtObject {
           unitsDone: task.units_done || 0,
           unitsTotal: task.units_total || 0,
           after: task.after || [],
-          jobs: root.jobRows(jobs, task.id, observedJobs)
+          jobs: root.jobRows(jobs, task.id, task.title || "", observedJobs)
         })
       }
 
       var supervisor = root.supervisorFor(name)
+      // Doing-now lives in the supervisor's checkpoint, not in observed:
+      // the collector writes no fronts key. observed.fronts is only the
+      // fallback that keeps the mock fixture rendering. A checkpoint
+      // carries no timestamp, so a live doingAgeS is honestly unknown.
+      var checkpoint = root.checkpoints[supervisor] || ({})
+      var progress = root.progressRate(feed.taskHistory || [], taskRows)
       var row = {
         name: name,
         want: record.want || "",
         state: record.state || "",
         landOn: record.land_on || "",
         supervisor: supervisor,
-        doingNow: derived.doing_now || "",
+        doingNow: checkpoint.doing || derived.doing_now || "",
+        doingNext: checkpoint.next || "",
         doingAgeS: (typeof derived.doing_age_s === "number") ? derived.doing_age_s : null,
-        ratePerHour: (typeof derived.rate_per_hour === "number") ? derived.rate_per_hour : null,
-        projectedFinish: derived.projected_finish || "",
+        ratePerHour: (progress.ratePerHour !== null) ? progress.ratePerHour
+          : ((typeof derived.rate_per_hour === "number") ? derived.rate_per_hour : null),
+        rateWindowH: progress.windowH,
+        projectedFinish: progress.projectedFinish || derived.projected_finish || "",
         landed: landed,
         built: built,
         total: tasks.length,
         remaining: remaining,
-        blockedOnOwner: root.inboxFrom(supervisor),
+        blockedOnOwner: root.blockedOnOwner(name),
         tasks: taskRows,
         monitors: root.monitorRows(feed.monitors)
       }
@@ -286,11 +315,14 @@ QtObject {
     return "capacity"
   }
 
-  function jobRows(jobs, taskId, observedJobs) {
+  // A job references its task by id or by title: the runtime writes both
+  // (on the panel front three of five live rows carry the title), so a
+  // title-referenced job must still land on its task.
+  function jobRows(jobs, taskId, taskTitle, observedJobs) {
     var rows = []
     for (var j = 0; j < jobs.length; j++) {
       var job = jobs[j]
-      if (job.task !== taskId) continue
+      if (job.task !== taskId && !(taskTitle && job.task === taskTitle)) continue
       rows.push(root.jobRow(job, observedJobs))
     }
     return rows
@@ -304,6 +336,7 @@ QtObject {
       task: job.task || "",
       kind: job.kind || "",
       role: job.role || "",
+      model: (session && session.model) ? session.model : "unknown",
       state: (session.state === "stalled") ? "stalled" : (job.state || ""),
       worktree: job.worktree || "",
       branch: job.branch || "",
@@ -313,6 +346,49 @@ QtObject {
         ? seen.minutes_since_write : null,
       waitedS: Ledger.seconds(job.queued_at || job.planned_at, root.now)
     }
+  }
+
+  // Rate and projected finish from what the task ledger actually records.
+  // A task line's `at` is the task's creation stamp: rewrites carry it
+  // forward unchanged, so successive lines for one id say how far the task
+  // has got, never when it moved there. Throughput timing does not exist at
+  // task granularity. What the ledger does record is output so far (each
+  // unlanded task's current units_done) and how long that work has existed
+  // (its oldest creation stamp to the collector clock): output over age is
+  // the rate, and the age span in hours is the window section 13 names
+  // ("rate over N hours"). Landed work is off the board and excluded. With
+  // no stamped unlanded task there is no ledger rate (null) and the caller
+  // falls back to the derived snapshot.
+  function progressRate(history, taskRows) {
+    var empty = { ratePerHour: null, windowH: null, projectedFinish: "" }
+    var open = ({})
+    for (var o = 0; o < taskRows.length; o++)
+      if (taskRows[o].state !== "landed" && taskRows[o].id) open[taskRows[o].id] = true
+    var start = 0, have = false
+    for (var i = 0; i < history.length; i++) {
+      var line = history[i]
+      if (!line || !line.id || !(line.id in open)) continue
+      var t = Date.parse(line.at || "")
+      if (isNaN(t)) continue
+      if (!have) { start = t; have = true }
+      else if (t < start) start = t
+    }
+    var nowMs = Date.parse(root.now || "")
+    if (!have || isNaN(nowMs) || nowMs <= start) return empty
+    var done = 0, remaining = 0
+    for (var r = 0; r < taskRows.length; r++) {
+      if (taskRows[r].state === "landed") continue
+      done += taskRows[r].unitsDone || 0
+      var left = (taskRows[r].unitsTotal || 0) - (taskRows[r].unitsDone || 0)
+      if (left > 0) remaining += left
+    }
+    var windowH = (nowMs - start) / 3600000
+    if (done <= 0) return { ratePerHour: 0, windowH: windowH, projectedFinish: "" }
+    var rate = done / windowH
+    var projected = ""
+    if (remaining > 0)
+      projected = new Date(nowMs + (remaining / rate) * 3600000).toISOString()
+    return { ratePerHour: rate, windowH: windowH, projectedFinish: projected }
   }
 
   function monitorRows(monitors) {
@@ -342,12 +418,17 @@ QtObject {
     return backup
   }
 
-  function inboxFrom(sessionId) {
-    if (!sessionId) return []
+  // Open questions from this front: the sender joins to the front through
+  // the roster, not by matching one supervisor session, so a question from
+  // a worker on the front — or from a replaced supervisor — is still seen.
+  function blockedOnOwner(front) {
+    if (!front) return []
     var out = []
     var open = Ledger.unset(root.inbox, "answered_at")
-    for (var i = 0; i < open.length; i++)
-      if (open[i]["from"] === sessionId) out.push(open[i].question || "")
+    for (var i = 0; i < open.length; i++) {
+      var sender = root.roster[open[i]["from"]] || ({})
+      if (sender.front === front) out.push(open[i].question || "")
+    }
     return out
   }
 
@@ -409,12 +490,26 @@ QtObject {
              waiting: waiting, landed: landed }
   }
 
+  // Which pool a role waits on. A job carries its role (muse, astra) but
+  // waits on a pool (muse, codex): the slots ledger carries the mapping,
+  // later lines winning. A role with no slot line yet waits on the pool of
+  // the same name, which is also what the old code assumed throughout.
+  function poolFor(role) {
+    var pool = ""
+    for (var i = 0; i < root.slots.length; i++) {
+      var line = root.slots[i]
+      if (line && line.role === role && typeof line.pool === "string" && line.pool)
+        pool = line.pool
+    }
+    return pool || role
+  }
+
   function buildCapacity(queuedJobs) {
     var pools = (root.observed && root.observed.pools) ? root.observed.pools : ({})
     var waitingBy = ({})
     for (var q = 0; q < queuedJobs.length; q++) {
-      var role = queuedJobs[q].role || ""
-      waitingBy[role] = (waitingBy[role] || 0) + 1
+      var pool = root.poolFor(queuedJobs[q].role || "")
+      waitingBy[pool] = (waitingBy[pool] || 0) + 1
     }
     var names = Object.keys(pools).sort()
     var rows = []
@@ -483,6 +578,66 @@ QtObject {
     onStatusChanged: if (status === FolderListModel.Ready) root.syncFronts()
   }
 
+  // ---- supervisor checkpoints ---------------------------------------------
+  // Doing-now is not derived by the collector, so it is not in observed: it
+  // is read here, one watched file per session directory, and joined to a
+  // front through the supervisor's roster row.
+
+  function ingestCheckpoints() {
+    var next = ({})
+    for (var sid in root.checkpointFeeds) {
+      var feed = root.checkpointFeeds[sid]
+      if (feed.doing !== "" || feed.next !== "")
+        next[sid] = { doing: feed.doing, next: feed.next }
+    }
+    root.checkpoints = next
+    root.rebuild()
+  }
+
+  function syncCheckpoints() {
+    var names = []
+    for (var i = 0; i < sessionsFolder.count; i++) {
+      var name = sessionsFolder.get(i, "fileName")
+      if (typeof name === "string" && name.length > 0 && name[0] !== ".") names.push(name)
+    }
+    names.sort()
+
+    var next = ({})
+    for (var n = 0; n < names.length; n++) {
+      var existing = root.checkpointFeeds[names[n]]
+      if (existing) {
+        next[names[n]] = existing
+      } else {
+        next[names[n]] = checkpointComponent.createObject(root, {
+          sessionId: names[n],
+          dir: root.sessionsDir + "/" + names[n]
+        })
+      }
+    }
+    for (var old in root.checkpointFeeds)
+      if (!(old in next)) root.checkpointFeeds[old].destroy()
+
+    root.checkpointFeeds = next
+    root.sessionNames = names
+    root.ingestCheckpoints()
+  }
+
+  property Component checkpointComponent: Component {
+    CheckpointFeed {
+      onUpdated: root.ingestCheckpoints()
+    }
+  }
+
+  property FolderListModel sessionsFolder: FolderListModel {
+    folder: "file://" + root.sessionsDir
+    showDirs: true
+    showFiles: false
+    showDotAndDotDot: false
+    sortField: FolderListModel.Name
+    onCountChanged: root.syncCheckpoints()
+    onStatusChanged: if (status === FolderListModel.Ready) root.syncCheckpoints()
+  }
+
   // ---- the watched files at the state root --------------------------------
 
   property FileView rosterFile: FileView {
@@ -490,7 +645,7 @@ QtObject {
     watchChanges: true
     blockLoading: true
     printErrors: false
-    onFileChanged: root.refold()
+    onFileChanged: rosterFile.reload()
     onLoaded: root.refold()
   }
   property FileView observedFile: FileView {
@@ -498,7 +653,7 @@ QtObject {
     watchChanges: true
     blockLoading: true
     printErrors: false
-    onFileChanged: root.refold()
+    onFileChanged: observedFile.reload()
     onLoaded: root.refold()
   }
   property FileView collectorFile: FileView {
@@ -506,7 +661,7 @@ QtObject {
     watchChanges: true
     blockLoading: true
     printErrors: false
-    onFileChanged: root.refold()
+    onFileChanged: collectorFile.reload()
     onLoaded: root.refold()
   }
   property FileView inboxFile: FileView {
@@ -514,7 +669,7 @@ QtObject {
     watchChanges: true
     blockLoading: true
     printErrors: false
-    onFileChanged: root.refold()
+    onFileChanged: inboxFile.reload()
     onLoaded: root.refold()
   }
   property FileView mergesFile: FileView {
@@ -522,7 +677,7 @@ QtObject {
     watchChanges: true
     blockLoading: true
     printErrors: false
-    onFileChanged: root.refold()
+    onFileChanged: mergesFile.reload()
     onLoaded: root.refold()
   }
   property FileView anomaliesFile: FileView {
@@ -530,7 +685,7 @@ QtObject {
     watchChanges: true
     blockLoading: true
     printErrors: false
-    onFileChanged: root.refold()
+    onFileChanged: anomaliesFile.reload()
     onLoaded: root.refold()
   }
   property FileView slotsFile: FileView {
@@ -538,7 +693,7 @@ QtObject {
     watchChanges: true
     blockLoading: true
     printErrors: false
-    onFileChanged: root.refold()
+    onFileChanged: slotsFile.reload()
     onLoaded: root.refold()
   }
   // Presence is the whole signal: a frozen swarm has this file, a live one
@@ -548,7 +703,7 @@ QtObject {
     watchChanges: true
     blockLoading: true
     printErrors: false
-    onFileChanged: root.refold()
+    onFileChanged: frozenFile.reload()
     onLoaded: root.refold()
   }
 
