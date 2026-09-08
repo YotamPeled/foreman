@@ -900,3 +900,40 @@ def test_a_cap_on_an_unregistered_pool_says_it_governs_nothing(
     err = capsys.readouterr().err
     assert "nosuchpool" in err and "governs nothing" in err
     assert loaded.pools["nosuchpool"]["cap"] == 3
+
+
+def test_the_warning_about_an_unenforced_cap_prints_once(
+        env, monkeypatch, capsys):
+    """A screen reads the configuration several times and warns once.
+
+    `foreman status` loaded the configuration five times in one call, so
+    the owner saw the same sentence five times before the first line of the
+    screen. A warning repeated is a warning ignored.
+    """
+    from foreman import config
+
+    path = config.ensure_user_config(create_dir=True)
+    path.write_text(path.read_text(encoding="utf-8")
+                    + "\n[pool.nosuchpool]\ncap = 3\n", encoding="utf-8")
+    config.load()
+    config.load()
+    config.load()
+    err = capsys.readouterr().err
+    assert err.count("governs nothing") == 1
+
+
+def test_a_job_launched_by_task_title_records_the_task_id(env, capsys):
+    """`--task` takes a title; the record links to the task by id.
+
+    Every reader joins a job to its task by id, so a job carrying the title
+    belongs to no task at all: it cannot be found under its task, and the
+    screen draws it under the line for jobs whose task nothing names.
+    """
+    root = env
+    add_front(root, "alpha")
+    session = launched(root, capsys)
+    job_id = job_of(session)
+    tasks = {task["title"]: task["id"] for task in
+             store.read_ledger(paths.front_tasks_path("alpha"))}
+    assert tasks["first work"] != "first work"
+    assert job_lines(job_id)[-1]["task"] == tasks["first work"]

@@ -118,6 +118,20 @@ def _check(me: caller.Caller | None, front: str | None,
     caller.check_front_supervisor(me, front, verb, violations=violations)
 
 
+#: Fields a reset writes onto a task. They are dropped the moment the task
+#: moves forward again, so the screen shows a reset only while it is the
+#: last thing that happened to the task.
+RESET_FIELDS = ("reset_reason", "reset_by", "reset_at")
+
+
+def _moved(record: dict, **changes: object) -> dict:
+    """A revised task record for a forward move: the reset note cleared."""
+    revised = dict(record, **changes)
+    for field in RESET_FIELDS:
+        revised.pop(field, None)
+    return revised
+
+
 def _release_successors(front: str, who: str) -> list[str]:
     """Move waiting tasks whose predecessors are all satisfied to ready.
 
@@ -143,7 +157,7 @@ def _release_successors(front: str, who: str) -> list[str]:
                 break
         if satisfied:
             store.append_ledger(paths.front_tasks_path(front),
-                                dict(task, state="ready"), session_id=who)
+                                _moved(task, state="ready"), session_id=who)
             released.append(task.get("id"))
     return released
 
@@ -212,7 +226,7 @@ def job_verify_main(job_id: str, confirmed: bool,
                         dict(record, state="verified", verified_at=now),
                         session_id=who)
     store.append_ledger(paths.front_tasks_path(front),
-                        dict(task, units_done=done), session_id=who)
+                        _moved(task, units_done=done), session_id=who)
     print(f"{key} verified "
           f"({add} units on task '{task.get('title')}': {done}/{total})")
     return 0
@@ -298,11 +312,68 @@ def task_built_main(task_ref: str) -> int:
     assert front is not None and record is not None
     who = caller.by_line(me)
     store.append_ledger(paths.front_tasks_path(front),
-                        dict(record, state="built"), session_id=who)
+                        _moved(record, state="built"), session_id=who)
     released = _release_successors(front, who)
     print(f"{record.get('id')} built")
     for rid in released:
         print(f"{rid} ready")
+    return 0
+
+
+def _open_state(front: str, record: dict) -> str:
+    """Where this task sits when no work has been done on it yet.
+
+    Not a constant: a task with a predecessor that has not landed is
+    waiting, and one with nothing in front of it is ready. Recomputing is
+    what makes a reset the true inverse of the move that built it.
+    """
+    tasks, by_id = _read_tasks(front)
+    by_title = {task.get("title"): task for task in tasks
+                if isinstance(task.get("title"), str)}
+    for pred in record.get("after") or []:
+        hit = by_id.get(pred, by_title.get(pred))
+        if hit is None or hit.get("state") != "landed":
+            return "waiting"
+    return "ready"
+
+
+def task_reset_main(task_ref: str, reason: str | None = None) -> int:
+    """Put a task back where it started, with the reason on the screen.
+
+    A task is moved by evidence, so moving it back is not a correction to
+    be made quietly: the reason travels on the record and `foreman status`
+    prints it under the task until the task moves again. The units go back
+    to zero and a landed head is dropped, because a reset task claims
+    nothing. It exists because a proof run marked a real front's first task
+    built with a fixture job, and the front that starts on that ledger
+    tomorrow must not inherit it.
+    """
+    verb = "task reset"
+    me, violations = caller.resolve(verb)
+    front, record = _resolve_task(task_ref, violations)
+    _check(me, front, verb, violations)
+    why = (reason or "").strip()
+    if not why:
+        violations.append("field '--reason' is required for 'task reset': "
+                          "a task moving backwards is the owner's business")
+    if record is not None and front is not None:
+        if record.get("state") == _open_state(front, record) and \
+                not (record.get("units_done") or 0):
+            violations.append(
+                f"task '{record.get('title')}' is already "
+                f"'{record.get('state')}' with no units done")
+    if violations:
+        return _refuse(violations)
+    assert front is not None and record is not None
+    who = caller.by_line(me)
+    revised = dict(record, state=_open_state(front, record), units_done=0,
+                   reset_reason=why, reset_by=who,
+                   reset_at=store.utcnow_iso())
+    for gone in ("head", "landed_by", "landed_at"):
+        revised.pop(gone, None)
+    store.append_ledger(paths.front_tasks_path(front), revised,
+                        session_id=who)
+    print(f"{record.get('id')} {revised['state']} \u2014 reset: {why}")
     return 0
 
 
@@ -324,8 +395,8 @@ def task_landed_main(task_ref: str, head: str | None = None) -> int:
     who = caller.by_line(me)
     now = store.utcnow_iso()
     store.append_ledger(paths.front_tasks_path(front),
-                        dict(record, state="landed", head=sha,
-                             landed_by=who, landed_at=now),
+                        _moved(record, state="landed", head=sha,
+                               landed_by=who, landed_at=now),
                         session_id=who)
     released = _release_successors(front, who)
     print(f"{record.get('id')} landed {sha}")
@@ -469,14 +540,21 @@ def add_task_arguments(sub: argparse.ArgumentParser) -> None:
     landed.add_argument("task", help="task id or title")
     landed.add_argument("--head", default=None,
                         help="landed commit (required)")
+    reset = verbs.add_parser(
+        "reset", help="Put a task back to where it started, with a reason.")
+    reset.add_argument("task", help="task id or title")
+    reset.add_argument("--reason", default=None,
+                       help="why it moved backwards (required)")
 
 
-@cli.subcommand("task", help="Mark a task built or landed.")
+@cli.subcommand("task", help="Mark a task built or landed, or reset it.")
 def _task_entry(args: argparse.Namespace) -> int:
     if args.task_verb == "built":
         return task_built_main(args.task)
     if args.task_verb == "landed":
         return task_landed_main(args.task, head=args.head)
+    if args.task_verb == "reset":
+        return task_reset_main(args.task, reason=args.reason)
     raise AssertionError(f"unknown task verb {args.task_verb!r}")
 
 

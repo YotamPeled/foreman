@@ -265,6 +265,24 @@ def format_rulings(texts: list[str]) -> str:
     return "\n".join(f"- {text}" for text in texts)
 
 
+def lookup_task_id(front: str | None, task: str | None) -> str | None:
+    """The task id ``--task`` names, whether it was given as id or title.
+
+    ``--task`` takes either, and every reader of a job links it to its task
+    by id: a job recorded with a title belongs to no task any screen can
+    find, so it is drawn again under the line for jobs whose task nothing
+    names. Resolving here is the one place that can fix it, because it is
+    the only place that still has the front in hand.
+    """
+    if not front or not task:
+        return None
+    for record in store.read_ledger(paths.front_tasks_path(front)):
+        if record.get("id") == task or record.get("title") == task:
+            found = record.get("id")
+            return found if isinstance(found, str) and found else None
+    return None
+
+
 def lookup_scope(front: str | None, task: str | None) -> str | None:
     if not front or not task:
         return None
@@ -687,7 +705,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
         # saying what is running, which is the whole point of the screen.
         if args.front:
             job = entities.Job(
-                id=job_id, task=args.task,
+                id=job_id,
+                task=lookup_task_id(args.front, args.task) or args.task,
                 kind=args.kind, role=args.role,
                 spec_path=os.path.abspath(args.spec), session=session_id,
                 worktree=worktree, branch=branch, log=log_path,

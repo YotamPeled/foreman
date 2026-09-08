@@ -320,6 +320,10 @@ def _task_line(task: dict, titles: dict[str, str]) -> str:
         head += f" \u00b7 after: {', '.join(after)}"
     if task.get("head"):
         head += f" \u00b7 head {task.get('head')}"
+    # A task that was moved backwards says so until it moves again: the
+    # reset is the owner's business, not a quiet correction.
+    if task.get("reset_reason"):
+        head += f" \u00b7 reset: {task.get('reset_reason')}"
     return head
 
 
@@ -335,6 +339,17 @@ def _load_fronts() -> tuple[list[tuple[str, list[dict], list[dict]]],
         local = {task.get("id"): task.get("title") for task in tasks
                  if task.get("id")}
         titles.update(local)
+        # A job may name its task by title, which is what `--task` accepts.
+        # The launcher resolves it now, but records written before that do
+        # not match any task id, so every one of them was drawn a second
+        # time under "the task no ledger names". Resolve on the way in and
+        # the screen has one rule: a job hangs under its task.
+        by_title = {title: tid for tid, title in local.items()
+                    if isinstance(title, str)}
+        jobs = [dict(job, task=by_title[job["task"]])
+                if isinstance(job.get("task"), str)
+                and job["task"] in by_title else job
+                for job in jobs]
         for job in jobs:
             if isinstance(job.get("session"), str) and \
                     isinstance(job.get("task"), str):

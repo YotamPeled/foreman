@@ -203,6 +203,12 @@ def ensure_user_config(create_dir: bool = False) -> Path:
     return path
 
 
+#: Pools already warned about in this process, so a screen that reads the
+#: configuration five times says it once. Keyed by file as well as pool: a
+#: test that points the config elsewhere is a different file and warns again.
+_WARNED: set[tuple[str, str]] = set()
+
+
 def _registered_pools() -> frozenset[str]:
     """Pool names an adapter actually registers, read at call time so a
     test that registers a fake pool is seen like any other."""
@@ -234,7 +240,9 @@ def load() -> Config:
         # megalodon held nothing. A configuration left over from that
         # default is still on this machine, so say so rather than let a
         # number sit there looking like a limit.
-        if name not in _registered_pools():
+        if name not in _registered_pools() and \
+                (str(path), name) not in _WARNED:
+            _WARNED.add((str(path), name))
             print(f"foreman: warning: {path} caps a pool '{name}' that no "
                   f"adapter registers, so that cap governs nothing",
                   file=sys.stderr)

@@ -542,3 +542,135 @@ def test_worker_may_not_move_a_task(env, monkeypatch, capsys):
     _, err = capsys.readouterr()
     assert "'muse'" in err
     assert len(store.read_ledger(paths.front_tasks_path("flow"))) == before
+
+
+def test_reset_puts_a_built_task_back_with_the_reason_on_the_screen(
+        env, monkeypatch, capsys):
+    """`task reset` is the inverse of the move that built a task.
+
+    Written because a proof run marked a real front's first task built,
+    units 1/1, with a fixture job, and the front that starts on that ledger
+    next must not inherit it. The task goes back to the state it had before
+    the work — ready here, because nothing precedes it — its units go back
+    to zero, and the reason stays on `foreman status` until the task moves
+    again.
+    """
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    store.append_ledger(paths.front_jobs_path("flow"), {
+        "id": "job-flow1", "task": first, "kind": "implement",
+        "role": "muse", "priority": 1, "spec_path": "/tmp/specs/job.md",
+        "session": None, "worktree": "", "branch": "", "log": "",
+        "timeout": "20m", "units": [1, 2, 3], "attempt": 1,
+        "state": "returned",
+        "planned_at": iso(NOW - timedelta(minutes=10)),
+        "queued_at": iso(NOW - timedelta(minutes=9)),
+        "started_at": iso(NOW - timedelta(minutes=8)),
+        "returned_at": iso(NOW - timedelta(minutes=2)),
+        "verified_at": None, "artifact": "", "verdict_path": "",
+    })
+    assert run(monkeypatch, ["job", "verify", "job-flow1", "--confirmed",
+                             "--command", "make check first",
+                             "--output", "ok"], SUP) == 0
+    assert run(monkeypatch, ["task", "built", first], SUP) == 0
+    capsys.readouterr()
+    assert tasks_by_title("flow")["first"]["state"] == "built"
+
+    assert run(monkeypatch, ["task", "reset", first,
+                             "--reason", "built by a fixture job"], SUP) == 0
+    capsys.readouterr()
+    back = tasks_by_title("flow")["first"]
+    assert back["state"] == "ready"
+    assert back["units_done"] == 0
+    assert back["reset_reason"] == "built by a fixture job"
+    assert "reset: built by a fixture job" in status_out(monkeypatch, capsys)
+
+
+def test_reset_without_a_reason_is_refused(env, monkeypatch, capsys):
+    """A task moving backwards without a reason tells the owner nothing."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    before = len(store.read_ledger(paths.front_tasks_path("flow")))
+    assert run(monkeypatch, ["task", "reset", first], SUP) == 1
+    assert "--reason" in capsys.readouterr().err
+    assert len(store.read_ledger(paths.front_tasks_path("flow"))) == before
+
+
+def test_reset_of_an_untouched_task_is_refused(env, monkeypatch, capsys):
+    """Nothing to undo is a refusal, not a line on the ledger."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    before = len(store.read_ledger(paths.front_tasks_path("flow")))
+    assert run(monkeypatch, ["task", "reset", first,
+                             "--reason", "no work was done"], SUP) == 1
+    assert "already 'ready'" in capsys.readouterr().err
+    assert len(store.read_ledger(paths.front_tasks_path("flow"))) == before
+
+
+def test_a_worker_may_not_reset_a_task(env, monkeypatch, capsys):
+    """The same gate as every other progress verb."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    roster = store.read_snapshot(paths.roster_path())
+    roster["sessions"][WRK] = sup_session(WRK, "flow", role="muse",
+                                          pool="fake")
+    store.write_snapshot(paths.roster_path(), roster)
+    first = tasks_by_title("flow")["first"]["id"]
+    assert run(monkeypatch, ["task", "reset", first,
+                             "--reason", "because"], WRK) == 1
+    assert "muse" in capsys.readouterr().err
+
+
+def test_moving_forward_clears_the_reset_note(env, monkeypatch, capsys):
+    """A reset shows only while it is the last thing that happened."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    store.append_ledger(paths.front_tasks_path("flow"),
+                        dict(tasks_by_title("flow")["first"],
+                             state="ready", units_done=0,
+                             reset_reason="built by a fixture job",
+                             reset_by="owner", reset_at=iso(NOW)))
+    store.append_ledger(paths.front_jobs_path("flow"), {
+        "id": "job-flow2", "task": first, "kind": "implement",
+        "role": "muse", "priority": 1, "spec_path": "/tmp/specs/job.md",
+        "session": None, "worktree": "", "branch": "", "log": "",
+        "timeout": "20m", "units": [1, 2, 3], "attempt": 1,
+        "state": "returned",
+        "planned_at": iso(NOW - timedelta(minutes=10)),
+        "queued_at": iso(NOW - timedelta(minutes=9)),
+        "started_at": iso(NOW - timedelta(minutes=8)),
+        "returned_at": iso(NOW - timedelta(minutes=2)),
+        "verified_at": None, "artifact": "", "verdict_path": "",
+    })
+    assert run(monkeypatch, ["job", "verify", "job-flow2", "--confirmed",
+                             "--command", "make check first",
+                             "--output", "ok"], SUP) == 0
+    capsys.readouterr()
+    assert "reset_reason" not in tasks_by_title("flow")["first"]
+    assert "reset:" not in status_out(monkeypatch, capsys)
+
+
+def test_a_job_launched_by_task_title_is_listed_once(
+        env, monkeypatch, capsys):
+    """One job, one line, under the task it belongs to.
+
+    `foreman launch --task` takes an id or a title while every reader links
+    a job to its task by id, so a job recorded with the title hung under
+    nothing and was drawn a second time by the line for jobs whose task no
+    ledger names. The screen resolves a title on the way in.
+    """
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    seed_running_job("flow", "job-title1", "first", [1])
+    lines = status_out(monkeypatch, capsys).splitlines()
+    assert sum(1 for line in lines if "muse job running" in line) == 1
+    # The fallback draws a bare title line of its own before the job; the
+    # task's own line always carries its state and units.
+    assert [line for line in lines if line.strip() == "first"] == []
+    where = next(i for i, line in enumerate(lines)
+                 if line.strip().startswith("first \u2014 ready"))
+    assert "muse job running" in lines[where + 1]
