@@ -43,6 +43,7 @@ def main(argv: list[str] | None = None) -> int:
     # module imports this one for the decorator. Doing it before the parser is
     # built is what makes `python -m foreman.cli <verb>` find the verb at all.
     from . import collector as _collector  # noqa: F401
+    from . import config as _config  # noqa: F401
     from . import fronts as _fronts  # noqa: F401
     from . import launch as _launch  # noqa: F401
     from . import progress as _progress  # noqa: F401

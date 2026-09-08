@@ -450,15 +450,14 @@ def _merge_queue(titles: dict[str, str], now: datetime) -> list[str]:
 
 
 def _capacity(observed: dict | None) -> list[str]:
-    pools = (observed or {}).get("pools") or {}
-    if not pools:
-        return ["Capacity: no collector data yet."]
-    lines = ["Capacity:"]
-    for name in sorted(pools):
-        entry = pools[name] if isinstance(pools[name], dict) else {}
-        held, total = entry.get("held", "?"), entry.get("total", "?")
-        lines.append(f"  {name}: {held}/{total} held")
-    return lines
+    """Held/cap per pool, held/ceiling per allocated front role, and the
+    jobs waiting on a full pool — built from the slot ledger and the front
+    records, so it is right whether or not the collector has ticked. The
+    whole computation lives in :mod:`foreman.capacity`, imported here and
+    not at the top so this module keeps the import list it had."""
+    from . import capacity
+
+    return capacity.capacity_lines(observed)
 
 
 def render(now: datetime | None = None) -> str:
