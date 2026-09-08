@@ -1,0 +1,2 @@
+{"id":"mrg-wait001","branch":"foreman/job-b1","tasks":["tas-beacon1"],"target":"dev","review_refs":[],"head":"","result":"","requested_at":"2026-09-08T11:38:00+00:00","landed_at":null,"by":"ses-supbeacon"}
+{"id":"mrg-land001","branch":"foreman/job-a4","tasks":["tas-atlas3"],"target":"dev","review_refs":[],"head":"a1b2c3d","result":"landed","requested_at":"2026-09-08T09:00:00+00:00","landed_at":"2026-09-08T10:00:00+00:00","by":"ses-supatlas"}

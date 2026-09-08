@@ -701,7 +701,10 @@ def test_collector_unit_prints_the_packaging_template(env, capsys):
     with open(repo_unit_template(), encoding="utf-8") as handle:
         template = handle.read()
     assert "@FOREMAN_BIN@" in template and "@STATE_DIR@" in template
-    assert "/hom" + "e/" not in template
+    assert os.path.expanduser("~") not in template
+    # The expected executable is derived independently, never from the
+    # output: a test that reads its expectation back out of the answer
+    # cannot fail when the answer is wrong.
     binary = shutil.which("foreman")
     expected_bin = binary if binary else f"{sys.executable} -m foreman"
     expected = (template

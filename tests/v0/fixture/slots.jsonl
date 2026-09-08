@@ -1,0 +1,3 @@
+{"pool":"muse","component":"atlas","role":"muse","job":"job-a1","session":"ses-run0001","granted_at":"2026-09-08T11:52:00+00:00","released_at":null}
+{"pool":"grok","component":"atlas","role":"grok","job":"job-a2","session":"ses-stal0001","granted_at":"2026-09-08T11:42:00+00:00","released_at":null}
+{"pool":"muse","component":"atlas","role":"muse","job":"job-a4","session":"ses-old0001","granted_at":"2026-09-08T08:30:00+00:00","released_at":"2026-09-08T10:00:00+00:00"}
