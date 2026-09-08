@@ -1,8 +1,8 @@
 """Rulings, inbox and checkpoint verbs.
 
-``rule`` appends swarm/component rulings and records acks; ``ask`` files a
+``rule`` appends swarm/front rulings and records acks; ``ask`` files a
 question with a recommendation; ``answer`` records the answer and, in the
-same call, turns it into a ruling on the asker's component; ``inbox`` lists
+same call, turns it into a ruling on the asker's front; ``inbox`` lists
 open questions oldest first; ``checkpoint`` writes the calling session's
 checkpoint file and stamps the roster's last declared write.
 
@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from . import caller, cli, entities, ids, paths, store
 from .caller import FOREMAN, OWNER, SUPERVISOR, Refusal
 
-_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
+_FRONT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 
 
 def _fold(records: list[dict]) -> tuple[list[dict], dict[str, dict]]:
@@ -68,7 +68,7 @@ def _refuse(violations: list[str]) -> int:
 
 
 def add_rule_arguments(sub: argparse.ArgumentParser) -> None:
-    sub.add_argument("scope", help="swarm, a component name, 'ack' or 'list'")
+    sub.add_argument("scope", help="swarm, a front name, 'ack' or 'list'")
     sub.add_argument("text", nargs="*", help="ruling text, or the id for ack")
 
 
@@ -118,9 +118,9 @@ def rule_main(scope: str, parts: list[str]) -> int:
         print(f"{rid} acked by {who}")
         return 0
     caller.check_role(me, "rule", FOREMAN, violations=violations)
-    if scope != "swarm" and not _COMPONENT_RE.fullmatch(scope):
+    if scope != "swarm" and not _FRONT_RE.fullmatch(scope):
         violations.append(
-            f"field 'scope' must be 'swarm' or a component name (got '{scope}')"
+            f"field 'scope' must be 'swarm' or a front name (got '{scope}')"
         )
     if not parts:
         violations.append("field 'text' is required for 'rule <scope> <text>'")
@@ -238,12 +238,12 @@ def answer_main(iid: str, answer_parts: list[str]) -> int:
         ).to_dict(),
         session_id=who,
     )
-    asker_component = None
+    asker_front = None
     if item.from_ and item.from_ != OWNER:
         asker = caller.read_roster().get("sessions", {}).get(item.from_, {})
         if isinstance(asker, dict):
-            asker_component = asker.get("component")
-    scope = asker_component or "swarm"
+            asker_front = asker.get("front")
+    scope = asker_front or "swarm"
     caller.check_self_contained(answer, "ruling text")
     source = "owner" if (me is None or me.role == OWNER) else "foreman"
     rid = ids.mint("ruling")

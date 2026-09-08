@@ -9,8 +9,8 @@ held/total and the swarm counts all come from ``observed.json``. Names,
 questions, details and checkpoints come straight from the ledgers through
 ``paths.py`` — nothing here builds a path or opens a state file by hand.
 
-Two version notes. Monitors (``measurements.jsonl``) and the component
-queue (component admission) have no writer in v0, so those blocks are left
+Two version notes. Monitors (``measurements.jsonl``) and the front
+queue (front admission) have no writer in v0, so those blocks are left
 out entirely rather than printed empty. Every other block with nothing in
 it prints one line saying so, never an empty heading.
 
@@ -111,9 +111,9 @@ def _open_anomalies(records: list[dict]) -> list[dict]:
             if folded[key].get("resolved_at") is None]
 
 
-def _components() -> list[str]:
+def _fronts() -> list[str]:
     try:
-        return sorted(path.name for path in paths.components_dir().iterdir()
+        return sorted(path.name for path in paths.fronts_dir().iterdir()
                       if path.is_dir())
     except OSError:
         return []
@@ -121,14 +121,14 @@ def _components() -> list[str]:
 
 def _tasks(name: str) -> list[dict]:
     try:
-        return _fold_by_id(store.read_ledger(paths.component_tasks_path(name)))
+        return _fold_by_id(store.read_ledger(paths.front_tasks_path(name)))
     except OSError:
         return []
 
 
 def _jobs(name: str) -> list[dict]:
     try:
-        return _fold_by_id(store.read_ledger(paths.component_jobs_path(name)))
+        return _fold_by_id(store.read_ledger(paths.front_jobs_path(name)))
     except OSError:
         return []
 
@@ -163,14 +163,14 @@ def _doing_line(sid: str, record: dict, sessions_view: dict,
     return f"{doing.strip()} ({age} ago)"
 
 
-def _supervisor_for(component: str, roster: dict) -> tuple[str, dict] | None:
+def _supervisor_for(front: str, roster: dict) -> tuple[str, dict] | None:
     running = backup = None
     for sid, record in roster.items():
         if not isinstance(record, dict):
             continue
         if record.get("role") != "supervisor":
             continue
-        if record.get("component") != component:
+        if record.get("front") != front:
             continue
         if record.get("state") == "running" and running is None:
             running = (sid, record)
@@ -220,7 +220,7 @@ def _needs_you(now: datetime) -> list[str]:
 def _problem_context(kind: str, subject: str, roster: dict,
                      jobs_by_session: dict) -> str | None:
     """What the anomaly is about, named by what it does: the task title a
-    stalled job works on, or the component name a supervisor watches."""
+    stalled job works on, or the front name a supervisor watches."""
     record = roster.get(subject)
     if not isinstance(record, dict):
         return None
@@ -228,9 +228,9 @@ def _problem_context(kind: str, subject: str, roster: dict,
         job = jobs_by_session.get(subject)
         if job is not None:
             return job
-        return record.get("component")
+        return record.get("front")
     if kind.startswith("supervisor"):
-        return record.get("component")
+        return record.get("front")
     return None
 
 
@@ -290,14 +290,14 @@ def _task_line(task: dict, titles: dict[str, str]) -> str:
     return head
 
 
-def _load_components() -> tuple[list[tuple[str, list[dict], list[dict]]],
+def _load_fronts() -> tuple[list[tuple[str, list[dict], list[dict]]],
                           dict[str, str], dict[str, str]]:
-    """Every component with its folded tasks and jobs, plus the global
+    """Every front with its folded tasks and jobs, plus the global
     task-title and session->task-name maps both Working and Problems read."""
     loaded: list[tuple[str, list[dict], list[dict]]] = []
     titles: dict[str, str] = {}
     jobs_by_session: dict[str, str] = {}
-    for name in _components():
+    for name in _fronts():
         tasks, jobs = _tasks(name), _jobs(name)
         local = {task.get("id"): task.get("title") for task in tasks
                  if task.get("id")}
@@ -358,7 +358,7 @@ def _working(roster: dict, observed: dict | None, now: datetime,
 
 def _job_queue(now: datetime) -> list[str]:
     waiting: list[str] = []
-    for name in _components():
+    for name in _fronts():
         tasks = {task.get("id"): task.get("title") for task in _tasks(name)}
         for job in _jobs(name):
             if job.get("state") not in QUEUE_STATES:
@@ -423,7 +423,7 @@ def render(now: datetime | None = None) -> str:
         observed = None
     if not isinstance(observed, dict):
         observed = None
-    loaded, titles, jobs_by_session = _load_components()
+    loaded, titles, jobs_by_session = _load_fronts()
     blocks = [_header(roster, observed, moment),
               *_needs_you(moment),
               *_problems(roster, jobs_by_session, moment),

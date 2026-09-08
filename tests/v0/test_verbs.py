@@ -19,9 +19,9 @@ FOREMAN_SES = "ses-for0001"
 GHOST = "ses-ghost01"
 
 
-def _session(sid, role, component=None):
+def _session(sid, role, front=None):
     return entities.Session(
-        id=sid, role=role, pool="opus", model="opus", component=component,
+        id=sid, role=role, pool="opus", model="opus", front=front,
         pid=1000, launched_by="ses-root", started_at="2026-09-08T00:00:00+00:00",
         state="running",
     ).to_dict()

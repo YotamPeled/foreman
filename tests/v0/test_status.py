@@ -72,7 +72,7 @@ def test_empty_state_prints_nothing_lines(monkeypatch, capsys, tmp_path):
     assert "Job queue: empty." in out
     assert "Merge queue: empty." in out
     assert "Capacity: no collector data yet." in out
-    assert "Component queue" not in out
+    assert "Front queue" not in out
     assert "Monitor" not in out
 
 

@@ -184,7 +184,7 @@ def seed_roster(entries: dict[str, dict]) -> None:
 def worker_session(sid: str, pid: int | None, **fields) -> dict:
     base = {
         "id": sid, "role": "muse", "pool": "fake",
-        "model": "fake-test-model", "component": "comp",
+        "model": "fake-test-model", "front": "comp",
         "job": None, "pid": pid, "pgid": pid,
         "worktree": "", "log": "", "timeout": "",
         "launched_by": None, "started_at": iso(NOW),
@@ -238,12 +238,12 @@ def test_tick_records_roster_fields_and_derived_numbers(
     (wt / "sub").mkdir(parents=True)
     (wt / "sub" / "artifact.txt").write_text("done\n", encoding="utf-8")
     utime_tree(wt, NOW.timestamp() - 120)
-    store.append_ledger(paths.component_jobs_path("comp"), {
+    store.append_ledger(paths.front_jobs_path("comp"), {
         "id": "job-1", "task": "tas-1", "kind": "implement", "role": "muse",
         "state": "running", "worktree": str(wt), "timeout": "10m",
         "started_at": at(120)})
     store.append_ledger(paths.slots_path(), {
-        "pool": "fake", "component": "comp", "role": "muse", "job": "job-1",
+        "pool": "fake", "front": "comp", "role": "muse", "job": "job-1",
         "session": sid, "granted_at": at(60), "released_at": None})
     store.append_ledger(paths.inbox_path(), {
         "id": "inb-1", "from": "ses-ask0001", "kind": "money",
@@ -339,8 +339,8 @@ def test_timeout_kill_really_kills(env, fake_pool, children):
     sid = "ses-time0001"
     seed_roster({sid: worker_session(
         sid, proc.pid, started_at=at(3600), timeout="30s",
-        component="comp", job="job-9")})
-    store.append_ledger(paths.component_jobs_path("comp"), {
+        front="comp", job="job-9")})
+    store.append_ledger(paths.front_jobs_path("comp"), {
         "id": "job-9", "state": "running", "started_at": at(3600),
         "timeout": "30s"})
 
@@ -356,7 +356,7 @@ def test_timeout_kill_really_kills(env, fake_pool, children):
     assert "3600" in kind_lines[0]["detail"]
     assert "30s" in kind_lines[0]["detail"]
     assert "killed" in kind_lines[0]["detail"]
-    jobs = store.read_ledger(paths.component_jobs_path("comp"))
+    jobs = store.read_ledger(paths.front_jobs_path("comp"))
     assert jobs[-1]["id"] == "job-9" and jobs[-1]["state"] == "failed"
     tick(now=NOW)
     assert len(lines_for("job timeout", sid)) == 2
@@ -365,12 +365,12 @@ def test_timeout_kill_really_kills(env, fake_pool, children):
 
 def test_supervisor_silent(env, fake_pool, children):
     """A supervisor quiet for 15 min with no running jobs is flagged; a
-    running job for its component clears the line instead of doubling it."""
+    running job for its front clears the line instead of doubling it."""
     write_config(base_config())
     sup = sleeper(children)
     sid = "ses-sup00001"
     seed_roster({sid: worker_session(
-        sid, sup.pid, role="supervisor", pool="fake", component="comp-s",
+        sid, sup.pid, role="supervisor", pool="fake", front="comp-s",
         started_at=at(3600), last_declared_at=at(1200))})
 
     tick(now=NOW)
@@ -380,10 +380,10 @@ def test_supervisor_silent(env, fake_pool, children):
 
     hand = sleeper(children)
     seed_roster({sid: worker_session(
-        sid, sup.pid, role="supervisor", pool="fake", component="comp-s",
+        sid, sup.pid, role="supervisor", pool="fake", front="comp-s",
         started_at=at(3600), last_declared_at=at(1200)),
         "ses-hand0001": worker_session(
-            "ses-hand0001", hand.pid, component="comp-s")})
+            "ses-hand0001", hand.pid, front="comp-s")})
     tick(now=NOW)
     assert len(lines_for("supervisor silent", sid)) == 2
     assert lines_for("supervisor silent", sid)[-1]["resolved_at"] == iso(NOW)
@@ -611,14 +611,14 @@ def test_dead_supervisor_needs_a_person_not_a_spawn(
     old.wait()
     sid = "ses-supdead1"
     seed_roster({sid: worker_session(
-        sid, old.pid, role="supervisor", pool="fake", component="comp",
+        sid, old.pid, role="supervisor", pool="fake", front="comp",
         started_at=at(300))})
     paths.session_dir(sid).mkdir(parents=True, exist_ok=True)
     paths.checkpoint_path(sid).write_text(
         json.dumps({"session": sid, "doing": "split the brief",
                     "next": "dispatch"}), encoding="utf-8")
     store.append_ledger(paths.slots_path(), {
-        "pool": "fake", "component": "comp", "role": "supervisor",
+        "pool": "fake", "front": "comp", "role": "supervisor",
         "job": None, "session": sid, "granted_at": at(300),
         "released_at": None})
 
@@ -891,8 +891,8 @@ def test_overdue_job_dies_despite_finish_marker(env, fake_pool, children):
                                "finish_present": True, "finish_rc": 0}
     seed_roster({sid: worker_session(
         sid, proc.pid, started_at=at(3600), timeout="30s",
-        component="comp", job="job-imm")})
-    store.append_ledger(paths.component_jobs_path("comp"), {
+        front="comp", job="job-imm")})
+    store.append_ledger(paths.front_jobs_path("comp"), {
         "id": "job-imm", "state": "running", "started_at": at(3600),
         "timeout": "30s"})
 
@@ -901,7 +901,7 @@ def test_overdue_job_dies_despite_finish_marker(env, fake_pool, children):
     assert proc.poll() is not None
     roster = json.loads(paths.roster_path().read_text(encoding="utf-8"))
     assert roster["sessions"][sid]["state"] == "killed"
-    jobs = store.read_ledger(paths.component_jobs_path("comp"))
+    jobs = store.read_ledger(paths.front_jobs_path("comp"))
     assert jobs[-1]["id"] == "job-imm" and jobs[-1]["state"] == "failed"
 
 
@@ -915,8 +915,8 @@ def test_terminal_job_states_are_terminal(env, fake_pool, children):
                                "cpu_s": 0.0,
                                "finish_present": True, "finish_rc": 0}
     seed_roster({sid: worker_session(
-        sid, proc.pid, component="comp", job="job-term")})
-    store.append_ledger(paths.component_jobs_path("comp"), {
+        sid, proc.pid, front="comp", job="job-term")})
+    store.append_ledger(paths.front_jobs_path("comp"), {
         "id": "job-term", "state": "running", "started_at": at(100)})
 
     proc.kill()
@@ -924,15 +924,15 @@ def test_terminal_job_states_are_terminal(env, fake_pool, children):
     tick(now=NOW)
     tick(now=NOW)
     returned = [line for line in
-                store.read_ledger(paths.component_jobs_path("comp"))
+                store.read_ledger(paths.front_jobs_path("comp"))
                 if line.get("id") == "job-term"]
     assert [line["state"] for line in returned] == ["running", "returned"]
 
-    store.append_ledger(paths.component_jobs_path("comp"), dict(
+    store.append_ledger(paths.front_jobs_path("comp"), dict(
         returned[-1], state="verified"))
     tick(now=NOW)
     final = [line for line in
-             store.read_ledger(paths.component_jobs_path("comp"))
+             store.read_ledger(paths.front_jobs_path("comp"))
              if line.get("id") == "job-term"]
     assert final[-1]["state"] == "verified"
 
@@ -945,9 +945,9 @@ def test_slots_released_on_worker_death(env, fake_pool, children):
     proc.kill()
     proc.wait()
     sid = "ses-slot0001"
-    seed_roster({sid: worker_session(sid, proc.pid, component="comp")})
+    seed_roster({sid: worker_session(sid, proc.pid, front="comp")})
     store.append_ledger(paths.slots_path(), {
-        "pool": "fake", "component": "comp", "role": "muse", "job": None,
+        "pool": "fake", "front": "comp", "role": "muse", "job": None,
         "session": sid, "granted_at": at(300), "released_at": None})
 
     tick(now=NOW)
@@ -1001,7 +1001,7 @@ def test_supervisor_silence_needs_running_jobs(env, fake_pool, children):
             sid, sup.pid, role="supervisor", pool="fake",
             started_at=at(600), last_declared_at=at(120)),
         "ses-exited01": worker_session(
-            "ses-exited01", hand.pid, component=None, state="exited"),
+            "ses-exited01", hand.pid, front=None, state="exited"),
     })
     tick(now=NOW)
     assert len(lines_for("supervisor silent", sid)) == 1
@@ -1043,17 +1043,17 @@ def test_a_finished_job_is_returned_after_its_process_is_gone(
     # The launcher records the process start time beside the pid; that is
     # what makes the identity check real here, and the identity check is
     # what used to silence the adapter once the process was gone.
-    seed_roster({sid: worker_session(sid, pid, component="comp",
+    seed_roster({sid: worker_session(sid, pid, front="comp",
                                      job="job-done",
                                      pid_starttime=procs.proc_starttime(pid))})
-    store.append_ledger(paths.component_jobs_path("comp"), {
+    store.append_ledger(paths.front_jobs_path("comp"), {
         "id": "job-done", "state": "running", "started_at": at(30)})
     proc.kill()
     proc.wait()
 
     tick(now=NOW)
 
-    jobs = store.read_ledger(paths.component_jobs_path("comp"))
+    jobs = store.read_ledger(paths.front_jobs_path("comp"))
     latest = [job for job in jobs if job.get("id") == "job-done"][-1]
     assert latest["state"] == "returned"
     assert latest["returned_at"] == iso(NOW)
