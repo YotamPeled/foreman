@@ -181,9 +181,9 @@ def _validate(data: dict, existing: set[str],
             violations.append(problem)
 
     merge = data.get("merge")
-    if merge is not None and merge != "self":
-        violations.append(f"field 'merge' must be 'self' or absent "
-                          f"(got '{merge}')")
+    if merge is not None and merge not in ("self", "desk"):
+        violations.append(f"field 'merge' must be 'self' or 'desk' or "
+                          f"absent (got '{merge}')")
 
     for key in ("order", "prefer"):
         if key in data and not _is_int(data[key]):

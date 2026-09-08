@@ -134,7 +134,14 @@ def make_branch(repo: Path, name: str, filename: str) -> None:
     git(repo, "checkout", "-q", "main")
 
 
-def write_brief(repo: Path, name: str, merge: str | None = None) -> Path:
+def write_brief(repo: Path, name: str, merge: str | None = "desk") -> Path:
+    """A brief for this module, which is about the desk.
+
+    `merge` defaults to "desk" here because that is what these tests are
+    for. In a real brief the field is absent and the front lands itself:
+    the desk is a product swarm's discipline, and a front that declares no
+    desk must not be stopped from landing by one.
+    """
     brief_dir = repo / f"brief-{name}"
     brief_dir.mkdir(parents=True, exist_ok=True)
     merge_line = f'merge     = "{merge}"\n' if merge else ""
@@ -580,9 +587,9 @@ def test_self_front_supervisor_lands_directly(env, monkeypatch, capsys):
 
 
 def test_front_add_merge_field(env, monkeypatch, capsys):
-    """Anything but "self" or absent is a violation; "self" is recorded."""
+    """Anything but "self", "desk" or absent is a violation."""
     repo, _origin = make_repo(env)
-    brief_dir = write_brief(repo, "bogus", merge="desk")
+    brief_dir = write_brief(repo, "bogus", merge="later")
     assert run(monkeypatch, ["front", "add", str(brief_dir)]) == 1
     _, err = capsys.readouterr()
     assert "'merge'" in err
@@ -724,3 +731,28 @@ def test_launch_puts_the_desk_on_the_roster(env, fakes, monkeypatch, capsys):
                              "--repo", str(repo), "--dry-run"]) == 1
     _, err = capsys.readouterr()
     assert sid in err
+
+
+def test_a_front_that_declares_no_desk_lands_itself(env, monkeypatch,
+                                                    capsys):
+    """Absent means self, not desk.
+
+    The default ran the other way, and a live front's supervisor was
+    refused `task landed` with "request a merge instead" on a front whose
+    brief never mentioned a desk — a true number missing from the screen
+    because of a field nobody had written. The desk is a product swarm's
+    discipline; a brief opts into it with `merge = "desk"`.
+    """
+    repo, _origin = make_repo(env)
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "plain", merge=None))]) == 0
+    capsys.readouterr()
+    from foreman import fronts as fronts_module
+    assert (fronts_module.read_front_record("plain") or {})["merge"] == ""
+    seed_roster(session_record(SUP, "supervisor", "plain"))
+    build_task(monkeypatch, capsys, "plain", "first")
+    first = tasks_by_title("plain")["first"]["id"]
+    assert run(monkeypatch, ["task", "landed", first,
+                             "--head", "abc123"], SUP) == 0
+    capsys.readouterr()
+    assert tasks_by_title("plain")["first"]["state"] == "landed"

@@ -398,22 +398,29 @@ def task_reset_main(task_ref: str, reason: str | None = None) -> int:
     return 0
 
 
+#: How a front lands its built tasks when its brief does not say. Self is
+#: the default by owner ruling: the desk is a product swarm's discipline,
+#: and a front that declares no desk must not be stopped from landing by
+#: one. A brief says `merge = "desk"` to route through it.
+DEFAULT_MERGE_MODE = "self"
+
+
 def _front_merge_mode(front: str | None) -> str:
     """How this front's built tasks land: "self" or the merge desk.
 
-    Foreman's own fronts land themselves, by owner ruling; every other
-    front lands through a merge request the desk consumes. Unknown fronts
-    read as the desk's, which only matters beside the unknown-task refusal
-    already on the violations.
+    A front that declares nothing lands itself. Only a brief that says
+    `merge = "desk"` routes through the desk, and Foreman's own fronts
+    never do. Defaulting the other way stopped a live front from marking a
+    task landed at all, which is a true number missing from the screen.
     """
     if not front:
-        return ""
+        return DEFAULT_MERGE_MODE
     try:
         from . import fronts as _fronts
     except ImportError:  # pragma: no cover - the module is always present
         return ""
     record = _fronts.read_front_record(front)
-    return (record or {}).get("merge") or ""
+    return (record or {}).get("merge") or DEFAULT_MERGE_MODE
 
 
 def task_landed_main(task_ref: str, head: str | None = None) -> int:
