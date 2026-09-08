@@ -1,0 +1,1 @@
+{"on":"tas-ing-2","class":"correctness","title":"The same webhook lands twice when the destination retries","detail":"The third attempt at this task reproduced the duplicate, so the front is halted until the supervisor writes what changed.","evidence_ref":"evidence/ingestion-dupes-1401","at":"2026-05-11T14:01:00+00:00"}

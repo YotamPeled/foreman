@@ -1,0 +1,2 @@
+{"on":"tas-cor-1","claim":"The manifest has one row per app and no duplicate ids","status":"CONFIRMED","command":"make check corpus-manifest","output_ref":"evidence/corpus-manifest-1140","at":"2026-05-11T11:40:00+00:00"}
+{"on":"tas-cor-4","claim":"Dependency edges resolve for every app in the first batch","status":"CONFIRMED","command":"make check corpus-deps","output_ref":"evidence/corpus-deps-1402","at":"2026-05-11T14:02:00+00:00"}

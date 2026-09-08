@@ -1,0 +1,1 @@
+{"id":"frn-harbor","name":"harbor","order":1,"prefer":3,"after":[],"want":"Every berth in the harbor sounded twice","done_when":"Twelve soundings read, buoys labelled, tide window charted","land_on":"main","reviews":"codex","allocation":{"muse":2},"supervisor":"ses-hb0001","brief_path":"briefs/harbor/brief.toml","state":"active","at":"2026-06-02T09:10:00+00:00"}

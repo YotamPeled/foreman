@@ -1,0 +1,1 @@
+{"on":"job-cor-2","class":"correctness","title":"A second read reuses the first read's cached summary","detail":"The reader keys its cache by app id alone, so the second read gets the first read's answer back instead of reading again.","evidence_ref":"evidence/corpus-second-reads-1355","at":"2026-05-11T13:55:00+00:00"}
