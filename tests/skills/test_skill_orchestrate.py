@@ -23,7 +23,11 @@ MERGE = SKILLS / "foreman-merge" / "SKILL.md"
 
 #: Every ``merge <word>`` the merge skill utters as a verb. Words outside
 #: this set (queue, ledger, desk) are prose, not verbs, and are not matched.
-MERGE_VERB_RE = re.compile(r"merge\s+(take|land|fail|request)")
+#: A merge verb as the skill writes one: in backticks, so prose about
+#: merging is not read as a verb. Open on the verb word on purpose —
+#: a closed alternation can only ever find verbs that exist, which
+#: makes the "and no other" half of the test below unfalsifiable.
+MERGE_VERB_RE = re.compile(r"`merge\s+([a-z][a-z-]*)`")
 
 #: The three things DESIGN.md section 3 says the foreman never does. The
 #: break: the skill paraphrases one away until a foreman dispatches work.
