@@ -820,6 +820,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
     print(f"log: {log_path}")
     print(f"pid: {pid if pid is not None else '(not started --dry-run)'}")
     print(f"command: {command}")
+    print_world()
     if not args.dry_run:
         # After the roster write is durable: hooks observe, never gate.
         hooks.fire("on-launch", {
@@ -1631,6 +1632,21 @@ def live_front_supervisor(front: str | None,
     return found[0] if found else None
 
 
+def print_world() -> None:
+    """Name the state directory the summoned session will read.
+
+    Silent when the launcher is on the default world. When it is not, the
+    session's world is the launcher's — carried into its script — and
+    saying so is the difference between an isolated proof run and a
+    session quietly born in the owner's real state directory.
+    """
+    for name in (paths.STATE_ENV, paths.CONFIG_ENV):
+        value = os.environ.get(name)
+        if value:
+            print(f"{name}: {value} (the session reads this world, not "
+                  f"the default one)")
+
+
 def _print_supervisor(session_id: str, vendor_id: str, role_prompt: Path,
                       workspace: str | None, pid: int | None,
                       argv: list[str], inner: str,
@@ -1651,6 +1667,7 @@ def _print_supervisor(session_id: str, vendor_id: str, role_prompt: Path,
     print(f"window: {window_name(session_id)} {where}")
     print(f"pid: {pid if pid is not None else '(not started --dry-run)'}")
     print(f"command: {_common.printable_command(argv, inner)}")
+    print_world()
 
 
 def _confirm_started(pid: int | None) -> tuple[int | None, str | None]:

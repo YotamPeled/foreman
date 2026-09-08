@@ -285,15 +285,39 @@ def printable_command(argv: list[str], inner: str) -> str:
             + "\n  worker script: " + inner)
 
 
+def world_exports() -> str:
+    """The state and config overrides the launcher is itself running under.
+
+    A summoned session takes its session id from the environment and its
+    state directory from the environment too, and only the first was ever
+    carried. So a launcher running against an isolated ``FOREMAN_STATE``
+    summoned a session into the *default* state directory, where the id it
+    had just been given does not exist: every verb refused it as an
+    unregistered writer, and the real ledger recorded the anomaly. The
+    world travels with the session now, or the session is born in the
+    wrong one. Empty when the launcher is on the default world, so a
+    normal launch's script is unchanged.
+    """
+    lines = []
+    for name in (paths.STATE_ENV, paths.CONFIG_ENV):
+        value = os.environ.get(name)
+        if value:
+            lines.append(f"export {name}={shlex.quote(value)}\n")
+    return "".join(lines)
+
+
 def write_worker_script(path: Path | str, inner: str) -> Path:
     """Put the worker's shell on disk, where no other syntax touches it.
 
     Called only when a launch really starts; a dry run prints the same
-    command and writes nothing.
+    command and writes nothing. Every launch shape — worker, supervisor,
+    merge desk, foreman — writes its script through here, so carrying the
+    world here carries it for all four.
     """
     script = Path(path)
     script.parent.mkdir(parents=True, exist_ok=True)
-    script.write_text("#!/bin/bash\n" + inner + "\n", encoding="utf-8")
+    script.write_text("#!/bin/bash\n" + world_exports() + inner + "\n",
+                      encoding="utf-8")
     script.chmod(0o700)
     return script
 
