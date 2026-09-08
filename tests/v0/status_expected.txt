@@ -7,6 +7,8 @@ Problems (2):
   - supervisor silent: beacon — wrote nothing for 900s and runs no jobs (ses-supbeacon, 26m)
 Working:
   atlas — supervisor attached · tasks 1 landed, 0 built, 3 total · doing now: Splitting the map work into road jobs (4m ago)
+    doing now — Splitting the map work into road jobs · 4m ago
+    progress — 1/3 tasks
     Draw the atlas map — active · units 3/8
       muse job running 8m of 20m, write 2m ago
       grok job stalled 18m of 20m, write 14m ago
@@ -14,6 +16,8 @@ Working:
     Bind the atlas book — landed · units 4/4
       muse job verified 2h ago
   beacon — supervisor attached · tasks 0 landed, 1 built, 2 total · doing now: Reading the light measurements (26m ago)
+    doing now — Reading the light measurements · 26m ago
+    progress — 0/2 tasks
     Light the beacon — built · units 6/6
       astra job returned 40m ago
     Guard the beacon — waiting · units 0/2 · after: Light the beacon

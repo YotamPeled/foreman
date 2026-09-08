@@ -56,6 +56,8 @@ SUPERVISOR_COMMANDS = (
     "foreman task landed <task> --head <head>",
     "foreman evidence --on <on> --claim <claim> --status <status> --command <command>",
     "foreman finding --on <on> --class <class> --title <title> --detail <detail>",
+    "foreman measure <front> <monitor> --value <value> --of <of> "
+    "--command <command> --output <output>",
     "foreman rule ack <id>",
     "foreman rule list",
     "foreman status",
@@ -69,7 +71,7 @@ NOT_THE_SUPERVISORS = (
 )
 #: The design's supervisor row that this checkout does not ship. Named as
 #: missing, never as callable.
-UNSHIPPED = ("task ready", "job plan", "job order", "measure",
+UNSHIPPED = ("task ready", "job plan", "job order",
              "merge request", "front done")
 
 

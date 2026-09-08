@@ -929,6 +929,7 @@ def registered_verbs() -> list[tuple[str, argparse.ArgumentParser, str]]:
     from . import collector as _collector  # noqa: F401
     from . import config as _config  # noqa: F401
     from . import fronts as _fronts  # noqa: F401
+    from . import measure as _measure  # noqa: F401
     from . import progress as _progress  # noqa: F401
     from . import status as _status  # noqa: F401
     from . import verbs as _verbs  # noqa: F401
