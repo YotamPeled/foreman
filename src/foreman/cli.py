@@ -31,6 +31,9 @@ def build_parser() -> argparse.ArgumentParser:
     verbs = parser.add_subparsers(dest="verb", required=True)
     for name, (handler, kwargs) in SUBCOMMANDS.items():
         sub = verbs.add_parser(name, **kwargs)
+        add_arguments = getattr(handler, "add_arguments", None)
+        if callable(add_arguments):
+            add_arguments(sub)
         sub.set_defaults(_handler=handler)
     return parser
 
@@ -42,3 +45,6 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+from . import verbs as verbs  # noqa: E402,F401  (registers the verbs above)
