@@ -1,0 +1,17 @@
+# The `fakepool` pool: a test fixture, not a shipped pool.
+#
+# A fifth pool added as a directory: the vendor command below is fake
+# (it prints one line and exits 0; the wrapper appends the finish
+# marker), which is enough to carry a job end to end — launch starts
+# it, the collector observes the marker, the job returns. Install with
+# `foreman pool add fakepool --from <this directory>`.
+
+name = "fakepool"
+model = "fake-test-model"
+timeout_default = "5m"
+interactive = false
+roles = ["muse"]
+
+[vendor]
+argv = ["sh", "-c", "echo fake-vendor-output"]
+stdin = "none"
