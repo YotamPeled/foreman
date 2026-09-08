@@ -53,7 +53,11 @@ Project ⊃ Component ⊃ Task ⊃ Job
   N for a batch such as "second-read 600 cases"), and **its own worker pool**: which models may work it, how
   many slots at once, and the stage order when reads are chained (e.g. "first read: Muse, 6 slots; second
   read: Grok medium, 2 slots"). Slots are granted per task; the per-model header is the sum of lit slots
-  across tasks, so the quota view and the task view are one truth.
+  across tasks, so the quota view and the task view are one truth. A task also declares its maximum
+  concurrent jobs (1 = sequential) and its predecessors (tasks that must finish first); grants never exceed
+  the maximum, and a task with an unfinished predecessor is drawn dimmed with its sockets closed, so the
+  throttle and the order are both visible on the ring. This is the one ordering primitive; there are no
+  arrows between boxes.
 - **Job**: one dispatch to one worker, serving exactly one task. Kinds: `implement`, `review`, `merge`,
   `research`, `verify`. Carries spec, pool, worktree, timeout, verify command, slot, timestamps, artifact, verdict.
   Reviews are optional: the supervisor dispatches one or two review jobs only when it judges them worthwhile.
