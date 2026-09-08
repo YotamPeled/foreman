@@ -320,10 +320,18 @@ def checkpoint_main(doing: str | None, next: str | None,
             questions=list(waiting),
         ).to_dict(),
     )
-    roster = caller.read_roster()
-    sessions = roster.setdefault("sessions", {})
-    entry = sessions.setdefault(me.session_id, {})
-    entry["last_declared_at"] = store.utcnow_iso()
-    store.write_snapshot(paths.roster_path(), roster)
+    session_id = me.session_id
+
+    def stamp(roster):
+        if not isinstance(roster, dict):
+            roster = {"sessions": {}}
+        sessions = roster.setdefault("sessions", {})
+        if not isinstance(sessions, dict):
+            sessions = roster["sessions"] = {}
+        entry = sessions.setdefault(session_id, {})
+        entry["last_declared_at"] = store.utcnow_iso()
+        return roster
+
+    store.update_snapshot(paths.roster_path(), stamp, default={"sessions": {}})
     print(f"checkpoint {me.session_id}")
     return 0
