@@ -201,6 +201,54 @@ EXPECTED_PANEL_PROBLEMS = [
     " time, the supervisor must write what changed before dispatching again",
 ]
 
+#: The queue blocks, hand-derived from the mock fixture the same way. Each
+#: queue row reads as a (left, body) pair off the render: the wait or state
+#: word and the row sentence with markup stripped. The job queue follows
+#: the model's oldest-first order; the merge queue reads merging, waiting,
+#: landed out of the model's own group arrays. Capacity reads per pool the
+#: name, the busy-of-total and the third line (average, supervisors-only,
+#: or the queued-only waiting count).
+EXPECTED_PANEL_JOBQUEUE = [
+    ("14 min", "frozen-state restart · engine · needs a muse slot"
+               " · blocked: supervisor silent"),
+    ("12 min", "sweep on collector clock · reaper · needs a muse slot"
+               " · blocked: Ship the reaper without the dead-worktree sweep?"),
+    ("7 min", "sampling plan · corpus · needs a grok slot (8 of 8 busy)"),
+    ("planned", "webhook destination fix · ingestion"
+                " · spec written, front halted"),
+    ("3 min", "freeze refuses launches · api · needs a muse slot"
+              " (3 of 3 busy)"),
+    ("planned", "digest endpoint · api · spec written, not yet queued"),
+]
+EXPECTED_PANEL_JOBQUEUE_SUMMARY = \
+    "6 waiting · oldest 14 min · muse is the bottleneck (3 waiting on it)"
+EXPECTED_PANEL_FRONTQUEUE = [
+    ("after api", "digest · One evening message that says what the swarm"
+                  " did today and what it wants"),
+    ("capacity", "dashboard · The same one screen in a browser for the days"
+                 " the owner is away from this machine"),
+]
+EXPECTED_PANEL_MERGEQUEUE = [
+    ("merging", "session-registry-read · from api → dev · reviewed by codex"
+                " · started 1 min ago"),
+    ("waiting", "dump-export-shape · from corpus → feat/corpus-export"
+                " · no review requested · waited 4 min"),
+    ("landed", "label-index-rebuild · corpus → main · 14:03"
+               " · reviewed by codex"),
+    ("landed", "routes-from-ledger · api → dev · 13:58 · reviewed by grok"),
+    ("landed", "reader-id-guard · ingestion → main · 13:51 · no review"),
+]
+EXPECTED_PANEL_MERGEQUEUE_SUMMARY = \
+    "1 merging · 1 waiting · avg 6 min from handoff to landed"
+EXPECTED_PANEL_CAPACITY = [
+    ("■ opus", "4 of 4 slots busy", "supervisors only"),
+    ("■ codex", "1 of 2 slots busy", "avg review 6 min"),
+    ("■ grok", "8 of 8 slots busy", "1 job waiting for a slot"),
+    ("■ muse", "3 of 3 slots busy", "3 jobs waiting for a slot"),
+]
+
+TAG = re.compile(r"<[^>]*>")
+
 #: The slots the panel renders, in Panel.qml's order. needsYou and
 #: problems arrived with the shell job; the rest land with the other
 #: layout jobs and are reported, not asserted, until they do.
@@ -611,6 +659,89 @@ def check_panel_strict(renders: dict) -> None:
         if slot["empty"]:
             raise Failure("blocks: %s: empty voice shows beside %d card(s)"
                           % (name, slot["cards"]))
+
+    slot = renders["jobQueue"]
+    if slot["status"] != "ready":
+        raise Failure("blocks: jobQueue: not rendered (%s)"
+                      % slot["status"])
+    if slot["cards"] != 1:
+        raise Failure("blocks: jobQueue: got %d card(s),"
+                      " the fixture holds 1" % slot["cards"])
+    shown = [TAG.sub("", title) for title in slot["titles"]]
+    if not shown:
+        raise Failure("blocks: jobQueue: rendered no titles")
+    rows = [(shown[i], shown[i + 1])
+            for i in range(0, len(shown) - 1, 2)]
+    if rows != EXPECTED_PANEL_JOBQUEUE \
+            or shown[-1] != EXPECTED_PANEL_JOBQUEUE_SUMMARY:
+        raise Failure("blocks: jobQueue: got %d row(s) %r with summary %r,"
+                      " the fixture holds %d with %r"
+                      % (len(rows), rows, shown[-1],
+                         len(EXPECTED_PANEL_JOBQUEUE),
+                         EXPECTED_PANEL_JOBQUEUE_SUMMARY))
+    if slot["empty"]:
+        raise Failure("blocks: jobQueue: empty voice shows beside %d row(s)"
+                      % len(rows))
+
+    # The merge body is a flow of three fragments per row (the bold target
+    # cannot go through RichText offscreen), so a row joins back out of
+    # its left word and three fragments.
+    slot = renders["mergeQueue"]
+    if slot["status"] != "ready":
+        raise Failure("blocks: mergeQueue: not rendered (%s)"
+                      % slot["status"])
+    if slot["cards"] != 1:
+        raise Failure("blocks: mergeQueue: got %d card(s),"
+                      " the fixture holds 1" % slot["cards"])
+    shown = [TAG.sub("", title) for title in slot["titles"]]
+    if not shown:
+        raise Failure("blocks: mergeQueue: rendered no titles")
+    rows = [(shown[i], shown[i + 1] + shown[i + 2] + shown[i + 3])
+            for i in range(0, len(shown) - 1, 4)]
+    if rows != EXPECTED_PANEL_MERGEQUEUE \
+            or shown[-1] != EXPECTED_PANEL_MERGEQUEUE_SUMMARY:
+        raise Failure("blocks: mergeQueue: got %d row(s) %r with summary"
+                      " %r, the fixture holds %d with %r"
+                      % (len(rows), rows, shown[-1],
+                         len(EXPECTED_PANEL_MERGEQUEUE),
+                         EXPECTED_PANEL_MERGEQUEUE_SUMMARY))
+    if slot["empty"]:
+        raise Failure("blocks: mergeQueue: empty voice shows beside %d"
+                      " row(s)" % len(rows))
+
+    slot = renders["frontQueue"]
+    if slot["status"] != "ready":
+        raise Failure("blocks: frontQueue: not rendered (%s)"
+                      % slot["status"])
+    if slot["cards"] != 1:
+        raise Failure("blocks: frontQueue: got %d card(s),"
+                      " the fixture holds 1" % slot["cards"])
+    shown = [TAG.sub("", title) for title in slot["titles"]]
+    rows = [(shown[i], shown[i + 1]) for i in range(0, len(shown), 2)]
+    if rows != EXPECTED_PANEL_FRONTQUEUE:
+        raise Failure("blocks: frontQueue: got %d row(s) %r, the fixture"
+                      " holds %d with %r"
+                      % (len(rows), rows, len(EXPECTED_PANEL_FRONTQUEUE),
+                         EXPECTED_PANEL_FRONTQUEUE))
+    if slot["empty"]:
+        raise Failure("blocks: frontQueue: empty voice shows beside %d"
+                      " row(s)" % len(rows))
+
+    slot = renders["capacity"]
+    if slot["status"] != "ready":
+        raise Failure("blocks: capacity: not rendered (%s)" % slot["status"])
+    if slot["cards"] != len(EXPECTED_PANEL_CAPACITY):
+        raise Failure("blocks: capacity: got %d card(s), the fixture holds"
+                      " %d" % (slot["cards"], len(EXPECTED_PANEL_CAPACITY)))
+    shown = [TAG.sub("", title) for title in slot["titles"]]
+    pools = [(shown[i], shown[i + 1], shown[i + 2])
+             for i in range(0, len(shown), 3)]
+    if pools != EXPECTED_PANEL_CAPACITY:
+        raise Failure("blocks: capacity: got %r, the fixture holds %r"
+                      % (pools, EXPECTED_PANEL_CAPACITY))
+    if slot["empty"]:
+        raise Failure("blocks: capacity: empty voice shows beside %d"
+                      " card(s)" % slot["cards"])
 
 
 NOT_IMPLEMENTED = {

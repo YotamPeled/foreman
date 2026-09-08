@@ -7,3 +7,7 @@ MeterBar 1.0 MeterBar.qml
 PanelHeader 1.0 PanelHeader.qml
 NeedsYouBlock 1.0 NeedsYouBlock.qml
 ProblemsBlock 1.0 ProblemsBlock.qml
+JobQueueBlock 1.0 JobQueueBlock.qml
+FrontQueueBlock 1.0 FrontQueueBlock.qml
+MergeQueueBlock 1.0 MergeQueueBlock.qml
+CapacityBlock 1.0 CapacityBlock.qml
