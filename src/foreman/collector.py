@@ -62,6 +62,8 @@ REASSERT_KINDS = (
     "job tail",
     "intruder",
     "collector stale",
+    "monitor stale",
+    "monitor alert",
 )
 
 #: Opened when the checkout moved under a running collector: the screen it
@@ -547,14 +549,19 @@ def _tick_inner(moment: datetime, now_iso: str,
     cstate = _load_state()
     baselines = cstate["sessions"]
 
+    # Anomalies this tick opened (not merely reasserted): each fires one
+    # on-alert hook after the state writes below are durable.
+    opened: list[tuple[str, str, str]] = []
+
     def note_open(kind: str, subject: str, detail: str,
-                 asserted: set) -> None:
+                  asserted: set) -> None:
         asserted.add((kind, subject))
         if (kind, subject) not in open_now:
             entry = store.append_ledger(
                 paths.anomalies_path(),
                 _anomaly_line(kind, subject, now_iso, detail))
             open_now[(kind, subject)] = entry
+            opened.append((kind, subject, detail))
 
     asserted: set[tuple[str, str]] = set()
     _check_collector_staleness(cstate, now_iso, note_open, asserted)
@@ -880,6 +887,8 @@ def _tick_inner(moment: datetime, now_iso: str,
                           f"ledger line in {label} claims unknown "
                           f"session '{by}'", asserted)
 
+    monitors_view = _monitors_tick(moment, now_iso, note_open, asserted)
+
     # Resolve what this tick no longer asserts. Unregistered-writer lines
     # clear only when the roster learns the id: the ledger line itself is
     # append-only, so absence from this tick's scan proves nothing. A dead
@@ -947,8 +956,17 @@ def _tick_inner(moment: datetime, now_iso: str,
         "jobs": _jobs_view(moment),
         "pools": _pools_view(config),
         "swarm": _swarm_view(moment, len(sessions), alive_count),
+        "monitors": monitors_view,
     }
     store.write_snapshot(paths.observed_path(), observed_payload)
+    if opened:
+        # Hooks observe after the writes are durable, never inside them:
+        # a failing hook prints and the tick's records stand either way.
+        from . import hooks as _hooks
+
+        for kind, subject, detail in opened:
+            _hooks.fire("on-alert", {"kind": kind, "subject": subject,
+                                     "detail": detail})
     return observed_payload
 
 
@@ -1062,6 +1080,135 @@ def _swarm_view(moment: datetime, registered: int, observed: int) -> dict:
     return view
 
 
+def _front_monitor_decls() -> dict[str, tuple[dict, list[dict]]]:
+    """Every front with a record: (folded record, its monitor list)."""
+    try:
+        names = sorted(entry.name for entry in Path(paths.fronts_dir()).iterdir()
+                       if entry.is_dir())
+    except OSError:
+        return {}
+    out: dict[str, tuple[dict, list[dict]]] = {}
+    for name in names:
+        try:
+            records = store.read_ledger(paths.front_record_path(name))
+        except OSError:
+            continue
+        folded = store.fold_by_id(records)
+        if not folded:
+            continue
+        record = folded[-1]
+        declared = record.get("monitors")
+        declared = declared if isinstance(declared, list) else []
+        out[name] = (record, [entry for entry in declared
+                              if isinstance(entry, dict)])
+    return out
+
+
+def _monitors_tick(moment: datetime, now_iso: str,
+                   note_open, asserted: set) -> dict:
+    """Snapshot the latest measurement per monitor; flag stale and alert.
+
+    Stale fires when the newest measurement is older than twice the
+    monitor's ``every`` cadence, and only where ``every`` parses as a
+    duration: an event cadence like ``landing`` or ``job`` carries no
+    clock to be stale against. Alert fires when the monitor's alert
+    expression holds of the latest value (the value/of ratio where a
+    denominator is known, else the raw value). Both are anomalies of the
+    same kind the collector already raises, under Problems. A monitor
+    with no measurement yet is neither stale nor alerting.
+    """
+    from . import monitors as _monitors
+
+    view: dict[str, dict] = {}
+    for front, (_record, declared) in _front_monitor_decls().items():
+        try:
+            ledger = store.read_ledger(paths.front_measurements_path(front))
+        except OSError:
+            ledger = []
+        per: dict[str, dict] = {}
+        for decl in declared:
+            measure = str(decl.get("measure") or "").strip()
+            if not measure:
+                continue
+            matched = _monitors.matching_measurements(ledger, decl)
+            if not matched:
+                continue
+            latest = matched[-1]
+            previous = matched[-2] if len(matched) > 1 else None
+            value = latest.get("value")
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                continue
+            stamped = latest.get("at")
+            at_moment = _parse_time(stamped)
+            age_s = (moment - at_moment).total_seconds() \
+                if at_moment is not None else None
+            question = str(decl.get("question") or measure)
+            subject = f"{front}:{measure}"
+            cadence = parse_duration(decl.get("every"))
+            stale = bool(cadence is not None and age_s is not None
+                         and age_s > 2 * cadence)
+            if stale:
+                assert isinstance(cadence, (int, float))
+                note_open(
+                    "monitor stale", subject,
+                    f"monitor '{question}' on front '{front}' stale: "
+                    f"last measurement "
+                    f"{f'{age_s:.0f}s' if age_s is not None else 'unknown'} "
+                    f"ago (every {decl.get('every')})",
+                    asserted)
+            effective = _monitors.effective_value(latest, decl)
+            alert_text = decl.get("alert")
+            alerting = bool(
+                effective is not None and isinstance(alert_text, str)
+                and alert_text.strip()
+                and _monitors.evaluate_alert(effective, alert_text))
+            if alerting:
+                shown = latest.get("of")
+                if isinstance(shown, (int, float)) and not isinstance(
+                        shown, bool):
+                    reading = (f"{_monitors.format_number(value)}/"
+                               f"{_monitors.format_number(shown)}")
+                else:
+                    reading = _monitors.format_number(value)
+                note_open(
+                    "monitor alert", subject,
+                    f"monitor '{question}' on front '{front}' alert: "
+                    f"{reading} {str(alert_text).strip()}",
+                    asserted)
+            entry: dict = {
+                "question": question,
+                "measure": measure,
+                "value": float(value),
+                "at": stamped,
+            }
+            unit = decl.get("unit")
+            if isinstance(unit, str) and unit.strip():
+                entry["unit"] = unit.strip()
+            for key in ("of",):
+                val = latest.get(key)
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    entry[key] = float(val)
+            every = decl.get("every")
+            if isinstance(every, str) and every.strip():
+                entry["every"] = every.strip()
+            if isinstance(alert_text, str) and alert_text.strip():
+                entry["alert"] = alert_text.strip()
+            entry["stale"] = stale
+            entry["alerting"] = alerting
+            prev_value = previous.get("value") if isinstance(
+                previous, dict) else None
+            if isinstance(prev_value, bool) or not isinstance(
+                    prev_value, (int, float)):
+                prev_value = None
+            entry["trend"] = _monitors.trend_of(
+                float(prev_value) if prev_value is not None else None,
+                float(value))
+            per[measure] = entry
+        if per:
+            view[front] = per
+    return view
+
+
 #: Fallback when the checkout's packaging/ directory is not around
 #: (an installed package); kept identical to the template file.
 UNIT_TEMPLATE = """\
@@ -1164,8 +1311,12 @@ def collector_main(action: str) -> int:
     if action == "restart":
         return restart_collector()
     record_startup_version()
-    config = load_config()
     while True:
+        # The configuration is re-read on every tick, never held from
+        # startup: a cap the owner changed mid-run governs the next tick's
+        # totals with no restart. No file watcher — reading a small TOML
+        # file once every two seconds is cheaper than being wrong.
+        config = load_config()
         try:
             tick(config=config)
         except KeyboardInterrupt:

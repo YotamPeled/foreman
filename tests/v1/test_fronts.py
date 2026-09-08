@@ -550,3 +550,113 @@ def test_worker_may_not_add_a_front(env, capsys, monkeypatch):
     assert rc == 1
     assert "'worker'" in err
     assert not paths.front_record_path("owned").exists()
+
+
+def test_a_front_that_already_ran_is_added_closed_with_no_tasks(env, capsys):
+    """`front add --closed` records history without claiming work.
+
+    The queue's `after` names fronts by their ledger record, and this swarm
+    ran two fronts to completion before `front add` existed — so the next
+    brief could not wait on the front it really came after. Writing their
+    tasks out would claim states no evidence supports; the record alone
+    claims only that the front ran and is done.
+    """
+    brief = write_brief(env, "history")
+    assert cli.main(["front", "add", str(brief), "--closed"]) == 0
+    capsys.readouterr()
+    record = fronts.read_front_record("history")
+    assert record["state"] == "done"
+    assert store.read_ledger(paths.front_tasks_path("history")) == []
+    assert cli.main(["front", "list"]) == 0
+    assert "history — done" in capsys.readouterr().out
+
+
+def test_a_closed_front_is_not_held_to_a_brief_it_cannot_fix(env, capsys):
+    """A brief that already ran cannot be corrected after the fact.
+
+    The seed briefs on main predate the validator that shipped after them:
+    one has a two-sentence done-when, which a live front is rightly refused
+    for. A closed front writes no tasks and spends no allocation, so what
+    still has to hold is that it is named once and waits on fronts that
+    exist — and that is what is checked.
+    """
+    text = VALID_BRIEF.format(name="old").replace(
+        'done-when = "', 'done-when = "Two things. And another. ')
+    brief = write_brief(env, "old", text=text)
+    assert cli.main(["front", "add", str(brief)]) == 1
+    assert "one sentence" in capsys.readouterr().err
+    assert cli.main(["front", "add", str(brief), "--closed"]) == 0
+    capsys.readouterr()
+    assert fronts.read_front_record("old")["state"] == "done"
+
+
+def test_a_closed_front_still_must_be_named_once(env, capsys):
+    """History is recorded once: a second closed add is refused by name."""
+    brief = write_brief(env, "twice")
+    assert cli.main(["front", "add", str(brief), "--closed"]) == 0
+    capsys.readouterr()
+    assert cli.main(["front", "add", str(brief), "--closed"]) == 1
+    assert "already on the ledger" in capsys.readouterr().err
+
+
+def _sup_on_roster(sid: str, front: str, pid: int) -> None:
+    store.write_snapshot(paths.roster_path(), {"sessions": {sid: {
+        "id": sid, "role": "supervisor", "pool": "claude",
+        "model": "claude-opus-5", "front": front, "job": None,
+        "pid": pid, "pgid": pid, "worktree": "", "log": "",
+        "timeout": "20m", "launched_by": "owner",
+        "started_at": "2026-09-08T12:00:00+00:00",
+        "last_declared_at": None, "last_observed_at": None,
+        "cpu_s": 0.0, "state": "running",
+    }}})
+
+
+def test_a_supervisor_moves_to_its_next_front_once_the_last_one_is_done(
+        env, capsys, monkeypatch):
+    """One process, one identity, one front at a time.
+
+    A supervisor that carries a front to done and is given the next one had
+    no way to say so: the roster is written by the launcher and `register`,
+    and neither moves a session, so the only way through was to mint a
+    second identity for the same process — one process claiming to be two
+    sessions.
+    """
+    import os
+
+    add_ok(write_brief(env, "first"))
+    add_ok(write_brief(env, "second"))
+    capsys.readouterr()
+    sid = "ses-move001"
+    _sup_on_roster(sid, "first", os.getpid())
+    monkeypatch.setenv(SESSION_ENV, sid)
+
+    # A live front is never quietly abandoned.
+    assert cli.main(["front", "take", "second"]) == 1
+    assert "close it with" in capsys.readouterr().err
+
+    # Closing a front is the owner's verb, not the supervisor's.
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    assert cli.main(["front", "close", "first"]) == 0
+    capsys.readouterr()
+    monkeypatch.setenv(SESSION_ENV, sid)
+    assert cli.main(["front", "take", "second"]) == 0
+    assert "supervises second" in capsys.readouterr().out
+    roster = store.read_snapshot(paths.roster_path())
+    assert roster["sessions"][sid]["front"] == "second"
+
+
+def test_taking_a_front_that_has_a_live_supervisor_is_refused(
+        env, capsys, monkeypatch):
+    """One front has one supervisor, whichever verb is asking."""
+    import os
+
+    add_ok(write_brief(env, "held"))
+    capsys.readouterr()
+    _sup_on_roster("ses-held001", "held", os.getpid())
+    roster = store.read_snapshot(paths.roster_path())
+    roster["sessions"]["ses-move002"] = dict(
+        roster["sessions"]["ses-held001"], id="ses-move002", front=None)
+    store.write_snapshot(paths.roster_path(), roster)
+    monkeypatch.setenv(SESSION_ENV, "ses-move002")
+    assert cli.main(["front", "take", "held"]) == 1
+    assert "already has a live supervisor" in capsys.readouterr().err

@@ -1,0 +1,19 @@
+# The `grok` pool: headless Grok implement workers and reviewers.
+#
+# This directory is the pool. `manifest.toml` names it and points at the
+# packaged implementation (`adapter`), which provides the five pieces a
+# pool must have: launch, observe, meter, usage and verdict. A user copy
+# of this directory under the user pools directory replaces it entirely
+# (no merging); a user copy whose manifest does not parse is ignored with
+# one warning and this packaged pool answers again.
+#
+# `adapter` names a Python adapter registered under that name. `roles`
+# lists the worker roles that run on this pool; it agrees with the
+# `roles` beside this pool in the packaged `foreman.default.toml`.
+
+name = "grok"
+model = "grok-4.6"
+timeout_default = "20m"
+interactive = false
+roles = ["grok"]
+adapter = "grok"

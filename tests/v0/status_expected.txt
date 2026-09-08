@@ -7,22 +7,35 @@ Problems (2):
   - supervisor silent: beacon — wrote nothing for 900s and runs no jobs (ses-supbeacon, 26m)
 Working:
   atlas — supervisor attached · tasks 1 landed, 0 built, 3 total · doing now: Splitting the map work into road jobs (4m ago)
+    doing now — Splitting the map work into road jobs · 4m ago
+    progress — 1/3 tasks
     Draw the atlas map — active · units 3/8
       muse job running 8m of 20m, write 2m ago
       grok job stalled 18m of 20m, write 14m ago
     Label the atlas roads — ready · units 0/5 · after: Draw the atlas map
     Bind the atlas book — landed · units 4/4
       muse job verified 2h ago
+    want: (not recorded)
+    REMAINING (2): Draw the atlas map, Label the atlas roads
+    ESTIMATE: about 2d (1 job in last 24h)
+    Blocked on you (1): Buy the map tile subscription for the atlas work? (money, 14m)
   beacon — supervisor attached · tasks 0 landed, 1 built, 2 total · doing now: Reading the light measurements (26m ago)
+    doing now — Reading the light measurements · 26m ago
+    progress — 0/2 tasks
     Light the beacon — built · units 6/6
       astra job returned 40m ago
     Guard the beacon — waiting · units 0/2 · after: Light the beacon
+    want: (not recorded)
+    REMAINING (2): Light the beacon, Guard the beacon
+    ESTIMATE: about 2d (1 job in last 24h)
+    Blocked on you (1): Extend the beacon work to cover the harbor light? (scope, 2h)
 Job queue:
   atlas: Label the atlas roads waits for muse (waiting 6m)
   beacon: Guard the beacon waits for muse (waiting 3m)
 Merge queue:
-  waiting: foreman/job-b1 -> dev, lands Light the beacon (requested 22m ago)
-  last landed: foreman/job-a4 -> dev (2h ago)
+  waiting: (no front): foreman/job-b1 -> dev, lands Light the beacon (requested 22m ago)
+  landed: foreman/job-a4 -> dev at a1b2c3d (2h ago)
 Capacity:
-  grok: 1/2 held
+  grok: 1/1 held
   muse: 1/5 held
+Overall: 2 of 2 fronts moving (0 done), nearest finish about 2d (atlas); needs you: 2 items.

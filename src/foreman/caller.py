@@ -28,6 +28,7 @@ SESSION_ENV = "FOREMAN_SESSION"
 OWNER = "owner"
 FOREMAN = "foreman"
 SUPERVISOR = "supervisor"
+MERGE_DESK = "merge-desk"
 
 #: Minted ids look like ``rul-a1b2c3d``; anything shaped like that and nothing
 #: else is "nothing but an id" for the self-contained check.

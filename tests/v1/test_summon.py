@@ -47,7 +47,7 @@ RULING = "Verify by re-running; a worker's word is PLAUSIBLE until then."
 SUPERVISOR_COMMANDS = (
     "foreman checkpoint --doing <doing> --next <next>",
     "foreman ask <question ...> --kind <kind> --recommend <recommend>",
-    "foreman launch <role> <pool> [<spec>]",
+    "foreman launch <role> [<pool>] [<spec>]",
     "foreman relaunch <session>",
     "foreman register --role <role> --pid <pid>",
     "foreman job verify <job> --confirmed --command <command> --output <output>",
@@ -56,9 +56,13 @@ SUPERVISOR_COMMANDS = (
     "foreman task landed <task> --head <head>",
     "foreman evidence --on <on> --claim <claim> --status <status> --command <command>",
     "foreman finding --on <on> --class <class> --title <title> --detail <detail>",
+    "foreman measure <front> <monitor> --value <value> --of <of> "
+    "--command <command> --output <output>",
     "foreman rule ack <id>",
     "foreman rule list",
     "foreman status",
+    "foreman merge request [<branch>] --front <front> --tasks <tasks ...> "
+    "--target <target>",
 )
 #: Verbs this checkout ships for somebody else. A supervisor told it may
 #: call one of these is told to walk into a refusal.
@@ -69,8 +73,7 @@ NOT_THE_SUPERVISORS = (
 )
 #: The design's supervisor row that this checkout does not ship. Named as
 #: missing, never as callable.
-UNSHIPPED = ("task ready", "job plan", "job order", "measure",
-             "merge request", "front done")
+UNSHIPPED = ("task ready", "job plan", "job order", "front done")
 
 
 @pytest.fixture()
@@ -814,11 +817,15 @@ def test_relaunch_replays_the_checkpoint_and_resumes_the_conversation(
     assert '- "plugin skeleton and data feed" — ready' in prompt
 
     # Resume, with the vendor id, and no positional prompt: a --resume with
-    # one sits idle and never starts.
+    # one sits idle and never starts. The MCP flags name the successor's
+    # own config, so the resumed session calls with its own row of verbs.
     vendor = fakes["claude_argv"].read_text(
         encoding="utf-8").strip().splitlines()
     assert vendor == ["--resume", vendor_id, "--model", "claude-opus-5",
-                      "--dangerously-skip-permissions"]
+                      "--dangerously-skip-permissions",
+                      "--mcp-config",
+                      str(paths.session_dir(new) / "mcp.json"),
+                      "--strict-mcp-config"]
     assert "--session-id" not in out
 
     # The predecessor leaves the roster; the successor holds the front.

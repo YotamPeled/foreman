@@ -1,11 +1,11 @@
-"""`foreman front add|list|prefer|close`: a brief becomes a front on the ledger.
+"""`foreman front add|list|prefer|allocate|close`: a brief becomes a front on the ledger.
 
 ``front add <dir>`` reads ``<dir>/brief.toml`` with :mod:`tomllib`, refuses
 with every violation named at once (docs/DESIGN.md section 4.3), and otherwise
 appends one front line to ``fronts/<name>/front.jsonl`` plus one line per task
 to ``fronts/<name>/tasks.jsonl``, then copies the brief (and ``plan.md`` when
 the directory has one) beside the config so the front no longer depends on the
-directory it came from. ``front prefer`` and ``front close`` never edit: they
+directory it came from. ``front prefer``, ``front allocate`` and ``front close`` never edit: they
 append a revised copy of the front line and readers fold last-wins, exactly
 like every other ledger in the state directory.
 """
@@ -21,7 +21,7 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-from . import caller, cli, entities, ids, paths, store
+from . import caller, cli, config, entities, ids, paths, store
 from .caller import Refusal
 from .entities import JOB_ROLES
 
@@ -129,6 +129,20 @@ def _branch_violation(directory: str, branch: str) -> str | None:
     return None
 
 
+def _validate_identity(data: dict, existing: set[str]) -> list[str]:
+    """The part of §4.3 a front that already ran must still satisfy.
+
+    A closed front records history: its tasks are never written, its
+    allocation never spends anything, and its brief cannot be corrected
+    after the fact. What still has to hold is that it is a front, that it
+    is named once, and that what it waits on exists.
+    """
+    return [line for line in _validate(data, existing)
+            if line.startswith("field 'name'")
+            or line.startswith("field 'after'")
+            or line.startswith("front '")]
+
+
 def _validate(data: dict, existing: set[str],
               directory: str | None = None) -> list[str]:
     """Every 4.3 violation at once, each naming the field or rule it breaks."""
@@ -165,6 +179,11 @@ def _validate(data: dict, existing: set[str],
         problem = _branch_violation(directory, land_on.strip())
         if problem is not None:
             violations.append(problem)
+
+    merge = data.get("merge")
+    if merge is not None and merge not in ("self", "desk"):
+        violations.append(f"field 'merge' must be 'self' or 'desk' or "
+                          f"absent (got '{merge}')")
 
     for key in ("order", "prefer"):
         if key in data and not _is_int(data[key]):
@@ -322,6 +341,7 @@ def _build(data: dict, name: str,
         supervisor=None,
         brief_path=str(paths.brief_path(name)),
         state="queued",
+        merge=data.get("merge") or "",
         fixture=fixture,
     )
     front_line = front.to_dict()
@@ -370,17 +390,32 @@ def _read_brief(directory: str, violations: list[str]) -> dict | None:
 
 
 def front_add_main(directory: str, dry_run: bool = False,
-                   fixture: bool = False) -> int:
+                   fixture: bool = False, closed: bool = False) -> int:
+    """Add a front from its brief.
+
+    ``closed`` records a front that is already finished: the record goes on
+    at state ``done`` and no task line is written. It exists because the
+    queue's `after` names fronts by ledger record, and this swarm ran two
+    fronts to completion before `front add` existed — so a brief could not
+    wait on the front it really came after. Writing their tasks out as
+    landed would be a claim the ledger has no evidence for; writing the
+    front alone claims only what is true, that it ran and is done.
+    """
     me, violations = caller.resolve("front add")
     caller.check_role(me, "front add", violations=violations)
     data = _read_brief(directory, violations)
     if data is not None:
-        violations.extend(_validate(data, _existing_fronts(), directory))
+        violations.extend(
+            _validate_identity(data, _existing_fronts()) if closed
+            else _validate(data, _existing_fronts(), directory))
     if violations:
         return Refusal(violations).report()
     assert data is not None
     name = data["name"].strip()
     front_line, task_lines = _build(data, name, fixture=fixture)
+    if closed:
+        front_line["state"] = "done"
+        task_lines = []
     if dry_run:
         print(f"would write {paths.front_record_path(name)}:")
         print(json.dumps(front_line))
@@ -484,6 +519,65 @@ def front_prefer_main(name: str, prefer: str | int) -> int:
     return 0
 
 
+def front_allocate_main(name: str, role: str, count: str | int) -> int:
+    """Set a front's ceiling for one role, appending a revised copy.
+
+    The allocation used to change only by a hand-written front line, and
+    the hand-written line carried the allocation and not ``state`` or
+    ``prefer`` — folding is last-wins over whole records, so the front
+    lost both. Like ``prefer`` and ``close`` this appends a revised copy
+    of the whole record instead, built by ``dataclasses.replace`` over
+    ``entities.Front.from_dict``, so every other field stays byte-identical.
+
+    A ceiling below what the front currently holds is a refusal naming
+    both numbers, not a silent over-subscription.
+    """
+    from . import capacity
+
+    me, violations = caller.resolve("front allocate")
+    caller.check_role(me, "front allocate", caller.FOREMAN,
+                      violations=violations)
+    record = _revised(name, violations)
+    key_role = role.strip() if isinstance(role, str) else ""
+    if not key_role:
+        violations.append("field 'role' is required")
+    elif config.load().pool_for_role(key_role) is None:
+        violations.append(f"field 'role' names unknown role '{key_role}' "
+                          f"(no pool serves it)")
+    try:
+        number = int(str(count).strip())
+    except (TypeError, ValueError, AttributeError):
+        violations.append(f"field 'count' must be an integer (got '{count}')")
+        number = None
+    else:
+        if number < 0:
+            violations.append(
+                f"field 'count' must not be negative (got {number})")
+            number = None
+    if (record is not None and key_role and number is not None):
+        held = capacity.held_by_front_role().get(
+            (name.strip(), key_role), 0)
+        if number < held:
+            violations.append(
+                f"role '{key_role}' on front '{name.strip()}': "
+                f"{held} held, ceiling {number}")
+    if violations:
+        return Refusal(violations).report()
+    assert record is not None and key_role and number is not None
+    key = name.strip()
+    allocation = dict(entities.Front.from_dict(record).allocation or {})
+    allocation[key_role] = number
+    updated = dataclasses.replace(
+        entities.Front.from_dict(record),
+        allocation=allocation).to_dict()
+    if "monitors" in record:
+        updated["monitors"] = record["monitors"]
+    store.append_ledger(paths.front_record_path(key), updated,
+                        session_id=caller.by_line(me))
+    print(f"{key}: {key_role} ceiling {number}")
+    return 0
+
+
 def front_close_main(name: str) -> int:
     me, violations = caller.resolve("front close")
     caller.check_role(me, "front close", violations=violations)
@@ -502,6 +596,68 @@ def front_close_main(name: str) -> int:
     return 0
 
 
+def front_take_main(name: str) -> int:
+    """Move the calling supervisor's roster entry to another front.
+
+    A supervisor that carries a front to done and is then given the next
+    one had no way to say so: the roster is written by the launcher and by
+    `register`, and neither moves a session. The only way through was to
+    mint a second identity for the same process and leave a silent
+    supervisor behind on a closed front — one process claiming to be two
+    sessions, which is the lie the roster exists to prevent.
+
+    The front it leaves must be done, so this can never quietly abandon a
+    live front, and the front it takes must have no live supervisor of its
+    own, which is the same limit `launch supervisor` enforces.
+    """
+    from . import launch
+
+    verb = "front take"
+    me, violations = caller.resolve(verb)
+    caller.check_role(me, verb, caller.SUPERVISOR, violations=violations)
+    key = (name or "").strip()
+    record = None
+    if not key:
+        violations.append("field 'front' is required")
+    else:
+        record = read_front_record(key)
+        if record is None:
+            violations.append(f"unknown front '{key}'")
+    mine = str((me.session if me is not None else {}).get("front") or "")
+    if me is not None and mine:
+        leaving = read_front_record(mine)
+        if mine == key:
+            violations.append(f"session '{me.session_id}' already "
+                              f"supervises '{key}'")
+        elif leaving is not None and leaving.get("state") != "done":
+            violations.append(
+                f"session '{me.session_id}' supervises '{mine}', which is "
+                f"'{leaving.get('state')}': close it with `foreman front "
+                f"close {mine}` before taking another")
+    if record is not None and me is not None:
+        held = launch.live_supervisors(key, ignore=me.session_id)
+        if held:
+            other = held[0][0]
+            violations.append(
+                f"front '{key}' already has a live supervisor '{other}'; "
+                f"one front has one supervisor")
+    if violations:
+        return Refusal(violations).report()
+    assert me is not None and me.session_id
+    sid = me.session_id
+
+    def move(roster):
+        sessions = (roster or {}).get("sessions")
+        if isinstance(sessions, dict) and sid in sessions:
+            sessions[sid] = dict(sessions[sid], front=key)
+        return roster
+
+    store.update_snapshot(paths.roster_path(), move,
+                          default={"sessions": {}})
+    print(f"{sid} supervises {key}")
+    return 0
+
+
 def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     verbs = sub.add_subparsers(dest="front_verb", required=True)
     add = verbs.add_parser("add", help="Validate a brief and append its front.")
@@ -511,25 +667,40 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     add.add_argument("--fixture", action="store_true",
                      help="a front for trying the runtime out, marked as such "
                           "wherever it appears")
+    add.add_argument("--closed", action="store_true",
+                     help="a front that already ran and is done: the record "
+                          "only, no tasks")
     verbs.add_parser("list", help="Print one line per front.")
     prefer = verbs.add_parser("prefer", help="Set a front's queue preference.")
     prefer.add_argument("name", help="front name")
     prefer.add_argument("prefer", help="new preference (integer)")
+    allocate = verbs.add_parser(
+        "allocate", help="Set a front's ceiling for one role.")
+    allocate.add_argument("name", help="front name")
+    allocate.add_argument("role", help="worker role")
+    allocate.add_argument("count", help="new ceiling (non-negative integer)")
     close = verbs.add_parser("close", help="Mark a front done.")
     close.add_argument("name", help="front name")
+    take = verbs.add_parser(
+        "take", help="Move the calling supervisor to this front.")
+    take.add_argument("name", help="front name")
 
 
-@cli.subcommand("front", help="Add, list, prefer or close a front.")
+@cli.subcommand("front", help="Add, list, prefer, close or take a front.")
 def _front_entry(args: argparse.Namespace) -> int:
     if args.front_verb == "add":
         return front_add_main(args.directory, dry_run=args.dry_run,
-                              fixture=args.fixture)
+                              fixture=args.fixture, closed=args.closed)
     if args.front_verb == "list":
         return front_list_main()
     if args.front_verb == "prefer":
         return front_prefer_main(args.name, args.prefer)
+    if args.front_verb == "allocate":
+        return front_allocate_main(args.name, args.role, args.count)
     if args.front_verb == "close":
         return front_close_main(args.name)
+    if args.front_verb == "take":
+        return front_take_main(args.name)
     raise AssertionError(f"unknown front verb {args.front_verb!r}")
 
 

@@ -17,5 +17,11 @@ foreman = "foreman.cli:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+# Pool plugin directories ship as data: each packaged pool's manifest
+# and skill live beside its adapter module, not in a Python package.
+# Migrations ship the same way: standalone scripts, never imports.
+[tool.setuptools.package-data]
+foreman = ["pools/*/manifest.toml", "pools/*/SKILL.md", "migrations/*.py"]
+
 [tool.pytest.ini_options]
 markers = ["smoke: runs the real vendor binary; needs credentials on PATH"]

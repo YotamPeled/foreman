@@ -833,3 +833,35 @@ def test_no_verification_sentence_refused(env, fake_pool, capsys):
                       "Do the thing.\nNo verification is required.\n")
     assert launch(["muse", "fake", spec, "--repo", str(repo)]) != 0
     assert "verification" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("check", [
+    "Run the check with: python app.py",
+    "Run the check with: python3 tools/verify.py",
+    "Run the check with: node index.js",
+    "Run the check with: bash scripts/ci.sh",
+    "Run the check with: ./check.sh",
+])
+def test_a_plain_interpreter_run_counts_as_a_verification_command(check):
+    """An interpreter run against a file is a check like any other.
+
+    The hint list took `python -m` and `python -c` and refused
+    `python app.py`, the most ordinary check a small program has — so the
+    version two proof's spec was refused for "no verification command" and
+    reworded to satisfy the checker. Rewording a spec to please a checker
+    is the defect this check exists to prevent on the other side, so the
+    checker is what gets fixed.
+    """
+    spec = ("WHAT: do the thing.\nINPUTS: a file.\nOUTPUTS: a file.\n"
+            "OUT OF SCOPE: everything else.\n" + check + "\n")
+    assert launch_module.spec_problems(spec) == []
+
+
+def test_prose_mentioning_python_is_still_not_a_verification_command():
+    """The extension, or the leading ./, is what keeps the widened check
+    from passing a spec that merely talks about the language."""
+    spec = ("WHAT: do the thing.\nINPUTS: a file.\nOUTPUTS: a file.\n"
+            "OUT OF SCOPE: everything else.\n"
+            "This job is about python and testing in general.\n")
+    assert launch_module.spec_problems(spec) == [
+        "spec contains no verification command"]

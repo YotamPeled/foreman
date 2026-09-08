@@ -1,10 +1,16 @@
 """Pool adapters: how a session becomes a process.
 
-A pool is one model family (``muse``, ``grok``, ``claude``). Each pool is
-a plain module in this package exposing one adapter object registered
-under the pool name. The launcher (``foreman.launch``) resolves the pool,
+A pool is one model family (``muse``, ``grok``, ``claude``, ``codex``)
+and, since the plugin-directories job, a directory: each packaged pool
+ships ``manifest.toml`` (name, model, timeout, interactive, roles, the
+adapter implementing it) and ``SKILL.md`` beside its adapter module in
+this package. The launcher (``foreman.launch``) resolves the pool,
 builds a :class:`LaunchContext` with every path already absolute, and
 calls ``launch``; the collector will call ``observe``.
+
+A user pool directory (see :mod:`foreman.pools.plugins`) replaces the
+packaged pool of the same name entirely; a broken one falls back to the
+packaged pool with one warning, never a crash.
 
 Adapter contract (the whole interface a new pool must implement):
 
@@ -101,15 +107,30 @@ def unregister(name: str) -> None:
 
 
 def get(name: str) -> PoolAdapter:
+    # A user pool directory replaces the packaged pool of the same name
+    # entirely; a broken one warns once and falls through to the
+    # packaged adapter below. The registry still answers the packaged
+    # pools (and any adapter a test registers) directly, so a packaged
+    # pool's behaviour stays byte for byte its adapter's.
+    from . import plugins as _plugins
+
+    override = _plugins.read_user_manifest(name, warn=True)
+    if override is not None:
+        return _plugins.DirectoryPool(override)
     try:
         return REGISTRY[name]
     except KeyError:
-        known = ", ".join(sorted(REGISTRY)) or "(none)"
+        known = ", ".join(names()) or "(none)"
         raise ValueError(f"unknown pool {name!r}; known pools: {known}") from None
 
 
 def names() -> list[str]:
-    return sorted(REGISTRY)
+    # The registered adapters plus the user's valid pool directories. A
+    # user directory whose manifest does not validate is skipped quietly
+    # here; resolving it warns (see :func:`get`).
+    from . import plugins as _plugins
+
+    return sorted(set(REGISTRY) | set(_plugins.valid_user_names()))
 
 
 from .muse import MuseAdapter  # noqa: E402

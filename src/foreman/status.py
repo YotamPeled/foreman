@@ -2,17 +2,19 @@
 
 The same text the panel will render later, in the docs/DESIGN.md section 13
 order and no other: header, Needs you, Problems, Working, the job queue,
-the merge queue, Capacity. Status reads; it never writes, and it never
+the merge queue, Capacity, and the Overall line last. Status reads; it
+never writes, and it never
 recomputes a number the collector already derived: per-job elapsed/timeout/
 write-idle, per-session seconds since declared write/activity, pool
 held/total and the swarm counts all come from ``observed.json``. Names,
 questions, details and checkpoints come straight from the ledgers through
 ``paths.py`` — nothing here builds a path or opens a state file by hand.
 
-Two version notes. Monitors (``measurements.jsonl``) and the front
-queue (front admission) have no writer in v0, so those blocks are left
-out entirely rather than printed empty. Every other block with nothing in
-it prints one line saying so, never an empty heading.
+Two version notes. The front queue (front admission) has no writer in
+v0, so that block is left out entirely rather than printed empty. Every
+other block with nothing in it prints one line saying so, never an empty
+heading. Monitors (``measurements.jsonl``) render under each front in
+Working, one line per declared monitor plus the two free ones.
 
 ``foreman status --fixture <dir>`` reads a state directory from that path
 instead of the real one. ``FOREMAN_NOW`` (an ISO timestamp) pins the clock
@@ -23,7 +25,7 @@ from __future__ import annotations
 
 import argparse
 import os
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from . import caller, paths, store
@@ -34,6 +36,57 @@ from .verbs import read_inbox
 #: Queued work, in the supervisor's order: ledger order, first appearance.
 QUEUE_STATES = ("planned", "queued")
 TERMINAL = ("returned", "verified", "failed", "killed")
+
+#: Job states that finished work, the pace behind a front's ESTIMATE.
+#: Failed and killed jobs ended work without moving it, so they carry no
+#: rate.
+COMPLETED_JOB_STATES = ("returned", "verified")
+
+#: Hours of job completions behind every ESTIMATE rate (DESIGN section 7:
+#: landed units per hour over the last N hours).
+ESTIMATE_WINDOW_H = 24
+
+#: The terminal is narrow: no status line wider than this that a shorter
+#: wording or a truncation can avoid.
+LINE_WIDTH = 100
+
+
+def _fit(line: str) -> str:
+    """Clip one status line to the readable width, never wrapping."""
+    if len(line) <= LINE_WIDTH:
+        return line
+    return line[:LINE_WIDTH - 3] + "..."
+
+
+def _wrapped(label: str, items: list[str], indent: str = "    ") -> list[str]:
+    """``label`` and its items over as many lines as they need.
+
+    A list clipped at the width loses exactly the items at its end, and the
+    remaining tasks are the point of the line. Nothing is dropped: the list
+    continues on an indented line instead.
+    """
+    lines: list[str] = []
+    current = f"{indent}{label}"
+    lead = indent + " " * 4
+    for index, item in enumerate(items):
+        piece = item if index == len(items) - 1 else f"{item},"
+        if len(current) + 1 + len(piece) > LINE_WIDTH and \
+                current.strip() not in (label.strip(),):
+            lines.append(current)
+            current = f"{lead}{piece}"
+        else:
+            current = f"{current} {piece}"
+    lines.append(current)
+    return lines
+
+
+def _count(n: int, word: str) -> str:
+    return f"{n} {word}" if n == 1 else f"{n} {word}s"
+
+
+def _one_line(text: object) -> str:
+    """One line of prose: collapse every run of whitespace to one space."""
+    return " ".join(str(text or "").split())
 
 NOW_ENV = "FOREMAN_NOW"
 
@@ -227,10 +280,65 @@ def _header(roster: dict, observed: dict | None, now: datetime) -> str:
             f"{seen} observed \u00b7 {frozen} \u00b7 {tick}")
 
 
-def _needs_you(now: datetime) -> list[str]:
+def _open_inbox() -> list[dict]:
+    """Every inbox item still waiting on the owner, oldest first."""
     items = [item for item in read_inbox()[0]
              if item.get("answered_at") is None]
     items.sort(key=lambda item: item.get("asked_at") or "")
+    return items
+
+
+def _blocked_for(name: str, roster: dict,
+                 inbox: list[dict]) -> list[dict]:
+    """The open inbox items asked by this front's own sessions.
+
+    An item belongs to the front its asking session watches; the asker's
+    roster line says which front that is. Items from sessions the roster
+    no longer names belong to no front and stay only in Needs you.
+    """
+    blocked = []
+    for item in inbox:
+        for key in ("from", "by"):
+            record = roster.get(item.get(key) or "")
+            if isinstance(record, dict) and record.get("front") == name:
+                blocked.append(item)
+                break
+    return blocked
+
+
+def _estimate_for(tasks: list[dict], jobs: list[dict],
+                  now: datetime) -> tuple[int, int, int, float | None]:
+    """(tasks remaining, tasks total, jobs finished in the window,
+    projected hours). Hours is None where no job finished lately: no
+    pace, no projection — the screen says "no rate yet" instead."""
+    remaining = sum(1 for task in tasks if task.get("state") != "landed")
+    cutoff = now - timedelta(hours=ESTIMATE_WINDOW_H)
+    finished = 0
+    for job in jobs:
+        if job.get("state") not in COMPLETED_JOB_STATES:
+            continue
+        moment = _parse_time(job.get("verified_at")
+                             or job.get("returned_at"))
+        if moment is None:
+            continue
+        if cutoff <= moment <= now:
+            finished += 1
+    hours = (remaining / (finished / ESTIMATE_WINDOW_H)
+             if finished else None)
+    return remaining, len(tasks), finished, hours
+
+
+def _format_hours(hours: float) -> str:
+    minutes = max(1, int(round(hours * 60)))
+    if minutes < 60:
+        return f"about {minutes}m"
+    if minutes // 60 < 48:
+        return f"about {minutes // 60}h"
+    return f"about {minutes // 60 // 24}d"
+
+
+def _needs_you(now: datetime) -> list[str]:
+    items = _open_inbox()
     if not items:
         return ["Needs you: nothing needs you."]
     lines = [f"Needs you ({len(items)}):"]
@@ -322,9 +430,116 @@ def _task_line(task: dict, titles: dict[str, str]) -> str:
         head += f" \u00b7 head {task.get('head')}"
     # A task that was moved backwards says so until it moves again: the
     # reset is the owner's business, not a quiet correction.
+    if task.get("built_by_hand"):
+        head += f" \u00b7 by hand: {task.get('built_by_hand')}"
     if task.get("reset_reason"):
         head += f" \u00b7 reset: {task.get('reset_reason')}"
     return head
+
+
+def _measurements(name: str) -> list[dict]:
+    try:
+        return store.read_ledger(paths.front_measurements_path(name))
+    except OSError:
+        return []
+
+
+def _declared_monitors(front_record: dict | None) -> list[dict]:
+    if not isinstance(front_record, dict):
+        return []
+    declared = front_record.get("monitors")
+    if not isinstance(declared, list):
+        return []
+    return [entry for entry in declared if isinstance(entry, dict)]
+
+
+def _doing_monitor_line(name: str, roster: dict, sessions_view: dict,
+                        now: datetime) -> str:
+    """The free `doing now` monitor, in the declared-monitor shape."""
+    held = _supervisor_for(name, roster)
+    if held is None:
+        return "    doing now \u2014 no supervisor"
+    sid, record = held
+    checkpoint = _checkpoint(sid)
+    doing = (checkpoint or {}).get("doing")
+    if not (isinstance(doing, str) and doing.strip()):
+        return "    doing now \u2014 no checkpoint yet"
+    observed_age = sessions_view.get(sid, {}).get("seconds_since_declared")
+    if isinstance(observed_age, (int, float)):
+        age = _age(observed_age)
+    else:
+        age = _since(record.get("last_declared_at"), now)
+    return f"    doing now \u2014 {doing.strip()} \u00b7 {age} ago"
+
+
+def _progress_monitor_line(tasks: list[dict]) -> str:
+    """The free progress monitor, in the declared-monitor shape."""
+    if not tasks:
+        return "    progress \u2014 no tasks yet"
+    landed = sum(1 for task in tasks if task.get("state") == "landed")
+    return f"    progress \u2014 {landed}/{len(tasks)} tasks"
+
+
+def _monitor_lines(name: str, front_record: dict | None,
+                   tasks: list[dict], roster: dict,
+                   sessions_view: dict, now: datetime) -> list[str]:
+    """Declared monitors plus the two free ones, one line each.
+
+    A declared line reads ``<question> \u2014 <value>/<of> \u00b7 <age> ago
+    \u00b7 <trend>``, with the trailing trend omitted when only one
+    measurement exists and the denominator omitted when none is known.
+    The free monitors render in the same shape from what the runtime
+    already knows, so a front with no declared monitors still shows two
+    lines.
+    """
+    from . import monitors as _monitors
+
+    lines = []
+    ledger = _measurements(name)
+    for decl in _declared_monitors(front_record):
+        question = decl.get("question") or decl.get("measure") or "?"
+        question = str(question).strip() or "?"
+        matched = _monitors.matching_measurements(ledger, decl)
+        if not matched:
+            lines.append(f"    {question} \u2014 no measurements yet")
+            continue
+        latest = matched[-1]
+        value = latest.get("value")
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            lines.append(f"    {question} \u2014 no measurements yet")
+            continue
+        denominator = latest.get("of")
+        if denominator is None:
+            denominator = decl.get("of")
+        if isinstance(denominator, bool) or not isinstance(
+                denominator, (int, float)):
+            denominator = None
+        if denominator is None:
+            reading = _monitors.format_number(value)
+        else:
+            reading = (f"{_monitors.format_number(value)}/"
+                       f"{_monitors.format_number(denominator)}")
+        unit = decl.get("unit")
+        if isinstance(unit, str) and unit.strip():
+            reading += f" {unit.strip()}"
+        age = _since(latest.get("at"), now)
+        previous = matched[-2] if len(matched) > 1 else None
+        prev_value = previous.get("value") if isinstance(
+            previous, dict) else None
+        if isinstance(prev_value, bool) or not isinstance(
+                prev_value, (int, float)):
+            prev_value = None
+        trend = _monitors.trend_of(
+            float(prev_value) if prev_value is not None else None,
+            float(value))
+        if trend:
+            lines.append(f"    {question} \u2014 {reading} "
+                         f"\u00b7 {age} ago \u00b7 {trend}")
+        else:
+            lines.append(f"    {question} \u2014 {reading} \u00b7 {age} ago")
+    lines.append(_doing_monitor_line(name, roster, sessions_view, now))
+    lines.append(_progress_monitor_line(tasks))
+    return lines
 
 
 def _load_fronts() -> tuple[list[tuple[str, list[dict], list[dict]]],
@@ -359,8 +574,64 @@ def _load_fronts() -> tuple[list[tuple[str, list[dict], list[dict]]],
     return loaded, titles, jobs_by_session
 
 
+def _front_tail_lines(name: str, front_record: dict | None,
+                      tasks: list[dict], jobs: list[dict],
+                      roster: dict, inbox: list[dict],
+                      now: datetime) -> list[str]:
+    """The four lines every front block ends with, never omitted.
+
+    What the front is (its want, one line), what is left (the tasks not
+    landed, by title), when it finishes (projected from the jobs lately
+    finished, with that basis on the same line, or "no rate yet"), and
+    what waits on the owner. A field with no data says so in words: a
+    missing line and a line saying nothing is happening are different
+    facts and the owner cannot tell them apart.
+    """
+    want = (front_record or {}).get("want")
+    want = _one_line(want) if isinstance(want, str) else ""
+    lines = [_fit(f"    want: {want}" if want else
+                  "    want: (not recorded)")]
+    left = [task.get("title") for task in tasks
+            if task.get("state") != "landed" and task.get("title")]
+    if not tasks:
+        lines.append("    REMAINING: no tasks yet")
+    elif not left:
+        lines.append(_fit(f"    REMAINING: none \u2014 all "
+                          f"{_count(len(tasks), 'task')} landed"))
+    else:
+        # Never clipped: a remaining task the owner cannot see is a task he
+        # does not know is left.
+        lines.extend(_wrapped(f"REMAINING ({len(left)}):",
+                              [str(title) for title in left]))
+    remaining, total, finished, hours = _estimate_for(tasks, jobs, now)
+    if not tasks:
+        lines.append("    ESTIMATE: no rate yet \u2014 no tasks yet")
+    elif not remaining:
+        lines.append(_fit(f"    ESTIMATE: done \u2014 all "
+                          f"{_count(total, 'task')} landed"))
+    elif hours is None:
+        lines.append(_fit(f"    ESTIMATE: no rate yet \u2014 "
+                          f"{_count(remaining, 'task')} remaining"))
+    else:
+        lines.append(_fit(f"    ESTIMATE: {_format_hours(hours)} "
+                          f"({_count(finished, 'job')} in last "
+                          f"{ESTIMATE_WINDOW_H}h)"))
+    blocked = _blocked_for(name, roster, inbox)
+    if not blocked:
+        lines.append("    Blocked on you: nothing blocked on you")
+    else:
+        parts = [f"{_one_line(item.get('question')) or '(no question)'} "
+                 f"({item.get('kind') or '?'}"
+                 f", {_since(item.get('asked_at'), now)})"
+                 for item in blocked]
+        lines.append(_fit(f"    Blocked on you ({len(blocked)}): "
+                          f"{'; '.join(parts)}"))
+    return lines
+
+
 def _working(roster: dict, observed: dict | None, now: datetime,
-             loaded: list[tuple[str, list[dict], list[dict]]]) -> list[str]:
+             loaded: list[tuple[str, list[dict], list[dict]]],
+             inbox: list[dict]) -> list[str]:
     if not loaded:
         return ["Working: nothing running."]
     sessions_view = (observed or {}).get("sessions") or {}
@@ -413,6 +684,8 @@ def _working(roster: dict, observed: dict | None, now: datetime,
             lines.append(f"    evidence: {len(evidence)} "
                          f"({confirmed} confirmed) "
                          f"\u00b7 findings: {len(findings)}")
+        lines.extend(_monitor_lines(name, front_record, tasks, roster,
+                                    sessions_view, now))
         for task in tasks:
             lines.append(f"    {_task_line(task, titles)}")
             for job in jobs:
@@ -432,7 +705,53 @@ def _working(roster: dict, observed: dict | None, now: datetime,
             named = job.get("task") or "no task named"
             lines.append(f"    {named}")
             lines.append(f"      {detail}")
+        lines.extend(_front_tail_lines(name, front_record, tasks, jobs,
+                                       roster, inbox, now))
     return lines
+
+
+def _overall(loaded: list[tuple[str, list[dict], list[dict]]],
+             inbox: list[dict], now: datetime) -> str:
+    """The whole swarm in one sentence: how many fronts are moving, the
+    nearest finish, and what needs the owner."""
+    done = sum(1 for name, _tasks, _jobs in loaded
+               if (_front_record(name) or {}).get("state") == "done")
+    nearest: tuple[float, str] | None = None
+    for name, tasks, jobs in loaded:
+        if (_front_record(name) or {}).get("state") == "done":
+            continue
+        remaining, _total, _finished, hours = _estimate_for(
+            tasks, jobs, now)
+        if hours is not None and remaining and \
+                (nearest is None or hours < nearest[0]):
+            nearest = (hours, name)
+    if not loaded:
+        head = "no fronts"
+    else:
+        head = (f"{len(loaded) - done} of {len(loaded)} fronts moving "
+                f"({done} done)")
+    if nearest is None:
+        finish = "no projected finish yet"
+    else:
+        finish = f"nearest finish {_format_hours(nearest[0])} ({nearest[1]})"
+    if not inbox:
+        owner = "nothing needs you"
+    else:
+        owner = (f"{_count(len(inbox), 'item')}, "
+                 f"oldest {_since(inbox[0].get('asked_at'), now)}")
+    # The one line he reads first is never clipped. Clipping took the tail,
+    # and the tail is what needs him — "needs you: nothing need..." says
+    # less than nothing. The detail goes before the sentence does.
+    line = f"Overall: {head}, {finish}; needs you: {owner}."
+    if len(line) > LINE_WIDTH and inbox:
+        line = (f"Overall: {head}, {finish}; needs you: "
+                f"{_count(len(inbox), 'item')}.")
+    if len(line) > LINE_WIDTH:
+        line = f"Overall: {head}; needs you: {owner}."
+    if len(line) > LINE_WIDTH:
+        line = f"Overall: {head}; needs you: {_count(len(inbox), 'item')}." \
+            if inbox else f"Overall: {head}; nothing needs you."
+    return line
 
 
 def _job_queue(now: datetime) -> list[str]:
@@ -453,27 +772,38 @@ def _job_queue(now: datetime) -> list[str]:
 
 
 def _merge_queue(titles: dict[str, str], now: datetime) -> list[str]:
+    from .merge import is_failed, is_landed
+
     merges = _merges()
     if merges is None:
         return ["Merge queue: empty."]
-    waiting = [row for row in merges if row.get("landed_at") is None]
-    landed = [row for row in merges if row.get("landed_at") is not None]
-    if not waiting and not landed:
+    waiting = [row for row in merges
+               if not is_landed(row) and not is_failed(row)]
+    landed = [row for row in merges if is_landed(row)]
+    failed = [row for row in merges if is_failed(row)]
+    if not waiting and not landed and not failed:
         return ["Merge queue: empty."]
     lines = ["Merge queue:"]
+    waiting.sort(key=lambda row: row.get("requested_at") or "")
     for row in waiting:
         tasks = ", ".join(titles.get(task, task)
                           for task in (row.get("tasks") or []))
-        lines.append(f"  waiting: {row.get('branch')} -> "
+        lines.append(f"  waiting: {row.get('front') or '(no front)'}: "
+                     f"{row.get('branch')} -> "
                      f"{row.get('target')}, lands {tasks} "
                      f"(requested {_since(row.get('requested_at'), now)} "
                      f"ago)")
-    if landed:
-        landed.sort(key=lambda row: row.get("landed_at") or "")
-        last = landed[-1]
-        lines.append(f"  last landed: {last.get('branch')} -> "
-                     f"{last.get('target')} "
-                     f"({_since(last.get('landed_at'), now)} ago)")
+    landed.sort(key=lambda row: row.get("landed_at") or "")
+    for row in landed:
+        lines.append(f"  landed: {row.get('branch')} -> "
+                     f"{row.get('target')} at {row.get('head') or '?'} "
+                     f"({_since(row.get('landed_at'), now)} ago)")
+    failed.sort(key=lambda row: row.get("failed_at") or "")
+    for row in failed:
+        lines.append(f"  failed: {row.get('branch')} -> "
+                     f"{row.get('target')}: "
+                     f"{row.get('fail_reason') or '(no reason recorded)'} "
+                     f"({_since(row.get('failed_at'), now)} ago)")
     return lines
 
 
@@ -502,13 +832,15 @@ def render(now: datetime | None = None) -> str:
     if not isinstance(observed, dict):
         observed = None
     loaded, titles, jobs_by_session = _load_fronts()
+    inbox = _open_inbox()
     blocks = [_header(roster, observed, moment),
               *_needs_you(moment),
               *_problems(roster, jobs_by_session, moment),
-              *_working(roster, observed, moment, loaded),
+              *_working(roster, observed, moment, loaded, inbox),
               *_job_queue(moment),
               *_merge_queue(titles, moment),
-              *_capacity(observed)]
+              *_capacity(observed),
+              _overall(loaded, inbox, moment)]
     return "\n".join(blocks) + "\n"
 
 

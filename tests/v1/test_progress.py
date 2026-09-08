@@ -160,6 +160,18 @@ def add_front(env, monkeypatch, capsys, name="flow"):
     capsys.readouterr()
 
 
+def make_self_landing(front):
+    """Flag a test front as one that lands itself, the way a brief with
+    `merge = "self"` records it: a revised copy of the front line, the way
+    every other front change is written."""
+    from foreman import fronts
+
+    record = fronts.read_front_record(front)
+    assert record is not None
+    store.append_ledger(paths.front_record_path(front),
+                        dict(record, merge="self"))
+
+
 def sup_session(sid, front, **fields):
     base = {
         "id": sid, "role": "supervisor", "pool": "opus", "model": "opus",
@@ -238,8 +250,14 @@ def test_flow_2_ready_to_landed(env, fake_pool, children,
                                 monkeypatch, capsys):
     """Flow 2 through the command line: ready, running, returned,
     verified, built, landed — with `foreman status` naming each state
-    as it changes and the successor releasing only on landing."""
+    as it changes and the successor releasing only on landing.
+
+    On a `merge = "self"` front, where the supervisor still lands
+    directly; every other front lands through a merge request the desk
+    consumes (see tests/v2/test_merge_desk.py).
+    """
     add_front(env, monkeypatch, capsys)
+    make_self_landing("flow")
     tasks = tasks_by_title("flow")
     first, second = tasks["first"]["id"], tasks["second"]["id"]
     assert tasks["first"]["state"] == "ready"
@@ -434,8 +452,12 @@ def test_landed_not_built_is_refused(env, monkeypatch, capsys):
 def test_successor_releases_on_landing_not_before(
         env, monkeypatch, capsys):
     """A successor stays waiting while its predecessor is only built and
-    becomes ready in the same call that lands it."""
+    becomes ready in the same call that lands it.
+
+    On a `merge = "self"` front, where the supervisor still lands
+    directly."""
     add_front(env, monkeypatch, capsys)
+    make_self_landing("flow")
     seed_supervisor("flow")
     first = tasks_by_title("flow")["first"]["id"]
     store.append_ledger(paths.front_jobs_path("flow"), {
@@ -740,3 +762,95 @@ def test_a_fixture_front_is_marked_wherever_it_appears(
     out = status_out(monkeypatch, capsys)
     assert "real —" in out
     assert "real (fixture)" not in out
+
+
+def test_a_job_that_names_no_task_can_still_be_verified(
+        env, monkeypatch, capsys):
+    """Front work outside the brief's tasks is closable.
+
+    `foreman launch --front <f>` takes no task, and work commissioned
+    outside a brief arrives that way. `job verify` had no task to add units
+    to and refused with "names unknown task ''", so the job stayed
+    `returned` on the screen for good — a lie about work that was merged.
+    It verifies now, adding its units to nothing, because there is nothing
+    for them to be units of. A job naming a task the ledger does not have
+    is still refused.
+    """
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    store.append_ledger(paths.front_jobs_path("flow"), {
+        "id": "job-notask", "task": "", "kind": "implement",
+        "role": "muse", "priority": 1, "spec_path": "/tmp/specs/extra.md",
+        "session": None, "worktree": "", "branch": "", "log": "",
+        "timeout": "20m", "units": [], "attempt": 1, "state": "returned",
+        "planned_at": iso(NOW - timedelta(minutes=10)),
+        "queued_at": iso(NOW - timedelta(minutes=9)),
+        "started_at": iso(NOW - timedelta(minutes=8)),
+        "returned_at": iso(NOW - timedelta(minutes=2)),
+        "verified_at": None, "artifact": "", "verdict_path": "",
+    })
+    assert run(monkeypatch, ["job", "verify", "job-notask", "--confirmed",
+                             "--command", "make check", "--output",
+                             "ok"], SUP) == 0
+    assert "no task" in capsys.readouterr().out
+    assert folded_job("flow", "job-notask")["state"] == "verified"
+
+    store.append_ledger(paths.front_jobs_path("flow"), {
+        "id": "job-ghost", "task": "a task nobody wrote", "kind": "implement",
+        "role": "muse", "priority": 1, "spec_path": "", "session": None,
+        "worktree": "", "branch": "", "log": "", "timeout": "20m",
+        "units": [], "attempt": 1, "state": "returned",
+        "planned_at": iso(NOW), "queued_at": iso(NOW), "started_at": iso(NOW),
+        "returned_at": iso(NOW), "verified_at": None,
+        "artifact": "", "verdict_path": "",
+    })
+    assert run(monkeypatch, ["job", "verify", "job-ghost", "--confirmed",
+                             "--command", "make check", "--output",
+                             "ok"], SUP) == 1
+    assert "unknown task" in capsys.readouterr().err
+
+
+def test_a_supervisor_accounts_for_units_it_did_itself(
+        env, monkeypatch, capsys):
+    """Some work has no worker to dispatch it to.
+
+    A front's proof is run by its supervisor, by the brief, so no job
+    carries its units — and without a way to say so the runtime could
+    never close the task its own brief assigns to the supervisor: no job,
+    no units, no `built`, for work that was finished. It is not a way
+    around the evidence: CONFIRMED evidence on the front is required
+    first, and what the supervisor says it did travels onto the screen.
+    """
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+
+    assert run(monkeypatch, ["task", "built", first,
+                             "--did-myself", "I ran the done-when"],
+               SUP) == 1
+    assert "CONFIRMED evidence" in capsys.readouterr().err
+
+    assert run(monkeypatch, ["evidence", "--on", "flow",
+                             "--claim", "the done-when ran",
+                             "--status", "CONFIRMED",
+                             "--command", "make check first",
+                             "--output", "ok"], SUP) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["task", "built", first,
+                             "--did-myself", "I ran the done-when"],
+               SUP) == 0
+    assert "by hand: I ran the done-when" in capsys.readouterr().out
+    built = tasks_by_title("flow")["first"]
+    assert built["state"] == "built"
+    assert built["units_done"] == built["units_total"]
+    assert "by hand: I ran the done-when" in status_out(monkeypatch, capsys)
+
+
+def test_units_still_have_to_be_accounted_for_without_the_flag(
+        env, monkeypatch, capsys):
+    """The flag is the only way past the count, and it is deliberate."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    assert run(monkeypatch, ["task", "built", first], SUP) == 1
+    assert "every unit must be accounted for" in capsys.readouterr().err
