@@ -2,7 +2,8 @@
 
 Launch shape::
 
-    claude -p --output-format stream-json --verbose \\
+    cd <worktree> && claude -p --output-format stream-json --verbose \\
+      --model <the role's model> --dangerously-skip-permissions \\
       --disallowedTools 'mcp__foreman__* mcp__boxes__*' < <FOREMAN-JOB.md>
 
 ``-p`` reads the spec from standard input (the job file is redirected in,
@@ -18,9 +19,13 @@ the transcript has none.
 Wrapping, pid file, finish marker and ``observe`` are the shared ones in
 :mod:`foreman.pools._common`, identical to the muse adapter.
 
-No ``--model`` flag is passed: the CLI default applies, and ``model``
-records that default rather than a pinned id. Pinning a versioned id is
-a later decision, not something to guess here.
+Nothing here is left to the machine's own configuration. The working
+directory is the worktree, the model is named for the role the job asked
+for, and the permission mode is on the command line: a headless worker
+has nobody to answer an approval prompt, and a worker whose model is
+whatever the machine happens to default to is not the worker the
+supervisor asked for. Owner ruling, 2026-09-08: nothing is guessed at
+launch.
 """
 
 from __future__ import annotations
@@ -35,9 +40,15 @@ from . import _common
 from .. import paths
 from ..entities import Session
 
-#: Recorded on the session. No --model flag is passed, so this names the
-#: CLI default rather than a pinned model id.
-MODEL = "claude"
+#: Recorded on the session, and passed as ``--model``.
+MODEL = "claude-opus-5"
+#: The model each role that draws on this pool is run with. A role with no
+#: entry runs the pool's own model; nothing runs on the machine default.
+ROLE_MODELS = {"opus": "claude-opus-5", "supervisor": "claude-opus-5"}
+
+
+def model_for(role: str) -> str:
+    return ROLE_MODELS.get(role or "", MODEL)
 #: Denied MCP tool patterns: the swarm's own servers, in this CLI's
 #: ``mcp__<server>__<tool>`` spelling.
 DISALLOWED_TOOLS = "mcp__foreman__* mcp__boxes__*"
@@ -51,6 +62,9 @@ def claude_argv(ctx: LaunchContext) -> list[str]:
         "--output-format",
         "stream-json",
         "--verbose",
+        "--model",
+        model_for(ctx.session.role),
+        "--dangerously-skip-permissions",
         "--disallowedTools",
         DISALLOWED_TOOLS,
     ]
@@ -67,6 +81,7 @@ def inner_command(ctx: LaunchContext) -> str:
         pid_path=ctx.pid_path,
         log_path=ctx.log_path,
         stdin_path=ctx.job_path,
+        cwd=ctx.worktree,
     )
 
 

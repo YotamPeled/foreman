@@ -83,7 +83,8 @@ def read_pid_file(path: Path) -> int | None:
 
 
 def wrap_inner(vendor_argv: list[str], *, pid_path: Path | str,
-               log_path: Path | str, stdin_path: Path | str | None = None) -> str:
+               log_path: Path | str, stdin_path: Path | str | None = None,
+               cwd: Path | str | None = None) -> str:
     """Shell running the worker: pid first, marker inside the redirection.
 
     ``setsid`` makes the shell that writes the pid file a process group
@@ -93,6 +94,12 @@ def wrap_inner(vendor_argv: list[str], *, pid_path: Path | str,
     it always reaches the log.
     """
     vendor = " ".join(shlex.quote(part) for part in vendor_argv)
+    if cwd is not None:
+        # The vendor process must start in the worktree it was given. A
+        # process that inherits the launcher's directory instead is one
+        # careless relative path away from editing the wrong checkout, and
+        # nothing about a launch is left to be guessed.
+        vendor = "cd " + shlex.quote(str(cwd)) + " && " + vendor
     if stdin_path is not None:
         vendor += " < " + shlex.quote(str(stdin_path))
     worker = (

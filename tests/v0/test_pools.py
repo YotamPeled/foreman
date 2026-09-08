@@ -46,8 +46,8 @@ def env(tmp_path, monkeypatch):
 
 def make_ctx(tmp: Path, pool: str = "grok", kind: str = "implement",
              effort: str = "high", sid: str = "ses-test123",
-             window: bool = False) -> LaunchContext:
-    session = Session(id=sid, role=pool, pool=pool,
+             window: bool = False, role: str | None = None) -> LaunchContext:
+    session = Session(id=sid, role=role or pool, pool=pool,
                       model=get_pool(pool).model, state="running")
     return LaunchContext(
         session=session,
@@ -173,7 +173,10 @@ def test_grok_launch_returns_the_pid_file(env, monkeypatch):
 
 def test_claude_argv_denies_swarm_tools_with_bare_binary(env):
     """The vendor binary is found on PATH, never by absolute path; the
-    swarm's tools are denied or a worker can touch swarm state."""
+    swarm's tools are denied or a worker can touch swarm state; and the
+    model and the permission mode are named rather than inherited from
+    whatever this machine happens to be configured with (owner ruling,
+    2026-09-08: nothing is guessed at launch)."""
     ctx = make_ctx(env, pool="claude")
     argv = claude_pool.claude_argv(ctx)
     assert argv == [
@@ -181,9 +184,26 @@ def test_claude_argv_denies_swarm_tools_with_bare_binary(env):
         "-p",
         "--output-format", "stream-json",
         "--verbose",
+        "--model", claude_pool.model_for(ctx.session.role),
+        "--dangerously-skip-permissions",
         "--disallowedTools", "mcp__foreman__* mcp__boxes__*",
     ]
     assert "/" not in argv[0]
+
+
+def test_claude_worker_names_model_directory_and_permission_mode(env):
+    """All three things a launch must not leave to the machine: the model
+    for the role, the worktree as the working directory, and the permission
+    mode. A worker that inherits the launcher's directory is one relative
+    path away from editing the wrong checkout, and a headless worker has
+    nobody to answer an approval prompt."""
+    ctx = make_ctx(env, pool="claude", role="opus")
+    inner = claude_pool.inner_command(ctx)
+    assert "--model claude-opus-5" in inner
+    assert "--dangerously-skip-permissions" in inner
+    assert f"cd {ctx.worktree} &&" in inner
+    assert claude_pool.model_for("opus") == "claude-opus-5"
+    assert claude_pool.model_for("") == claude_pool.MODEL
 
 
 def test_claude_wrapper_feeds_spec_and_transcribes(env, monkeypatch):
