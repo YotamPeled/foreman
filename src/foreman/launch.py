@@ -929,6 +929,7 @@ def registered_verbs() -> list[tuple[str, argparse.ArgumentParser, str]]:
     from . import collector as _collector  # noqa: F401
     from . import config as _config  # noqa: F401
     from . import fronts as _fronts  # noqa: F401
+    from . import mcp as _mcp  # noqa: F401
     from . import progress as _progress  # noqa: F401
     from . import status as _status  # noqa: F401
     from . import verbs as _verbs  # noqa: F401
@@ -1071,7 +1072,8 @@ def pre_answer_first_launch_dialogs(directory: str) -> None:
 
 def supervisor_inner_command(*, pid_path: Path, session_id: str, repo: str,
                              role_prompt: Path, vendor_id: str,
-                             resume: bool, front_prompt: Path | None = None) -> str:
+                             resume: bool, front_prompt: Path | None = None,
+                             mcp_config: Path | None = None) -> str:
     """The shell the window runs: pid first, then the proven vendor line.
 
     The pid is written as the first act and read back by the launcher, so
@@ -1087,9 +1089,19 @@ def supervisor_inner_command(*, pid_path: Path, session_id: str, repo: str,
     file first. Writing a file nobody opens is not a relaunch.
     """
     announce = ""
+    # The summoned session's verbs arrive as tools, and no other server's
+    # do: the config names `foreman mcp` for this session id, and the
+    # strict flag ignores every other source. A worker launch passes
+    # neither flag on any pool (see the pool adapters), so a worker has
+    # no server at all.
+    mcp_flags = ""
+    if mcp_config is not None:
+        mcp_flags = (f" --mcp-config {shlex.quote(str(mcp_config))}"
+                     " --strict-mcp-config")
     if resume:
         vendor = (f"{AUTOCOMPACT} claude --resume {shlex.quote(vendor_id)} "
-                  f"--model {SUPERVISOR_MODEL} --dangerously-skip-permissions")
+                  f"--model {SUPERVISOR_MODEL} --dangerously-skip-permissions"
+                  f"{mcp_flags}")
         where = str(front_prompt if front_prompt is not None else role_prompt)
         announce = "printf '%s\\n' " + shlex.quote(
             "You were relaunched. Read your fresh role prompt before anything "
@@ -1097,7 +1109,8 @@ def supervisor_inner_command(*, pid_path: Path, session_id: str, repo: str,
             + where) + "\n"
     else:
         vendor = (f"{AUTOCOMPACT} claude --session-id {shlex.quote(vendor_id)} "
-                  f"--model {SUPERVISOR_MODEL} --dangerously-skip-permissions "
+                  f"--model {SUPERVISOR_MODEL} --dangerously-skip-permissions"
+                  f"{mcp_flags} "
                   f'"$(cat {shlex.quote(str(role_prompt))})"')
     return (
         f"echo $$ > {shlex.quote(str(pid_path))}\n"
@@ -1399,12 +1412,20 @@ def _start_supervisor(session_id: str, *, repo: str, role_prompt: Path,
     back as a named refusal that closes the record, never as an exception
     that leaves a session `starting` forever.
     """
+    from . import mcp as mcp_module
+
     session_dir = paths.session_dir(session_id)
     pid_path = paths.session_pid_path(session_id)
+    argv: list[str] = []
+    inner = ""
+    try:
+        mcp_config = mcp_module.write_mcp_config(session_id)
+    except OSError as exc:
+        return argv, inner, None, f"OSError: cannot write MCP config: {exc}"
     inner = supervisor_inner_command(
         pid_path=pid_path, session_id=session_id, repo=repo,
         role_prompt=role_prompt, vendor_id=vendor_id, resume=resume,
-        front_prompt=front_prompt)
+        front_prompt=front_prompt, mcp_config=mcp_config)
     argv = supervisor_outer_argv(session_id, session_dir / RUN_SCRIPT_FILE,
                                  workspace)
     try:
@@ -1465,10 +1486,13 @@ def _print_supervisor(session_id: str, vendor_id: str, role_prompt: Path,
                       workspace: str | None, pid: int | None,
                       argv: list[str], inner: str,
                       front: str | None = None,
-                      branch: str | None = None) -> None:
+                      branch: str | None = None,
+                      mcp_config: Path | None = None) -> None:
     print(f"session: {session_id}")
     print(f"vendor session: {vendor_id}")
     print(f"role prompt: {role_prompt}")
+    if mcp_config is not None:
+        print(f"mcp config: {mcp_config}")
     if front:
         print(f"front prompt: {front_prompt_path(front)}")
     if branch:
@@ -1594,14 +1618,21 @@ def launch_supervisor_main(args: argparse.Namespace,
         return refuse(f"cannot write launch files: {exc.strerror or exc}")
 
     if args.dry_run:
+        from . import mcp as mcp_module
+
+        try:
+            mcp_config = mcp_module.write_mcp_config(session_id)
+        except OSError as exc:
+            return refuse(f"cannot write launch files: {exc.strerror or exc}")
         inner = supervisor_inner_command(
             pid_path=paths.session_pid_path(session_id),
             session_id=session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, resume=False)
+            vendor_id=vendor_id, resume=False, mcp_config=mcp_config)
         argv = supervisor_outer_argv(
             session_id, session_dir / RUN_SCRIPT_FILE, workspace)
         _print_supervisor(session_id, vendor_id, role_prompt, workspace,
-                          None, argv, inner, front=front, branch=branch)
+                          None, argv, inner, front=front, branch=branch,
+                          mcp_config=mcp_config)
         print()
         print(text)
         # The session directory stays: a supervisor dry run creates no
@@ -1646,8 +1677,11 @@ def launch_supervisor_main(args: argparse.Namespace,
                       f"{failure or dead}")
     assert pid is not None
     _record_running(session_id, pid, starttime)
+    from . import mcp as mcp_module
+
     _print_supervisor(session_id, vendor_id, role_prompt, workspace, pid,
-                      argv, inner, front=front, branch=branch)
+                      argv, inner, front=front, branch=branch,
+                      mcp_config=mcp_module.mcp_config_path(session_id))
     return 0
 
 
@@ -1842,18 +1876,25 @@ def cmd_relaunch(args: argparse.Namespace) -> int:
     old_pid = old.get("pid")
     old_alive = procs.same_process(old_pid, old.get("pid_starttime"))
     if args.dry_run:
+        from . import mcp as mcp_module
+
+        try:
+            mcp_config = mcp_module.write_mcp_config(session_id)
+        except OSError as exc:
+            return refuse(f"cannot write launch files: {exc.strerror or exc}")
         inner = supervisor_inner_command(
             pid_path=paths.session_pid_path(session_id),
             session_id=session_id, repo=repo, role_prompt=role_prompt,
             vendor_id=vendor_id, resume=True,
-            front_prompt=front_prompt_path(front))
+            front_prompt=front_prompt_path(front), mcp_config=mcp_config)
         argv = supervisor_outer_argv(
             session_id, session_dir / RUN_SCRIPT_FILE, workspace)
         print(f"replaces: {old_id}")
         print(f"would stop: pid {old_pid}" if old_alive
               else f"would stop: nothing ({old_id} is not running)")
         _print_supervisor(session_id, vendor_id, role_prompt, workspace,
-                          None, argv, inner, front=front, branch=branch)
+                          None, argv, inner, front=front, branch=branch,
+                          mcp_config=mcp_config)
         print()
         print(text)
         return 0
@@ -1916,8 +1957,11 @@ def cmd_relaunch(args: argparse.Namespace) -> int:
     print(f"replaces: {old_id}")
     print(f"stopped: pid {old_pid} ({len(stopped)} process(es))" if stopped
           else f"stopped: nothing ({old_id} was not running)")
+    from . import mcp as mcp_module
+
     _print_supervisor(session_id, vendor_id, role_prompt, workspace, pid,
-                      argv, inner, front=front, branch=branch)
+                      argv, inner, front=front, branch=branch,
+                      mcp_config=mcp_module.mcp_config_path(session_id))
     return 0
 
 

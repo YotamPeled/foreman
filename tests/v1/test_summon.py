@@ -814,11 +814,15 @@ def test_relaunch_replays_the_checkpoint_and_resumes_the_conversation(
     assert '- "plugin skeleton and data feed" — ready' in prompt
 
     # Resume, with the vendor id, and no positional prompt: a --resume with
-    # one sits idle and never starts.
+    # one sits idle and never starts. The MCP flags name the successor's
+    # own config, so the resumed session calls with its own row of verbs.
     vendor = fakes["claude_argv"].read_text(
         encoding="utf-8").strip().splitlines()
     assert vendor == ["--resume", vendor_id, "--model", "claude-opus-5",
-                      "--dangerously-skip-permissions"]
+                      "--dangerously-skip-permissions",
+                      "--mcp-config",
+                      str(paths.session_dir(new) / "mcp.json"),
+                      "--strict-mcp-config"]
     assert "--session-id" not in out
 
     # The predecessor leaves the roster; the successor holds the front.
