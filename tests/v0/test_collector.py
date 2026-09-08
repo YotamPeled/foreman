@@ -630,7 +630,7 @@ def test_collector_unit_prints_the_packaging_template(env, capsys):
     with open(repo_unit_template(), encoding="utf-8") as handle:
         template = handle.read()
     assert "@FOREMAN_BIN@" in template and "@STATE_DIR@" in template
-    assert "/home/" not in template
+    assert os.path.expanduser("~") not in template
     assert text == (template
                     .replace("@FOREMAN_BIN@",
                              text.split("ExecStart=", 1)[1].split(
