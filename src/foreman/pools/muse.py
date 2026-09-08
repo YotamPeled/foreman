@@ -20,12 +20,14 @@ vendored CLI exposes no such flag to withhold. The role prompt states the
 matching prohibition in plain words: a worker has no Foreman tools, calls
 no Foreman verb, and writes to no ledger.
 
-Detachment is configuration, not code. When a window launcher is named —
-by the ``FOREMAN_WINDOW_LAUNCHER`` environment variable (wins) or by the
-``window_launcher`` key in the config file's ``[launch]`` table — the
-adapter invokes it as ``<launcher> <name> bash -c <command>``. With none
-configured it starts the command through ``systemd-run --user --collect
---unit=foreman-<session>``.
+Detachment is configuration, not code, and headless is the default: a
+worker runs through ``systemd-run --user --collect
+--unit=foreman-<session>`` and takes no desktop workspace. A launch that
+asks to be watched (``foreman launch --window``) goes through the window
+launcher named by the ``FOREMAN_WINDOW_LAUNCHER`` environment variable
+(wins) or the ``window_launcher`` key in the config file's ``[launch]``
+table, invoked as ``<launcher> <name> bash -c <command>``. Configuring a
+launcher does not by itself open windows.
 """
 
 from __future__ import annotations
@@ -103,9 +105,14 @@ def inner_command(ctx: LaunchContext) -> str:
 
 
 def outer_argv(ctx: LaunchContext) -> list[str]:
-    """Detached spawn: window launcher when configured, else systemd-run."""
+    """Detached spawn: headless, unless this launch asked for a window.
+
+    Owner ruling: swarm sessions do not take the owner's desktop
+    workspaces. A window is for watching one run and is asked for per
+    launch; a configured window launcher on its own never opens one.
+    """
     inner = inner_command(ctx)
-    launcher = window_launcher()
+    launcher = window_launcher() if ctx.window else None
     if launcher:
         return [launcher, f"foreman-{ctx.session.id}", "bash", "-c", inner]
     return [

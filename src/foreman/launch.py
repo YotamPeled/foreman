@@ -76,6 +76,9 @@ def add_launch_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--units", default=None, help="unit range, e.g. 3-7")
     parser.add_argument("--effort", default="high", choices=EFFORTS)
     parser.add_argument("--scope", default=None, help="task scope text")
+    parser.add_argument("--window", action="store_true",
+                        help="open this worker in a terminal window to watch it "
+                             "(off by default: swarm sessions take no workspace)")
     parser.add_argument("--dry-run", action="store_true",
                         help="do everything except start the process; print the command")
 
@@ -441,6 +444,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
             timeout=timeout,
             effort=args.effort,
             units=tuple(units),
+            window=bool(getattr(args, "window", False)),
         )
         # A dry run starts nothing, so it records nothing: the roster is
         # left as found. A real launch records the session before the
