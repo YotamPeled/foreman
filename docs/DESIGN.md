@@ -1,215 +1,391 @@
-# Foreman design
+# Foreman — system design
 
-Status: agreed in discussion on 2026-09-08. Nothing built yet.
+Status: full design, 2026-09-08. Supersedes the earlier piecemeal version. Nothing built yet.
 
-## The problem it solves
+Foreman is a runtime that runs a hierarchy of AI coding agents on one machine so that one human can
+see all of it and it cannot outrun them. This document is the whole system: who uses it and how, every
+entity and its fields, every contract between parts, every flow, every anomaly, what is on the screen
+and where each number comes from.
 
-A hierarchy of agents (one orchestrator, one supervisor per component, many workers, separate reviewers)
-has a hierarchy of authority but, left alone, no hierarchy of attention. Agents report on themselves
-voluntarily, anyone can launch anything, and the board is written to when the agent remembers. Visibility
-becomes a side effect of good behavior and disappears exactly when an agent misbehaves. Foreman makes
-visibility structural.
+---
 
-## Principles
+## 1. Roles
 
-- **Observed beats declared.** The page trusts the collector over the agent. Declared ≠ observed is the alarm.
-- **Launch is the only door.** One launcher per role. It takes a slot, mints the id, opens the process with
-  the environment contract and the applicable rules injected, and registers the session. No slot, no launch.
-  An unknown id cannot write.
-- **The ledger is the only channel.** No queued messages between agents, no chat. A rule written on a
-  component reaches its supervisor on its next read; acknowledgement is a write.
-- **Scripts do, models decide.** Every repeated act is a script; a model only chooses whether to invoke it.
-- **Only the foreman is interactive.** The owner talks to one session: the foreman (Fable 5.1). Every
-  supervisor, worker and reviewer runs headless, one job per process, with a finish marker in the log and a
-  structured verdict file, and is seen only through the panel. No agent takes a desktop workspace. TUIs
-  that ignore queued input are the mechanism behind off-roster launches.
-- **Every memory has a named reader and a named moment of reading.** No vector store, no free-form
-  "lessons" that agents write and nobody reads.
+| Role | What it is | How many | Lifetime | Interactive? |
+|---|---|---|---|---|
+| **Owner** | The human. Decides scope, money, irreversible acts. | 1 | — | — |
+| **Planner** | A Claude session the owner opens to turn a want into a brief. Taught by `foreman-plan`. | one per planning conversation | ends when the brief is handed over | yes |
+| **Foreman** | The orchestrator (Fable 5.1). Takes briefs, launches supervisors, grants slots, routes questions, writes the digest. Never plans, never dispatches jobs. | 1 | long-lived; can be absent — nothing depends on it being alive | yes — the only long-lived interactive session |
+| **Supervisor** | Owns one component (Opus). Turns the brief's tasks into jobs, dispatches, verifies by re-running, measures monitors, reports. Never implements (rule 11 exceptions aside). | 1 per component | until the component is done | no (headless) |
+| **Worker** | One process running one job in one worktree. Reads its spec, writes its artifact, exits. Never touches Foreman. | 1 per running job | the job | no |
+| **Merge desk** | A supervisor with no component. Lands branches, writes the merge ledger. Never reviews. | 1 | long-lived | no |
+| **Collector** | A daemon, no LLM. Observes, computes, flags, relaunches. | 1 | always | — |
 
-## Entities
+Pools: one per model (`opus`, `codex`, `grok`, `muse`). A pool is a plugin directory (§8). Supervisors come
+from the `opus` pool; the `opus` pool takes no jobs.
 
-### Actors — things with intent
-| Actor | Count | Does |
-|---|---|---|
-| Owner | 1 | Orders components (the plan), answers the inbox, writes rules, freezes |
-| Foreman | 1 | Creates components, assigns supervisors, grants slots, answers supervisors |
-| Supervisor | 1 per component | Turns the done-when into tasks, plans and dispatches jobs, verifies returns, owns quality |
-| Merge desk | 1 | A supervisor with no component: consumes the merge queue, lands branches, writes the merge ledger. Never reviews |
-| Worker | 1 per running job | Headless; takes one job of a kind its pool allows |
-| Collector | 1 daemon | Observes, computes, relaunches; never intends |
+---
 
-### Pools
-One pool per model (Codex, Grok, Muse, Opus), each a plugin directory: slots, allowed job kinds, cannot-take
-topics, default timeout, launch script, the skill that tells a supervisor how to spec a job for it, meter
-source. A job requests a pool. The Opus pool is supervisors only and takes no jobs. Adding a pool is a directory.
+## 2. How the owner uses it
 
-### Work — the containment tree
 ```
-Project ⊃ Component ⊃ Task ⊃ Job
+want ──▶ foreman plan ──▶ planner interviews ──▶ brief.toml + plan.md ──▶ foreman component add ──▶ supervisor launched
+                                                                                           │
+   Super+M / foreman status  ◀── observed.json + ledgers  ◀── collector ◀── everything ◀────┘
+   foreman answer / rule / freeze / kill / relaunch / slots ──▶ ledgers ──▶ supervisors read on next write
 ```
-- **Component**: the owner's unit of scope. Order (the plan), a done-when sentence, one supervisor.
-- **Task**: one line of the component's checklist; the unit of progress. Written by the supervisor with a
-  title, how to verify it (no verification, no task), a size (how many units it holds, 1 for a single item,
-  N for a batch such as "second-read 600 cases"), and **its own worker pool**: which models may work it, how
-  many slots at once, and the stage order when reads are chained (e.g. "first read: Muse, 6 slots; second
-  read: Grok medium, 2 slots"). Slots are granted per task; the per-model header is the sum of lit slots
-  across tasks, so the quota view and the task view are one truth. A task also declares its maximum
-  concurrent jobs (1 = sequential) and its predecessors (tasks that must finish first); grants never exceed
-  the maximum, and a task with an unfinished predecessor is drawn dimmed with its sockets closed, so the
-  throttle and the order are both visible on the ring. This is the one ordering primitive; there are no
-  arrows between boxes.
-- **Job**: one dispatch to one worker, serving exactly one task. Kinds: `implement`, `review`, `merge`,
-  `research`, `verify`. Carries spec, pool, worktree, timeout, verify command, slot, timestamps, artifact, verdict.
-  Reviews are optional: the supervisor dispatches one or two review jobs only when it judges them worthwhile.
 
-### Records — append-only, each with a named reader and a named moment of reading
-| Record | Scope | Reader / moment |
+1. **Wanting something.** `foreman plan` opens a planner session. The owner talks architecture; the
+   planner writes `brief.toml` (§4) and a short `plan.md` (the reasoning). The owner approves; the planner
+   runs `foreman component add <dir>`; the planner's job is over.
+2. **Watching.** `Super+M` (the panel) or `foreman status` (same text). Four questions, top to bottom:
+   what needs me, what is wrong, what is working, what capacity is left. Plus the two queues.
+3. **Acting.** Answer an inbox item, write a rule, freeze/thaw, kill or relaunch a session, change a
+   pool's slots, close a finished component. Each is one command or one key; each lands in a ledger as a
+   stamped owner act.
+4. **Not acting.** Everything not in the inbox is somebody else's decision and is already recorded.
+
+Nothing enters the system except through a brief. Plans made elsewhere become briefs or they do not enter.
+
+---
+
+## 3. How each agent uses it
+
+### Foreman
+- On `component add`: validate (§4.3), write the component and its tasks to the ledger, launch its
+  supervisor (`foreman launch supervisor <component>`), grant it slots per task from pool capacity.
+- On a supervisor's question (`ask`): if it is money, irreversible or scope → inbox for the owner with a
+  recommendation; otherwise answer it and record the answer as a ruling on the component.
+- Every hour: `foreman digest` — computed from ledgers, plus one paragraph of judgement.
+- On a finding that changes a brief (scope creep, wrong assumption): propose the change to the owner
+  through the inbox; the brief is the owner's.
+- Never: dispatch a job, write a task, answer for the owner on the three reserved kinds.
+
+### Supervisor (per component)
+1. **Launch**: read, in order, the swarm rulings, the component rulings, the brief, the component ledger,
+   and its own last checkpoint if this is a relaunch. Write a checkpoint ("attached, N tasks, next: …").
+2. **Ready tasks**: a task is ready when every task in its `after` list is `landed` (or `built`, if the
+   brief says `after-built`). For each ready task, plan jobs: split the scope into units of work sized for
+   the pool (the pool skill says how big), write one spec per job (§5.2), `foreman job plan`.
+3. **Dispatch**: `foreman job dispatch <job>` — the launcher takes a slot (FCFS per pool), mints a session,
+   creates the worktree and log, injects rules and environment into the spec, starts the worker. If no
+   slot: the job is `queued`; the launcher dispatches it when one frees. The supervisor does not wait.
+4. **Return**: the collector marks a job `returned` when its finish marker exists. The supervisor runs the
+   task's `verify` command (or the job's own check) itself → `foreman job verify <job> --confirmed` with
+   the command and output as evidence, or `--failed` with a finding. Units done are counted from verified
+   jobs only.
+5. **Review** (optional, supervisor's call or the brief's `reviews = always`): dispatch a `review` job on the
+   branch; read the verdict file; a failed verdict returns the task to active with a finding.
+6. **Hand-off**: `foreman merge request <branch> --task <task> --target <branch>`; the merge desk lands it;
+   the task becomes `landed` when the merge ledger names it.
+7. **Monitors**: run each monitor's measure command on its cadence; `foreman measure`. Rewrite `doing now`
+   on every state change (`foreman checkpoint`).
+8. **Done**: when every task is `landed` and every monitor without an alert → `foreman component done`.
+   The owner closes it.
+9. **Rules it lives under**: the seed rulebook (§9). The two that matter most: verify by re-running, and
+   never a long silent turn — anything over a few minutes is a job.
+
+### Worker
+Receives a spec file. Works in the worktree it was given. Writes its artifact (commits on its branch; for
+a review job, a verdict JSON at the path in the spec). Writes the finish marker. Exits. It has no Foreman
+tools; the launcher denies them. Its liveness is observed, not declared.
+
+### Merge desk
+Consumes the merge queue FCFS: rebase onto target, run the target's checks, land, `foreman merge land`
+(head, target, review refs, tasks it lands) or `foreman merge fail` with a finding back to the supervisor.
+
+### Collector (every 2 s)
+Read the process table, worktree mtimes, CPU seconds, finish markers, vendor meters. Update `roster.json`
+observed fields. Compute `observed.json` (§7). Detect anomalies (§10) and write them. Kill jobs past
+timeout. Relaunch supervisors that are dead (process gone) from their checkpoint. Refuse nothing itself —
+the CLI refuses; the collector reports.
+
+---
+
+## 4. The brief — the only input
+
+### 4.1 Files
+```
+~/.config/foreman/components/<name>/
+  brief.toml     the contract (below)
+  plan.md        the planner's reasoning; read once by the supervisor
+```
+
+### 4.2 Schema
+```toml
+name      = "corpus"
+order     = 2                     # the owner's plan order
+want      = """what the owner asked for, in the owner's words"""
+done-when = "one sentence the tasks add up to"
+land-on   = "dev"                 # default merge target; a task may override
+reviews   = "on request"          # none | on request | always
+
+[[task]]
+title   = "second reads"
+scope   = """
+WHAT: read every app in the manifest a second time with a different model than the first read,
+producing the same label schema.
+INPUTS: manifest.json, labels/first/.
+OUTPUTS: one label file per app under labels/second/.
+OUT OF SCOPE: resolving disagreements (audit task). Apps with no first read are skipped and reported.
+"""
+verify  = "foreman-verify reads --stage 2 --min 600"   # exit 0 = done; the supervisor runs it
+size    = 600                     # units of work; 1 for a single item
+pool    = "grok"                  # or stages = [{pool="muse", slots=6}, {pool="grok", slots=2}]
+slots   = 6                       # max concurrent jobs on this task
+after   = ["manifest"]            # predecessors; empty = ready at start
+timeout = "20m"                   # per job; defaults to the pool's
+land-on = "dev"                   # optional override
+
+[[monitor]]
+question = "how many apps are collected?"
+measure  = "corpus-count apps"    # prints a number; the supervisor runs it
+unit     = "apps"
+of       = 600                    # denominator, optional
+every    = "job"                  # job | landing | 10m | 1h
+alert    = "< 0.80"               # optional; puts it in Problems
+
+[[rule]]
+text = "Nothing on the injection topic goes to Grok."
+```
+
+### 4.3 Validation at `component add` (refused otherwise, every violation named at once)
+- every task has `scope` with WHAT / INPUTS / OUTPUTS / OUT OF SCOPE, a `verify` command, `size`, a pool
+  (or stages) that exists, `slots` ≤ the pool's total;
+- `after` names real tasks and has no cycle;
+- every monitor has `measure`, `unit`, `every`; `alert` parses;
+- `done-when` is one sentence; `name` is unique; `land-on` is a branch that exists.
+
+Two free monitors every component gets without declaring them: `doing now` (the supervisor's line, with
+age) and progress (landed / built / total, rate, projected finish).
+
+---
+
+## 5. Entities
+
+Every entity is a line in an append-only ledger (JSONL) or a field in an atomic snapshot (JSON). Ids are
+short, runtime-minted, never invented by a session. Every line carries `at` (UTC) and `by` (session id).
+
+### 5.1 Work
+| Entity | Fields | State machine |
 |---|---|---|
-| Rulings ledger | swarm or component | injected into every spec at launch; read first on every relaunch |
-| Roster + slot ledger | runtime-owned; sessions never write it | launcher on every launch; collector every tick |
-| Checkpoint | per session (doing, next, held, open questions); observed part by collector, declared part by session | `relaunch` |
-| Findings | on a task or component | supervisor at the next plan re-look |
-| Evidence | on a task state change, CONFIRMED (re-ran, proof attached) or PLAUSIBLE | whoever confirms or lands the task |
-| Merge ledger | one line per landing: what, why, which review if any, which head, which target branch (feature, dev, main — normal git practice) | task state; duration metrics |
-| Inbox | question + recommendation + answer; money, irreversible, scope only | owner |
-| Events | the collector's raw observed stream | collector; metrics |
-| Metrics | per component, declared in its done-when (name, unit, denominator if any); each entry: value, timestamp, CONFIRMED or PLAUSIBLE, the command that produced it. Appended by the supervisor after it ran the measurement — never self-reported by a worker | collector snapshots the latest per metric every tick; the panel draws them on the component's body (a fill against the denominator, a sparkline for a series) |
+| **Component** | id, name, order, want, done_when, land_on, reviews, supervisor (session), brief_path, state | `planning → active → done`; side states `halted` (rule 10), `frozen` |
+| **Task** | id, component, title, scope, verify, size, pool or stages[], slots, after[], timeout, land_on, state, units_done, units_total | `waiting → ready → active → built → landed`; `built` = supervisor CONFIRMED all units; `landed` = merge ledger names it |
+| **Job** | id, task, stage, kind (implement, review, merge, research, verify), spec_path, pool, session, worktree, branch, log, timeout, units (range), attempt, state, planned_at, queued_at, started_at, returned_at, verified_at, artifact, verdict_path | `planned → queued → running → returned → verified \| failed \| killed` |
+| **Merge** | id, branch, tasks[], target, review_refs[], head, result, requested_at, landed_at, by | `requested → merging → landed \| failed` |
 
-### Lifecycles
-- Task: `open → active → built (supervisor CONFIRMED by re-running) → landed (a merge ledger line names it)`;
-  drops back on a failed review. A returned-but-unverified job shows on its task with its age.
-- Job: `planned (spec written) → queued (waiting for a slot) → running → returned (artifact + finish marker)
-  → verified | failed`. Failed twice → a finding on the task, not a third job.
-- Session: `minted → running → exited | stalled | killed`.
+### 5.2 The job spec (what a worker receives)
+Written by the launcher into the job's worktree as `FOREMAN-JOB.md`:
+```
+# Job <id> · <kind> · task "<title>" · component <name>
+## Environment (injected)
+worktree, branch, target, scratch dir (memory-backed, size), finish marker path, verdict path, timeout
+## Rules (injected: swarm + component rulings, verbatim)
+## Task scope (verbatim from the brief)
+## This job (written by the supervisor)
+units, exact deliverable, the verification command that will be run on it, what not to touch
+```
+A spec over one page is refused by `job plan`; a spec without the verification command is refused.
 
-### Queues — each has a depth, an oldest-wait, and one named consumer
-| Queue | Holds | Consumer |
+### 5.3 Sessions and capacity
+| Entity | Fields |
+|---|---|
+| **Session** | id, role, pool, model, component, job, pid, launched_by, started_at, last_declared_at, last_observed_at, cpu_s, state (`running \| exited \| stalled \| killed`) |
+| **Pool** | name, model, adapter, slots_total, kinds[], cannot_take[], timeout_default, meter, skill (config, §8) |
+| **Slot grant** | pool, task, job, session, granted_at, released_at — the slot ledger; header counts are sums over open grants |
+| **Frozen** | the presence of `~/.local/state/foreman/frozen` (file-presence-as-state) |
+
+### 5.4 Records
+| Entity | Fields | Named reader / moment |
 |---|---|---|
-| Task backlog (per component) | open tasks with no job planned | supervisor |
-| Job lane (per component) | planned jobs | supervisor |
-| Slot queue (per pool) | queued jobs waiting for a slot; first come, first served — no reservations by job kind, no priorities (a priority queue can come later) | launcher |
-| Merge queue | branches handed to the merge desk | merge desk |
-| Inbox | questions | owner |
-| Anomalies | discrepancies | collector, then foreman |
+| **Ruling** | id, scope (swarm \| component), text, source (owner \| foreman \| supervisor), acks[] | injected into every spec at launch; read first on every launch/relaunch |
+| **Evidence** | on (task \| job), claim, status (CONFIRMED \| PLAUSIBLE), command, output_ref | whoever moves the task's state |
+| **Finding** | on (task \| component), class, title, detail, evidence_ref | supervisor at the next plan re-look; foreman if it touches the brief |
+| **Measurement** | monitor, value, of, status, command, output_ref | collector snapshots the latest per monitor |
+| **Checkpoint** | session, doing, next, held[], questions[] (declared) + observed part (jobs running, last event) | `relaunch` |
+| **Inbox item** | id, from, kind (money \| irreversible \| scope \| error), question, recommendation, options[], asked_at, answered_at, answer, answered_by, relayed (bool) | owner; foreman for routing |
+| **Anomaly** | kind, subject, since, detail, resolved_at | panel Problems; collector; foreman |
+| **Event** | at, kind, subject, data — the observed stream | collector; metrics |
+| **Digest** | at, text, computed{} | owner |
 
-A stalled queue points at exactly one role.
+---
 
-### Admission — when a thing is drawn
-A thing appears on the page the moment its ledger line exists with its required fields; the fields are the
-contract. Component: name, order, supervisor, done-when → an empty ring marked planning. Task: title,
-verification, size, pool → an arc of the ring sized by its share, filled by its progress, with one socket per
-slot (lit = job running, empty = capacity, none = frozen); jobs orbit their task wearing their model's glyph;
-a chained task shows its stages so units waiting for a second reader are visible. Job: kind, task, pool, spec, timeout, verify command → in the lane; slot minted →
-in a berth. Session: minted id → on the roster; in the process table without one → intruder. Planning done
-anywhere else enters through the same CLI; there is no second path.
+## 6. Storage
+```
+~/.local/state/foreman/
+  roster.json        snapshot: sessions (atomic rename)
+  observed.json      snapshot: everything derived (§7)
+  slots.jsonl        slot grants
+  rulings.jsonl
+  inbox.jsonl
+  merges.jsonl
+  anomalies.jsonl
+  events/YYYY-MM-DD.jsonl
+  frozen             presence = frozen
+  components/<name>/ tasks.jsonl  jobs.jsonl  evidence.jsonl  findings.jsonl  measurements.jsonl
+  sessions/<id>/     checkpoint.json  log
+~/.config/foreman/
+  foreman.toml       pools' slots, timeouts, anomaly thresholds, digest cadence
+  components/<name>/ brief.toml  plan.md
+  pools/<name>/      manifest.toml  launch  observe  meter  verdict  SKILL.md
+  hooks/<event>/     executable scripts
+```
+One writer: the `foreman` CLI, under a lock held only for the write. Snapshots are staged and renamed.
+Ledgers are appended. The panel and the collector watch the directory; every CLI verb also pokes them.
 
-### Metrics — derived every tick, never stored
-From timestamps on ledger lines and the event stream the collector computes, into one observed snapshot: per
-component built / landed / velocity / projected finish; per job wait, run, verify-wait; per pool avg and p90
-duration, slots held, queue depth; per supervisor silence and unverified returns; per queue depth and oldest.
-One source, one computation, so no two surfaces disagree.
+---
 
-## Roles
+## 7. Derived numbers (`observed.json`, recomputed every tick, never stored elsewhere)
+- per component: units landed / built / total; rate (landed units per hour over the last 2 h); projected
+  finish; `doing now` + age; halted? frozen?; monitors' latest values and trends
+- per task: state, units done, jobs running / queued / planned, oldest queued wait
+- per job: elapsed vs timeout, minutes since last file write, cpu_s
+- per session: seconds since last declared write, since last observed activity
+- per pool: slots held / total, queue depth, oldest wait, meter %, reset time, avg and p90 job duration
+  (from verified jobs in the last 24 h)
+- swarm: sessions registered vs observed, merge queue depth, inbox count and oldest, anomalies
 
-- **Foreman / orchestrator** (Fable 5.1, the one interactive session). Creates components, assigns supervisors, holds the slot
-  grants, answers supervisors' questions, adds one paragraph of judgement to the hourly digest. Never
-  dispatches jobs. Nothing depends on it being alive; when it is gone, decisions queue.
-- **Supervisor** (Opus, headless, one per component). First act: turn the done-when into a checklist.
-  Then dispatch jobs, verify results by running them, write the ledger. Never implements; never runs a long
-  silent turn (hand long work to a job, checkpoint first). Flips a checklist item only with CONFIRMED evidence.
-- **Worker** (Muse; Grok only where its vendor allows the topic). Headless. Reads its spec and nothing
-  else. Writes nothing to Foreman. Liveness is observed. Controls: slots and a per-job timeout the
-  supervisor sets.
-- **Reviewer** (Codex Astra medium; Grok 4.6 high fallback). Headless. Returns a structured verdict file,
-  never a log to grep. Bound by the per-model "cannot take" list, checked at launch.
-- **Merge desk**. One queue for the whole swarm with a reviewer pool. Components hand off branches and go
-  back to building. Queue depth is a number on the page. Writes the merge ledger. Candidate for running on
-  Opus as orchestrator, as an experiment.
-- **Collector** (daemon, no LLM). The clock. Each tick: read observed signals, update roster and checkpoints,
-  compute discrepancies, relaunch dead supervisors from checkpoint, refuse launches when frozen. Once an
-  hour: invoke a model for the digest paragraph.
+---
 
-## Observed signals (free)
+## 8. Pools as plugins
+```
+~/.config/foreman/pools/muse/
+  manifest.toml   model, vendor, slots, kinds = ["implement","research"], cannot_take = [], timeout = "20m", interactive = false
+  launch          <spec> <worktree> <log> → starts the process headless, prints pid
+  observe         <pid> <worktree> → JSON: transcript mtime, cpu_s, finish marker present
+  meter           → JSON: percent, resets_at   (or exit 3: no meter)
+  verdict         <path> → normalised verdict JSON (review jobs)
+  SKILL.md        how a supervisor writes a spec this model does well; how to verify its output
+```
+Adding a pool is a directory. Foreman ships four. `foreman pool add/remove/list/clone` manage them.
+Only `interactive = true` pools may open a window; only `opus` (supervisors) and the foreman are interactive
+in the shipped config, and supervisors are not.
 
-Process table and children, transcript/rollout file mtime, CPU seconds, git heads on the job's worktree,
-window/service units, the finish marker, vendor usage meters where they exist (Claude and Codex expose
-5-hour and 7-day percent; Grok and Muse expose nothing and are proxied by jobs completed per hour).
+---
 
-## Report-back contract
-
-| Role | Writes | Liveness from |
-|---|---|---|
-| Worker | Nothing. Start and end are registered by the launcher and the finish marker. | Observed only |
-| Supervisor | On every state change: job dispatched, job returned, decision made, checklist item confirmed. Checkpoint before anything long and before compaction. | Its writes plus its jobs' observed activity |
-| Reviewer | Verdict file. | Observed |
-| Orchestrator | Slot grants, component creation, answers. | Its writes |
-| Collector | Roster, observed checkpoints, anomalies, digest. | Is the clock |
-
-Stall rule: a supervisor with no active jobs and no write for N minutes is stalled by definition.
-
-## Derived numbers
-
-- **Jobs running** per model and component: launcher registrations minus collector-observed exits.
-- **Component percent**: confirmed checklist items / total. Shown as built vs landed.
-- **Velocity**: confirmed items per hour → projected finish. Velocity at zero is the earliest stall signal.
-- **Slots**: per model, running vs granted vs quota headroom.
-
-## Seed rulebook
-
-Standing rules present from the first launch. Supervisors obey them; the page shows when they do not.
-
-1. Every unit of work has a goal and a countable done-when before dispatch.
-2. Every claim is CONFIRMED (the writer ran the check, proof attached) or PLAUSIBLE. A worker's output is
-   PLAUSIBLE until the supervisor re-runs it.
-3. Findings are records with evidence on the component they belong to, not chat.
-4. Rules travel: a component rule binds whoever holds it next, a swarm rule binds everyone; reading the
-   rules is the first act after launch or relaunch. For headless jobs, rules travel by injection into the spec.
-5. Checkpoint before anything long and before compaction.
-6. A question carries its origin; its answer is recorded beside it and is a rule from then on. A question a
-   standing rule already covers is never raised.
-7. One page. If the page cannot show it, it did not happen.
-8. Re-look at the checklist after every finished job; revise with a reason on the page.
-9. Review rounds per job are bounded (two). Failing the last round returns the job to the supervisor as a
-   finding about the spec, not a third round.
+## 9. Seed rulebook (rulings ledger, swarm scope, present from first launch)
+1. Every task has a scope, a verify command and a size before dispatch.
+2. Every claim is CONFIRMED (ran it, proof attached) or PLAUSIBLE. A worker's output is PLAUSIBLE until the
+   supervisor re-runs the verification.
+3. Findings are records with evidence, on the task or component they belong to.
+4. Rules travel: injected into every spec; read first on every launch and relaunch; a rule not in a spec does
+   not exist for that job.
+5. Checkpoint before anything long and before compaction; rewrite `doing now` on every state change.
+6. A question carries its origin and recommendation; the answer is recorded beside it and is a ruling from
+   then on; a question a ruling already covers is never raised.
+7. One page: if the panel cannot show it, it did not happen.
+8. Re-look at the plan after every verified job; revise with a reason.
+9. Review is the supervisor's call unless the brief says otherwise. Review rounds per job are bounded (two);
+   failing the last returns the job to the supervisor as a finding about the spec.
 10. A defect class found a third time in one component halts that component's dispatching until the
-    supervisor writes what changed. Scope is the component, never its parent.
-11. Delegate by job size. A supervisor does a tiny job (under about ten tool calls) itself; hands a
-    clear, bounded job that fits one page of spec to a Muse worker; does a vague job ("find out why this
-    fails", "redesign X") itself or as a Grok 4.6 high job within budget; and always verifies a worker's
-    result itself by re-running. Why: doing a job itself puts every read and command into the
-    supervisor's context (50k–150k tokens per repair round, then a compaction that loses rulings);
-    delegating costs about 15k–25k (spec, verify, one relaunch when the worker hangs) and moves the heavy
-    work to the worker's subscription. The gain exists only when the spec is tight.
+    supervisor writes what changed. Scope: the component.
+11. Delegate by job size: under ~10 tool calls, do it; bounded and one page, a worker; vague, do it or a
+    Grok-high job; always verify a worker's result by re-running.
+12. Slots are first come, first served, per pool. No reservations by kind. (Priorities later, if ever.)
+13. Only the foreman is interactive. Every other session is headless, one job per process, finish marker
+    in the log, structured verdict file.
 
-## Scripts
+---
 
-`launch-orchestrator`, `launch-supervisor <component>`, `launch-job <component> <spec>`,
-`launch-reviewer <job>`, `relaunch <session>`, `freeze`, `thaw`, `digest`.
-Every launch: allocate a slot, mint the id, allocate a unique log and worktree, inject the environment
-contract (where scratch space is, what is memory-backed, where checkouts go) and the applicable rules,
-register the session. Worker launches deny every Foreman tool surface; assume any model will find any tool it
-is not denied. `launch-job` refuses a spec over about one page and requires the verification command in the
-spec, so rule 11 is enforced at the door rather than remembered.
+## 10. Anomalies (collector; thresholds in `foreman.toml`)
+| Kind | Condition | Auto-action | Shown as |
+|---|---|---|---|
+| supervisor silent | no declared write for 15 min AND no running jobs | none; relaunch offered | Problems |
+| supervisor dead | process gone | `relaunch` from checkpoint | Problems until back |
+| job stalled | running, no worktree mtime change and no CPU for 10 min | none; kill offered | on the task |
+| job timeout | elapsed > timeout | kill; job `failed`; supervisor notified | on the task |
+| intruder | a vendor process not in roster | none; kill offered | Problems |
+| monitor stale | latest measurement older than 2× cadence | none | on the component |
+| monitor alert | `alert` expression true | none | Problems |
+| quota | pool meter ≥ 80 % | dispatch on that pool warns; ≥ 100 % refuses | Capacity |
+| queue stuck | pool has free slots and a queued job waited > 1 min | launcher bug — surfaced | Problems |
+| inbox aging | unanswered > 30 min | none | Needs you (age turns red) |
+| unregistered writer | a CLI call with an unknown session id | refused | Problems |
 
-## The page
+---
 
-One screen, phone-readable, built on an existing component kit (NiceGUI; see the research notes).
+## 11. Contracts, one line each
+- **Owner ↔ Foreman**: briefs in; inbox items (money, irreversible, scope, error) out, each with a
+  recommendation; rulings both ways; freeze is a file.
+- **Foreman ↔ Supervisor**: a brief, slot grants, answers to `ask`; back: checkpoints, findings that touch
+  the brief, `component done`.
+- **Supervisor ↔ Worker**: `FOREMAN-JOB.md` in; commits on the branch + finish marker (+ verdict JSON) out.
+  Nothing else in either direction.
+- **Supervisor ↔ Merge desk**: `merge request` (branch, tasks, target, review refs); back: a merge ledger line
+  or a finding.
+- **Everyone ↔ Collector**: nothing declared to it; it observes. It writes `observed.json`, anomalies, and
+  relaunches.
+- **Panel ↔ state**: read-only on the state directory; every action is a `foreman` verb.
+- **Pool adapter**: `launch`, `observe`, `meter`, `verdict` executables with the argument/JSON shapes above.
 
-- **Anomaly strip** at the top: unregistered writer, declared ≠ observed, quota past 80%, question older
-  than 30 minutes, stalled supervisor, halted component. If nothing floats, nothing is wrong.
-- **Inbox**: decisions and errors, each with recommendation and age.
-- **Plan**: the components in the owner's order. This is the owner's; the checklists under them are the
-  supervisors'.
-- **Components**: percent (built / landed), velocity, next milestone, blocker, supervisor. Expand → jobs.
-- **Sessions**: role, model, workspace, doing-now, minutes silent, slot. Header: per model, running vs
-  granted vs quota.
+---
 
-Owner controls on the page, each landing in a ledger as a stamped owner act: write a rule, freeze / thaw,
-kill or relaunch a session, edit the plan.
+## 12. The `foreman` CLI (the whole mutation surface; every verb takes the caller's session from the environment)
+| Caller | Verbs |
+|---|---|
+| owner | `plan`, `component add\|close\|list`, `answer <inbox> <text\|option>`, `rule <scope> <text>`, `freeze`, `thaw`, `kill <session>`, `relaunch <session>`, `slots <pool> <n>`, `pool add\|remove\|clone\|list`, `status`, `queues`, `ledger <component>`, `doctor` |
+| foreman | `launch supervisor <component>`, `grant <task> <pool> <n>`, `answer`, `rule component …`, `digest`, `route <inbox> owner\|self` |
+| supervisor | `checkpoint`, `task ready\|built`, `job plan\|dispatch\|verify\|fail`, `evidence`, `finding`, `measure`, `ask`, `merge request`, `component done` |
+| merge desk | `merge take\|land\|fail` |
+| collector | `observe`, `anomaly`, `relaunch`, `kill` |
+Unknown session id → refused by name. Wrong role for a verb → refused by name. Every refusal lists every
+violated field at once. `foreman doctor` cross-checks observed against recorded: processes vs roster,
+worktrees vs jobs, slot ledger vs process table, config vs schema.
 
-## Open questions
+---
 
-- Whether the supervisor tier collapses for mechanical components (the merge-desk-on-Opus experiment).
-- Worker timeout: the supervisor sets it per job; whether the collector should also stall on
-  "no file touched for M minutes" independent of the wall clock.
-- Exact slot numbers at first launch; slots are grants and the meters pull them down, so start generous.
+## 13. What the panel shows, and where each line comes from
+| Block | Line | Source |
+|---|---|---|
+| header | sessions registered/observed, frozen, collector age | roster.json, `frozen`, observed.json |
+| Needs you | question · recommendation · kind · age · approve/decline/answer | inbox.jsonl |
+| Problems | one sentence per anomaly · action | anomalies.jsonl |
+| Working | per component: name · supervisor · landed/built/total · rate · left · `doing now` (age) | observed.json |
+| | per task: title · state · units · jobs (model, worktree, elapsed/timeout) · after | tasks.jsonl, jobs.jsonl |
+| | monitors: question · value/of · trend · measured N ago | measurements.jsonl |
+| Task queue | planned and queued jobs, oldest first, pool needed, why blocked | jobs.jsonl, slots.jsonl |
+| Merge queue | merging, waiting, last landed with target and review | merges.jsonl |
+| Capacity | per pool: held/total · meter · avg/p90 · waiting | observed.json |
+Same rendering in `foreman status` (text) and the Quickshell panel (`Super+M`). Every key on the panel
+maps to a CLI verb.
+
+---
+
+## 14. Flows
+1. **New component**: planner → brief → `component add` → validate → ledger → `launch supervisor` → supervisor
+   reads rulings, brief, ledger → checkpoint → ready tasks → jobs planned → dispatched as slots allow.
+2. **A task, end to end**: ready → jobs planned → queued → running (observed) → returned (finish marker) →
+   supervisor verifies (CONFIRMED evidence) → optional review job → `merge request` → merge desk lands →
+   task `landed` → component progress moves → monitor measured on `landing`.
+3. **A question**: supervisor `ask` → foreman routes: reserved kinds → inbox with recommendation → owner
+   answers → ruling on the component → supervisor reads it at next write. Other kinds → foreman answers →
+   ruling. A question covered by a ruling is refused at `ask`.
+4. **Supervisor dies**: collector sees the process gone → `relaunch` → new session reads rulings, brief,
+   ledger, last checkpoint → continues; the old session's slots are released; the panel shows the gap.
+5. **Freeze**: owner `freeze` → file → launcher refuses; running jobs finish or time out; collector flags any
+   new vendor process as intruder. `thaw` removes the file.
+6. **Job fails**: attempt 1 failed → supervisor may re-plan (attempt 2, tighter spec); attempt 2 failed →
+   finding on the task; the supervisor does it itself (rule 11) or escalates.
+7. **Component done**: all tasks landed, no monitor alert → `component done` → inbox (scope kind: accept?) →
+   owner `component close`.
+
+---
+
+## 15. Skills shipped with Foreman (documents; cloneable like Omarchy configs)
+| Skill | Reader | Must contain |
+|---|---|---|
+| `foreman-plan` | planner session | this design in brief; the brief schema and validation; what a sharp scope looks like (WHAT/INPUTS/OUTPUTS/OUT); what a good monitor is; pool strengths; the interview order; when a brief is ready |
+| `foreman-orchestrate` | foreman | §3 Foreman; routing rules; slot granting; digest format; what never reaches the owner |
+| `foreman-supervise` | supervisor | §3 Supervisor step by step; the rulebook; job spec template; verify-by-re-running; checkpoint discipline; when to ask |
+| `foreman-pool-<name>` | supervisor, per pool | how to spec for this model; unit size; timeout; what it cannot take; how to read its output |
+| `foreman-merge` | merge desk | landing procedure per target; the merge ledger line |
+
+---
+
+## 16. Build plan — Foreman builds Foreman
+Three components, three briefs, three supervisors, run through the boxes board until Foreman can run itself:
+1. **runtime** — state directory, CLI, validation, pools, launcher, collector, `status`, `doctor`. Testable
+   with a fake state directory and fake pool adapters.
+2. **panel** — Quickshell plugin rendering §13 from the state directory; `Super+M`; every key → verb.
+3. **skills** — the five documents in §15, written against the CLI as specified here.
+Then the first real swarm runs on it.
