@@ -1,4 +1,5 @@
 singleton Model 1.0 Model.qml
+singleton Keys 1.0 Keys.qml
 FrontFeed 1.0 FrontFeed.qml
 CheckpointFeed 1.0 CheckpointFeed.qml
 Panel 1.0 Panel.qml

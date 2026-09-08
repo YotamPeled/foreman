@@ -15,8 +15,9 @@ One front is implemented, `panel`, and two of its checks:
                    header numbers, and for each rendered block the number
                    of cards and the title text of each
 
-`--keys` and `--install-roundtrip` belong to jobs that have not run yet
-and exit 2.
+`--keys` drives every key against a throwaway copy of the fixture and
+asserts the ledger line; `--install-roundtrip` belongs to a job that has
+not run yet and exits 2.
 
 Standard library only, so this runs wherever the repository is checked out.
 """
@@ -30,12 +31,14 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
 PLUGIN = REPO / "plugin" / "foreman"
 HARNESS = PLUGIN / "Harness.qml"
 PANEL_HARNESS = PLUGIN / "PanelHarness.qml"
+KEYS_HARNESS = PLUGIN / "KeysHarness.qml"
 FIXTURE = PLUGIN / "test" / "fixture"
 FIXTURE_LIVE = PLUGIN / "test" / "fixture-live"
 
@@ -391,6 +394,35 @@ def check_lint() -> list[str]:
     return files
 
 
+#: Quickshell crashes intermittently at startup in headless sandboxes
+#: (SIGSEGV inside Qt's own startup code, before any QML runs: about one
+#: run in three here, confirmed by coredump backtrace), so a run that dies
+#: before reporting is retried. A run that reports is judged on its output
+#: exactly once, and a failure that persists across every attempt still
+#: fails: retries never turn a broken model into a pass, they only outlast
+#: a dying runner.
+HARNESS_ATTEMPTS = 3
+
+
+def run_quickshell(args: list[str], env: dict) -> str:
+    """Run quickshell until it reports (HARNESS-DONE in the output) or the
+    attempts run out. Returns the last run's cleaned output; a run that
+    times out is retried, and the final timeout propagates."""
+    output = ""
+    for attempt in range(HARNESS_ATTEMPTS):
+        try:
+            result = subprocess.run(
+                args, capture_output=True, text=True, timeout=120, env=env)
+        except subprocess.TimeoutExpired:
+            if attempt == HARNESS_ATTEMPTS - 1:
+                raise
+            continue
+        output = _clean(result.stdout + result.stderr)
+        if "HARNESS-DONE" in output:
+            return output
+    return output
+
+
 def run_harness(state_dir: Path) -> dict:
     """The model layer with no window on it, against `state_dir`.
 
@@ -402,11 +434,8 @@ def run_harness(state_dir: Path) -> dict:
     if not state_dir.is_dir():
         raise Failure("harness: no such state directory: " + str(state_dir))
 
-    result = subprocess.run(
-        [quickshell, "-p", str(HARNESS)],
-        capture_output=True, text=True, timeout=120,
-        env=headless_env(state_dir))
-    output = _clean(result.stdout + result.stderr)
+    output = run_quickshell(
+        [quickshell, "-p", str(HARNESS)], headless_env(state_dir))
 
     trouble = []
     for line in output.splitlines():
@@ -550,10 +579,8 @@ def run_panel_harness(state_dir: Path) -> dict:
         existing = env.get("QML2_IMPORT_PATH", "")
         env["QML2_IMPORT_PATH"] = (str(imports) + (os.pathsep + existing
                                                    if existing else ""))
-        result = subprocess.run(
-            [quickshell, "-p", str(PANEL_HARNESS)],
-            capture_output=True, text=True, timeout=120,
-            env=env)
+        output = run_quickshell(
+            [quickshell, "-p", str(PANEL_HARNESS)], env)
     finally:
         if link.is_symlink():
             link.unlink()
@@ -561,8 +588,6 @@ def run_panel_harness(state_dir: Path) -> dict:
             imports.rmdir()
         except OSError:
             pass
-
-    output = _clean(result.stdout + result.stderr)
 
     trouble = []
     for line in output.splitlines():
@@ -788,8 +813,269 @@ def check_panel_strict(renders: dict) -> None:
                       % (got, EXPECTED_PANEL_WORKING))
 
 
+#: What `panel --keys` must see on the headless run against a throwaway
+#: copy of the mock fixture. Hand-derived from the fixture bytes, never
+#: from a run of the panel under test:
+#:
+#:   needsYou  inbox.jsonl sorted by asked_at, answered rows dropped:
+#:             inb-tokens01 (options yes/no) then inb-reaper01 (yes/no)
+#:   approve   the row's first option ("yes" for both fixture items)
+#:   decline   the row's second option ("no" for both fixture items)
+#:   problems  anomalies.jsonl in ledger order, resolved rows dropped;
+#:             the defect-repeated row carries no action and gets no hint:
+#:             supervisor silent ("foreman relaunch ses-supeng01") then
+#:             intruder ("foreman kill pid-41180")
+#:   hints     assigned on appearance in model order (needsYou approve
+#:             then decline per item, then problems), aa down the alphabet
+#:             without f: aa ab ac ad ae ag
+#:   queue     freeze, then one answer per inbox item (approve the first,
+#:             decline the second, so both answer variants fire without
+#:             answering one item twice), then each Problem verbatim
+EXPECTED_KEYS = [
+    ("aa", "answer:inb-tokens01:approve",
+     ["answer", "inb-tokens01", "yes"]),
+    ("ab", "answer:inb-tokens01:decline",
+     ["answer", "inb-tokens01", "no"]),
+    ("ac", "answer:inb-reaper01:approve",
+     ["answer", "inb-reaper01", "yes"]),
+    ("ad", "answer:inb-reaper01:decline",
+     ["answer", "inb-reaper01", "no"]),
+    ("ae", "problem:supervisor silent:ses-supeng01",
+     ["relaunch", "ses-supeng01"]),
+    ("ag", "problem:intruder:pid-41180",
+     ["kill", "pid-41180"]),
+]
+EXPECTED_KEYS_QUEUE = [
+    "static:freeze",
+    "answer:inb-tokens01:approve",
+    "answer:inb-reaper01:decline",
+    "problem:supervisor silent:ses-supeng01",
+    "problem:intruder:pid-41180",
+]
+#: The answers the ledger must hold after the run, derived by hand from
+#: the fixture's own options arrays (approve = first option, decline =
+#: second), not from a run of the panel's code.
+EXPECTED_KEYS_ANSWERS = {
+    "inb-tokens01": "yes",
+    "inb-reaper01": "no",
+}
+
+HINT_RE = re.compile(r"^[a-e,g-z][a-e,g-z]$")
+
+
+def fold_ledger(path: Path) -> dict:
+    """Last line wins over a JSONL ledger, first appearance keeps order."""
+    by_id: dict = {}
+    try:
+        text = path.read_text()
+    except OSError:
+        return by_id
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and record.get("id"):
+            by_id[record["id"]] = record
+    return by_id
+
+
+def run_keys_harness(state_dir: Path) -> list[str]:
+    """The panel's own Keys singleton against `state_dir`, driven through
+    the same entry points Panel.qml's key handler calls. Every fire runs
+    the real `foreman` verb through Keys' Process, inheriting this
+    environment (FOREMAN_STATE points at the throwaway copy)."""
+    quickshell = find_quickshell()
+    if not KEYS_HARNESS.is_file():
+        raise Failure("harness: missing " + str(KEYS_HARNESS))
+    if not state_dir.is_dir():
+        raise Failure("harness: no such state directory: " + str(state_dir))
+
+    output = run_quickshell(
+        [quickshell, "-p", str(KEYS_HARNESS)], headless_env(state_dir))
+
+    trouble = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("ERROR"):
+            if re.match(r"ERROR quickshell\.(paths|ipc|logging|tooling):",
+                        stripped):
+                continue
+            trouble.append(stripped)
+        elif "unresolvable import" in stripped:
+            if EXPECTED_DANGLING_IMPORT not in stripped:
+                trouble.append(stripped)
+        elif "TypeError" in stripped or "ReferenceError" in stripped:
+            trouble.append(stripped)
+        elif "KEY-SKIP" in stripped:
+            trouble.append("harness: " + stripped)
+    if trouble:
+        raise Failure("keys harness: the run reported errors:\n  "
+                      + "\n  ".join(trouble[:10]))
+    if "HARNESS-DONE" not in output:
+        raise Failure("keys harness: did not finish; output was:\n"
+                      + output[-2000:])
+    return output.splitlines()
+
+
+def panel_keys(state_dir: Path) -> int:
+    """Every key against a throwaway copy of the fixture, asserting the
+    ledger line the verb wrote. The mock fixture is copied to a temporary
+    directory and FOREMAN_STATE points at the copy; the real state
+    directory is never touched. Answers and the freeze are proven against
+    the ledgers; the cheat sheet, Esc and the panel's reflection of the
+    change are proven against the harness report; the Problems verbs the
+    CLI cannot run are attempted verbatim and reported unproven."""
+    if not FIXTURE.is_dir():
+        raise Failure("keys: no such fixture: " + str(FIXTURE))
+    tmp = Path(tempfile.mkdtemp(prefix="foreman-keys-"))
+    try:
+        shutil.copytree(FIXTURE, tmp, dirs_exist_ok=True)
+        lines = run_keys_harness(tmp)
+
+        hints: dict = {}
+        verbs: dict = {}
+        done: dict = {}
+        queue: list = []
+        report: dict = {}
+        # console.log lines arrive with quickshell's own "DEBUG qml: "
+        # prefix, so every marker is searched, never startswith-matched.
+        for line in lines:
+            cleaned = _clean(line).strip()
+            match = re.search(r"HINT ([A-Za-z]+) (.+?) (\[.*?\])\s*$",
+                              cleaned)
+            if match:
+                hint, aid, argv_json = match.groups()
+                try:
+                    argv = json.loads(argv_json)
+                except ValueError:
+                    raise Failure("keys: unparsable HINT argv: %r" % cleaned)
+                hints[aid] = hint
+                verbs[aid] = argv
+                continue
+            match = re.search(r"KEY-DONE (.+) (\d+)\s*$", cleaned)
+            if match:
+                done[match.group(1)] = match.group(2)
+                continue
+            match = re.search(r"QUEUE (.+?)\s*$", cleaned)
+            if match:
+                queue = match.group(1).split(",")
+                continue
+            match = re.search(r"(CHEAT-OPEN|CHEAT-ESC|PENDING|PENDING-ESC|"
+                              r"NEEDSYOU-BEFORE|NEEDSYOU-AFTER|"
+                              r"FROZEN-BEFORE|FROZEN-AFTER) (\S+)\s*$",
+                              cleaned)
+            if match:
+                report[match.group(1)] = match.group(2)
+
+        # The six dynamic hints, exactly as the fixture holds them.
+        want_hints = {aid: hint for hint, aid, _ in EXPECTED_KEYS}
+        if hints != want_hints:
+            raise Failure("keys: hints: got %r, the fixture holds %r"
+                          % (hints, want_hints))
+        for hint in hints.values():
+            if not HINT_RE.match(hint):
+                raise Failure("keys: hint %r is not two letters outside f"
+                              % hint)
+        if len(set(hints.values())) != len(hints):
+            raise Failure("keys: hints are not unique: %r" % hints)
+        want_verbs = {aid: argv for _, aid, argv in EXPECTED_KEYS}
+        if verbs != want_verbs:
+            raise Failure("keys: verbs: got %r, the fixture holds %r"
+                          % (verbs, want_verbs))
+        if queue != EXPECTED_KEYS_QUEUE:
+            raise Failure("keys: queue: got %r, the fixture holds %r"
+                          % (queue, EXPECTED_KEYS_QUEUE))
+
+        # Static keys through the same entry points the panel uses.
+        if report.get("CHEAT-OPEN") != "true":
+            raise Failure("keys: ? did not open the cheat sheet: %r"
+                          % report.get("CHEAT-OPEN"))
+        if report.get("CHEAT-ESC") != "cheat-closed":
+            raise Failure("keys: Esc did not close the cheat sheet: %r"
+                          % report.get("CHEAT-ESC"))
+        if report.get("PENDING") != "a":
+            raise Failure("keys: first letter did not narrow: %r"
+                          % report.get("PENDING"))
+        if report.get("PENDING-ESC") != "pending-cleared":
+            raise Failure("keys: Esc did not back out of the pending "
+                          "letter: %r" % report.get("PENDING-ESC"))
+        if report.get("NEEDSYOU-BEFORE") != "2":
+            raise Failure("keys: Needs you held %s before, the fixture "
+                          "holds 2" % report.get("NEEDSYOU-BEFORE"))
+        if report.get("FROZEN-BEFORE") != "false":
+            raise Failure("keys: swarm was already frozen before F")
+
+        # Every fire the panel ran, by exit code: the freeze and both
+        # answers must succeed; the Problems verbs are attempted verbatim
+        # and their failures are unproven work, not test failures.
+        for aid in EXPECTED_KEYS_QUEUE:
+            if aid not in done:
+                raise Failure("keys: %s never ran" % aid)
+        if done["static:freeze"] != "0":
+            raise Failure("keys: F did not freeze: exit %s"
+                          % done["static:freeze"])
+        for aid in ("answer:inb-tokens01:approve",
+                    "answer:inb-reaper01:decline"):
+            if done[aid] != "0":
+                raise Failure("keys: %s did not answer: exit %s"
+                              % (aid, done[aid]))
+
+        # The ledger lines the verbs should have written, read off the
+        # throwaway copy and compared against hand-derived literals.
+        inbox = fold_ledger(tmp / "inbox.jsonl")
+        for iid, answer in EXPECTED_KEYS_ANSWERS.items():
+            row = inbox.get(iid, {})
+            if row.get("answered_at") in (None, "") \
+                    or row.get("answer") != answer:
+                raise Failure("keys: %s: got answer %r, the verb should "
+                              "have written %r"
+                              % (iid, row.get("answer"), answer))
+        frozen = tmp / "frozen"
+        try:
+            frozen_text = frozen.read_text()
+        except OSError:
+            raise Failure("keys: F: no frozen file after `foreman freeze`")
+        if not frozen_text.startswith("frozen"):
+            raise Failure("keys: F: frozen file holds %r" % frozen_text)
+
+        # The panel reflects the change on its next tick: both answers
+        # landed, so nothing is left in Needs you, and the swarm is frozen.
+        if report.get("NEEDSYOU-AFTER") != "0":
+            raise Failure("keys: answered questions still in Needs you: "
+                          "%s" % report.get("NEEDSYOU-AFTER"))
+        if report.get("FROZEN-AFTER") != "true":
+            raise Failure("keys: panel does not show the freeze: %s"
+                          % report.get("FROZEN-AFTER"))
+
+        print("keys: F runs `foreman freeze` (frozen file %r)"
+              % frozen_text.splitlines()[0])
+        for iid, answer in EXPECTED_KEYS_ANSWERS.items():
+            print("keys: %s runs `foreman answer %s %s` (ledger holds %r)"
+                  % (hints["answer:%s:%s" % (
+                      iid, "approve" if iid == "inb-tokens01" else "decline")],
+                      iid, answer, answer))
+        print("keys: ? opens the cheat sheet, Esc backs out one level")
+        print("keys: answered questions leave Needs you on the next tick")
+        print("keys: UNPROVEN relaunch ses-supeng01 "
+              "(exit %s: the fixture carries no vendor session and no repo, "
+              "so the verb refuses)"
+              % done["problem:supervisor silent:ses-supeng01"])
+        print("keys: UNPROVEN kill pid-41180 "
+              "(exit %s: the CLI has no `kill` verb and `foreman job` has "
+              "no `kill` either, so the row's verb cannot run)"
+              % done["problem:intruder:pid-41180"])
+        print("keys: every provable key did its verb against the "
+              "throwaway copy")
+        return 0
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 NOT_IMPLEMENTED = {
-    "--keys": "the keys and actions job has not run yet",
     "--install-roundtrip": "the install/uninstall job has not run yet",
 }
 
@@ -805,7 +1091,8 @@ def main(argv: list[str]) -> int:
     parser.add_argument("--state", default=str(FIXTURE),
                         help="state directory to read (default: the fixture)")
 
-    known = set(NOT_IMPLEMENTED) | {"--loads", "--blocks-count", "--blocks"}
+    known = set(NOT_IMPLEMENTED) | {"--loads", "--blocks-count", "--blocks",
+                                         "--keys"}
     rest, check = [], None
     for token in argv:
         if token in known and check is None:
@@ -830,7 +1117,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     checks = {"--loads": loads, "--blocks-count": blocks_count,
-              "--blocks": panel_blocks}
+              "--blocks": panel_blocks, "--keys": panel_keys}
     if args.check not in checks:
         print("foreman-verify: unknown check %r for front panel" % args.check,
               file=sys.stderr)
