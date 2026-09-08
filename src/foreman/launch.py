@@ -1,12 +1,17 @@
 """`foreman launch <role> <pool> <spec>`: summon one worker.
 
-In order: mint a session id; create a git worktree on a new branch from
-the base branch; create the per-session directory holding a log file that
-is never reused; resolve the timeout from the pool's default unless
-``--timeout`` overrides; write ``FOREMAN-JOB.md`` and ``FOREMAN-ROLE.md``
-into the worktree; start the process through the pool's adapter; append
-the session to the roster snapshot; print the session id, the worktree,
-the log path and the pid.
+In order: refuse while the frozen file exists and refuse callers outside
+the foreman and supervisor roles; mint a session id; create a git worktree
+on a new branch from the base branch; create the per-session directory
+holding a log file that is never reused; resolve the timeout from the
+pool's default unless ``--timeout`` overrides; write ``FOREMAN-JOB.md``
+(with the role prompt embedded, so the worker actually receives it) and
+``FOREMAN-ROLE.md`` into the worktree, refusing symlinks; record the
+session on the roster snapshot under one lock; start the process through
+the pool's adapter and move the record to running with its pid and
+process group; print the session id, the worktree, the log path and the
+pid. A failure before the spawn removes the worktree and branch; a failed
+spawn is recorded as failed, never running; a dry run records nothing.
 
 Every path written into the injected files is absolute: a worker process
 runs from its own home directory, not from its worktree, so a relative
@@ -18,13 +23,15 @@ once.
 from __future__ import annotations
 
 import argparse
+import errno
 import os
 import re
 import subprocess
 import sys
 from pathlib import Path
 
-from . import ids, paths, store
+from . import caller, ids, paths, store
+from .caller import FOREMAN, SUPERVISOR
 from .cli import subcommand
 from .entities import JOB_KINDS, JOB_ROLES, Session
 from .pools import LaunchContext, get as get_pool
@@ -35,7 +42,6 @@ ROLE_FILE = "FOREMAN-ROLE.md"
 PAGE_LINES = 120
 
 VERIFY_HINTS = (
-    "verif",
     "pytest",
     "python -m",
     "uv run",
@@ -128,12 +134,20 @@ def default_base(repo: str) -> str:
         return "HEAD"
 
 
-def read_rulings() -> list[str]:
+def read_rulings(component: str | None = None) -> list[str]:
+    """Swarm rulings plus this component's own; nothing else travels.
+
+    A worker on one component must never see another component's rulings,
+    so every other scope is left out of the injected block.
+    """
     texts = []
     for record in store.read_ledger(paths.rulings_path()):
         text = record.get("text")
-        if isinstance(text, str) and text.strip():
-            texts.append(text)
+        if not (isinstance(text, str) and text.strip()):
+            continue
+        if record.get("scope") != "swarm" and record.get("scope") != component:
+            continue
+        texts.append(text)
     return texts
 
 
@@ -170,10 +184,16 @@ def environment_block(worktree: str, branch: str, target: str, scratch: str,
 
 def build_job_file(job: str, kind: str, task: str, component: str, env: str,
                    rulings: str, scope: str, spec: str,
-                   units_label: str | None = None) -> str:
+                   units_label: str | None = None,
+                   *, role_text: str) -> str:
     this_job = f"units: {units_label}\n\n{spec}" if units_label else spec
     return (
         f"# Job {job} \u00b7 {kind} \u00b7 task \"{task}\" \u00b7 component {component}\n"
+        "\n"
+        "## Role prompt (from FOREMAN-ROLE.md, verbatim: no session starts\n"
+        "without its role prompt, and the worker is given this file)\n"
+        "\n"
+        f"{role_text}\n"
         "\n"
         "## Environment (injected)\n"
         "\n"
@@ -218,9 +238,71 @@ def refuse(*problems: str) -> int:
     return 1
 
 
+def write_no_symlink(path: str, text: str) -> None:
+    """Write launcher output, refusing to follow a symlink.
+
+    A worktree checked out from a hostile branch can carry FOREMAN-JOB.md
+    or FOREMAN-ROLE.md as a symlink; writing through it would land outside
+    the worktree. O_NOFOLLOW makes the refusal atomic with the open.
+    """
+    if os.path.islink(path):
+        raise Refused(f"refusing to write through symlink {path!r}")
+    try:
+        fd = os.open(
+            path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644
+        )
+    except OSError as exc:
+        if exc.errno == errno.ELOOP:
+            raise Refused(
+                f"refusing to write through symlink {path!r}") from None
+        raise
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        handle.write(text)
+
+
+def remove_launch_worktree(repo: str, branch: str, worktree: str) -> None:
+    """Best-effort undo of the worktree half of a failed launch."""
+    for argv in (("worktree", "remove", "--force", worktree),
+                 ("branch", "-D", branch)):
+        try:
+            run_git(repo, *argv)
+        except Refused:
+            pass
+
+
+def _place_session(roster, session: Session):
+    if not isinstance(roster, dict):
+        roster = {"sessions": {}}
+    sessions = roster.get("sessions")
+    if not isinstance(sessions, dict):
+        sessions = roster["sessions"] = {}
+    sessions[session.id or ""] = session.to_dict()
+    return roster
+
+
+def _move_session(roster, session_id: str, **fields):
+    if not isinstance(roster, dict):
+        roster = {"sessions": {}}
+    sessions = roster.get("sessions")
+    if not isinstance(sessions, dict):
+        sessions = roster["sessions"] = {}
+    entry = sessions.setdefault(session_id, {"id": session_id})
+    if isinstance(entry, dict):
+        entry.update(fields)
+    return roster
+
+
 @subcommand("launch", help="Mint a session, build its worktree, start its worker.")
 def cmd_launch(args: argparse.Namespace) -> int:
-    problems: list[str] = []
+    frozen = paths.frozen_path()
+    if frozen.exists():
+        return refuse(
+            f"frozen file {frozen} exists; the launcher refuses while frozen"
+        )
+    me, identity_violations = caller.resolve("launch")
+    caller.check_role(me, "launch", FOREMAN, SUPERVISOR,
+                      violations=identity_violations)
+    problems: list[str] = list(identity_violations)
 
     try:
         adapter = get_pool(args.pool)
@@ -283,31 +365,28 @@ def cmd_launch(args: argparse.Namespace) -> int:
     except Refused as exc:
         return refuse(str(exc))
 
-    session_dir = paths.session_dir(session_id)
-    session_dir.mkdir(parents=True, exist_ok=True)
-    Path(scratch_dir).mkdir(parents=True, exist_ok=True)
-    Path(log_path).touch(exist_ok=False)
-
-    rulings = read_rulings()
-    rulings_block = format_rulings(rulings)
-    scope = (
-        args.scope
-        or lookup_scope(args.component, args.task)
-        or "(no task scope recorded)"
-    )
-    env = environment_block(worktree, branch, target, scratch_dir,
-                            log_path, verdict_path, timeout)
-    job_label = args.job or "(none)"
-    task_label = args.task or "(none)"
-    component_label = args.component or "(none)"
-    job_path = os.path.join(worktree, JOB_FILE)
-    role_path = os.path.join(worktree, ROLE_FILE)
-    Path(job_path).write_text(
-        build_job_file(job_label, args.kind, task_label, component_label,
-                       env, rulings_block, scope, spec_text, args.units),
-        encoding="utf-8",
-    )
     try:
+        session_dir = paths.session_dir(session_id)
+        session_dir.mkdir(parents=True, exist_ok=True)
+        Path(scratch_dir).mkdir(parents=True, exist_ok=True)
+        Path(log_path).touch(exist_ok=False)
+
+        rulings = read_rulings(args.component)
+        rulings_block = format_rulings(rulings)
+        scope = (
+            args.scope
+            or lookup_scope(args.component, args.task)
+            or "(no task scope recorded)"
+        )
+        env = environment_block(worktree, branch, target, scratch_dir,
+                                log_path, verdict_path, timeout)
+        job_label = args.job or "(none)"
+        task_label = args.task or "(none)"
+        component_label = args.component or "(none)"
+        job_path = os.path.join(worktree, JOB_FILE)
+        role_path = os.path.join(worktree, ROLE_FILE)
+        # The role prompt is rendered first: no session starts without one,
+        # and the worker is given the job file, so it is embedded there.
         role_text = render_role_template(args.role, {
             "role": args.role,
             "component": component_label,
@@ -324,62 +403,83 @@ def cmd_launch(args: argparse.Namespace) -> int:
             "rulings": rulings_block,
             "environment": env,
         })
-    except Refused as exc:
-        return refuse(str(exc))
-    Path(role_path).write_text(role_text, encoding="utf-8")
+        write_no_symlink(
+            job_path,
+            build_job_file(job_label, args.kind, task_label, component_label,
+                           env, rulings_block, scope, spec_text, args.units,
+                           role_text=role_text),
+        )
+        write_no_symlink(role_path, role_text)
 
-    base_session = Session(
-        id=session_id,
-        role=args.role,
-        pool=args.pool,
-        model=adapter.model,
-        component=args.component,
-        job=args.job,
-        pid=None,
-        launched_by=os.environ.get("FOREMAN_SESSION"),
-        started_at=store.utcnow_iso(),
-        state="running",
-    )
-    ctx = LaunchContext(
-        session=base_session,
-        worktree=Path(worktree),
-        job_path=Path(job_path),
-        role_path=Path(role_path),
-        log_path=Path(log_path),
-        pid_path=Path(pid_path),
-        verdict_path=Path(verdict_path),
-        scratch_dir=Path(scratch_dir),
-        branch=branch,
-        target=target,
-        timeout=timeout,
-        effort=args.effort,
-        units=tuple(units),
-    )
+        starting = Session(
+            id=session_id,
+            role=args.role,
+            pool=args.pool,
+            model=adapter.model,
+            component=args.component,
+            job=args.job,
+            pid=None,
+            pgid=None,
+            worktree=worktree,
+            log=log_path,
+            timeout=timeout,
+            launched_by=os.environ.get("FOREMAN_SESSION"),
+            started_at=store.utcnow_iso(),
+            state="starting",
+        )
+        ctx = LaunchContext(
+            session=starting,
+            worktree=Path(worktree),
+            job_path=Path(job_path),
+            role_path=Path(role_path),
+            log_path=Path(log_path),
+            pid_path=Path(pid_path),
+            verdict_path=Path(verdict_path),
+            scratch_dir=Path(scratch_dir),
+            branch=branch,
+            target=target,
+            timeout=timeout,
+            effort=args.effort,
+            units=tuple(units),
+        )
+        # A dry run starts nothing, so it records nothing: the roster is
+        # left as found. A real launch records the session before the
+        # spawn, so a dead spawn still leaves a record, never an orphan.
+        if not args.dry_run:
+            store.update_snapshot(
+                paths.roster_path(),
+                lambda roster: _place_session(roster, starting),
+                default={"sessions": {}},
+            )
+    except Refused as exc:
+        remove_launch_worktree(repo, branch, worktree)
+        return refuse(str(exc))
+    except OSError as exc:
+        remove_launch_worktree(repo, branch, worktree)
+        return refuse(f"cannot write launch files: {exc.strerror or exc}")
 
     pid: int | None = None
     if not args.dry_run:
         try:
             pid = adapter.launch(ctx)
         except Exception as exc:  # noqa: BLE001 - a dead spawn is a refusal
+            store.update_snapshot(
+                paths.roster_path(),
+                lambda roster: _move_session(
+                    roster, session_id, state="failed", pid=None, pgid=None),
+                default={"sessions": {}},
+            )
             return refuse(f"pool {args.pool} failed to start the process: {exc}")
+        # The wrapper runs under setsid as a process group leader, so its
+        # pid is its pgid by construction; the group is what a later kill
+        # signals to reach the vendor process.
+        store.update_snapshot(
+            paths.roster_path(),
+            lambda roster: _move_session(
+                roster, session_id, state="running", pid=pid, pgid=pid),
+            default={"sessions": {}},
+        )
     command = adapter.command_str(ctx)
-
-    session = Session(
-        id=session_id,
-        role=args.role,
-        pool=args.pool,
-        model=adapter.model,
-        component=args.component,
-        job=args.job,
-        pid=pid,
-        launched_by=os.environ.get("FOREMAN_SESSION"),
-        started_at=base_session.started_at,
-        state="running",
-    )
-    current = store.read_snapshot(paths.roster_path(), default=None) or {}
-    sessions = dict(current.get("sessions", {}))
-    sessions[session_id] = session.to_dict()
-    store.write_snapshot(paths.roster_path(), {"sessions": sessions})
 
     print(f"session: {session_id}")
     print(f"worktree: {worktree}")

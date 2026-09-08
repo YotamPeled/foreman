@@ -126,6 +126,10 @@ class Session(Entity):
     component: str | None = None
     job: str | None = None
     pid: int | None = None
+    pgid: int | None = None
+    worktree: str = ""
+    log: str = ""
+    timeout: str = ""
     launched_by: str | None = None
     started_at: str | None = None
     last_declared_at: str | None = None

@@ -6,10 +6,12 @@ muse-spark-1.3-contributor --reasoning-effort <high|xhigh> --yolo
 finish marker ``### finished rc=$?`` is written inside the redirected
 stream, not after the pipe::
 
-    echo $$ > <pid file>; { muse exec ...; echo "### finished rc=$?"; } 2>&1 | tee <log>
+    setsid bash -c 'echo $$ > <pid file>; { muse exec ...; echo "### finished rc=$?"; } 2>&1 | tee <log>'
 
-The wrapped command writes its own pid to the session's ``pid`` file as
-its first act.
+The wrapped command runs under ``setsid`` so the shell that writes the
+pid file is a process group leader: the recorded pid is its pgid, and a
+later kill of the group reaches the vendor process instead of orphaning
+it. It writes its own pid to the session's ``pid`` file as its first act.
 
 "Deny worker tools" for this pool is by omission, and that is observable
 in the command: no MCP server is ever started for a worker, and no
@@ -29,6 +31,7 @@ configured it starts the command through ``systemd-run --user --collect
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import time
 import tomllib
@@ -41,7 +44,10 @@ from ..entities import Session
 
 MODEL = "muse-spark-1.3-contributor"
 EFFORTS = ("high", "xhigh")
-FINISH_MARKER = "### finished"
+#: Completion is a line of its own: the marker, ``rc=`` and the worker's
+#: exit code. A mention anywhere else — a spec describing the marker, a
+#: quoted line, a bare marker with no code — is not completion.
+FINISH_RE = re.compile(r"^### finished rc=(\d+)$", re.MULTILINE)
 WINDOW_LAUNCHER_ENV = "FOREMAN_WINDOW_LAUNCHER"
 PID_WAIT_SECONDS = 30.0
 
@@ -82,13 +88,18 @@ def muse_argv(ctx: LaunchContext) -> list[str]:
 
 
 def inner_command(ctx: LaunchContext) -> str:
-    """Shell running the worker: pid first, marker inside the redirection."""
+    """Shell running the worker: pid first, marker inside the redirection.
+
+    ``setsid`` makes the shell that writes the pid file a process group
+    leader, so the recorded pid is the group to signal later.
+    """
     vendor = " ".join(shlex.quote(part) for part in muse_argv(ctx))
-    return (
+    worker = (
         f"echo $$ > {shlex.quote(str(ctx.pid_path))}; "
         "{ " + vendor + '; echo "### finished rc=$?"; '
         "} 2>&1 | tee " + shlex.quote(str(ctx.log_path))
     )
+    return "setsid bash -c " + shlex.quote(worker)
 
 
 def outer_argv(ctx: LaunchContext) -> list[str]:
@@ -140,26 +151,42 @@ class MuseAdapter(PoolAdapter):
         )
 
     def observe(self, session: Session) -> dict:
-        log = paths.session_log_path(session.id or "")
+        # A launch with --log elsewhere writes completion there, so the
+        # session carries its log path; the default covers older records.
+        raw_log = session.log or str(paths.session_log_path(session.id or ""))
+        log = Path(raw_log)
         try:
             transcript_mtime: float | None = log.stat().st_mtime
         except OSError:
             transcript_mtime = None
         finish_present = False
+        finish_rc: int | None = None
         if transcript_mtime is not None:
             try:
-                finish_present = FINISH_MARKER in log.read_text(
-                    encoding="utf-8", errors="replace")
+                text = log.read_text(encoding="utf-8", errors="replace")
             except OSError:
-                finish_present = False
+                text = ""
+            codes = FINISH_RE.findall(text)
+            if codes:
+                finish_present = True
+                finish_rc = int(codes[-1])
         return {
             "transcript_mtime": transcript_mtime,
             "cpu_s": _cpu_seconds(session.pid),
             "finish_present": finish_present,
+            "finish_rc": finish_rc,
         }
 
 
 def _cpu_seconds(pid: int | None) -> float:
+    """CPU seconds of the wrapping shell, not of the job.
+
+    The recorded pid is the wrapper started by the launcher, which does
+    nothing but wait on its pipeline; its own utime/stime never include
+    the seconds the vendor child burns (those are cutime/cstime, unread
+    here). The pid still identifies the job's process group for a later
+    kill, which is what it is recorded for.
+    """
     if pid is None:
         return 0.0
     try:

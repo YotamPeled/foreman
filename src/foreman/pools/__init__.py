@@ -15,9 +15,13 @@ Adapter contract (the whole interface a new pool must implement):
 - ``launch(ctx) -> int``: start the worker detached, return its pid. The
   worker shell writes its own pid to ``ctx.pid_path`` as its first act;
   adapters should read that file back so the returned pid is the worker's,
-  not a launcher's.
+  not a launcher's. The shell is started as a process group leader, so
+  the returned pid is also the pgid the launcher records for a later kill.
 - ``observe(session) -> dict``: ``{"transcript_mtime": float | None,
-  "cpu_s": float, "finish_present": bool}``.
+  "cpu_s": float, "finish_present": bool, "finish_rc": int | None}``.
+  The log is read from ``session.log`` (the default path covers older
+  records); ``finish_present`` is true only for a line of its own reading
+  ``### finished rc=<n>``, whose number is ``finish_rc``.
 - ``command_str(ctx) -> str``: the printable command line ``--dry-run``
   shows.
 
