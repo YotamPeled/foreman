@@ -342,6 +342,20 @@ def test_built_short_names_both_numbers(env, monkeypatch, capsys):
     assert len(store.read_ledger(paths.front_tasks_path("flow"))) == before
 
 
+def test_built_accepts_a_units_overshoot(env, monkeypatch, capsys):
+    """A repair job carries its own unit, so a task that failed review and
+    was repaired ends above its own count. That task is still buildable:
+    only a short count means work is unaccounted for."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    store.append_ledger(paths.front_tasks_path("flow"),
+                        dict(tasks_by_title("flow")["first"],
+                             state="ready", units_done=2, units_total=1))
+    assert run(monkeypatch, ["task", "built", "first"], SUP) == 0
+    capsys.readouterr()
+    assert tasks_by_title("flow")["first"]["state"] == "built"
+
+
 def test_verify_not_returned_is_refused(env, monkeypatch, capsys):
     """A job that never came back cannot be verified."""
     add_front(env, monkeypatch, capsys)
