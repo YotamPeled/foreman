@@ -35,16 +35,22 @@ def build_parser() -> argparse.ArgumentParser:
         if callable(add_arguments):
             add_arguments(sub)
         sub.set_defaults(_handler=handler)
+        add_arguments = getattr(handler, "add_arguments", None)
+        if callable(add_arguments):
+            add_arguments(sub)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Importing here, not at module top, keeps the import cycle out: every verb
+    # module imports this one for the decorator. Doing it before the parser is
+    # built is what makes `python -m foreman.cli <verb>` find the verb at all.
+    from . import launch as _launch  # noqa: F401
+    from . import verbs as _verbs  # noqa: F401
+
     args = build_parser().parse_args(argv)
     return args._handler(args)
 
 
 if __name__ == "__main__":
     raise SystemExit(main())
-
-
-from . import verbs as verbs  # noqa: E402,F401  (registers the verbs above)
