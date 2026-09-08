@@ -1,4 +1,5 @@
 singleton Palette 1.0 Palette.qml
+CheatSheet 1.0 CheatSheet.qml
 Card 1.0 Card.qml
 SectionHeading 1.0 SectionHeading.qml
 KeyChip 1.0 KeyChip.qml

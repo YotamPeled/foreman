@@ -13,10 +13,9 @@ Item {
 
   readonly property var rows: Foreman.Model.needsYou.rows
 
-  // Static key letters until the keys job wires real bindings: the mock's
-  // own letters by card position, nothing once they run out.
-  readonly property var approveKeys: ["a", "d"]
-  readonly property var declineKeys: ["s", "g"]
+  // Two-letter hints from Keys, assigned on appearance: each open item's
+  // approve then decline. The mock's single letters show where the chips
+  // sit, not the scheme.
 
   function ageText(s) {
     if (!(s >= 0)) return "waited unknown"
@@ -89,9 +88,15 @@ Item {
 
           Row {
             spacing: Style.space(6)
-            KeyChip { key: index < root.approveKeys.length ? root.approveKeys[index] : "" }
+            KeyChip {
+              key: Foreman.Keys.hintFor("answer:" + modelData.id + ":approve")
+              opacity: Foreman.Keys.dimFor(key) ? 0.35 : 1.0
+            }
             Pill { label: "approve"; tone: "green" }
-            KeyChip { key: index < root.declineKeys.length ? root.declineKeys[index] : "" }
+            KeyChip {
+              key: Foreman.Keys.hintFor("answer:" + modelData.id + ":decline")
+              opacity: Foreman.Keys.dimFor(key) ? 0.35 : 1.0
+            }
             Pill { label: "decline"; tone: "plain" }
           }
         }

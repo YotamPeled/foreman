@@ -13,9 +13,9 @@ Item {
 
   readonly property var rows: Foreman.Model.problems.rows
 
-  // Static key letters until the keys job wires real bindings: the mock's
-  // own letters by card position, nothing once they run out.
-  readonly property var actionKeys: ["z", "x"]
+  // Two-letter hints from Keys, assigned on appearance, one per anomaly
+  // that carries an action. The mock's single letters show where the
+  // chips sit, not the scheme.
 
   function ageText(s) {
     if (!(s >= 0)) return "waited unknown"
@@ -72,7 +72,10 @@ Item {
           Row {
             visible: modelData.action !== ""
             spacing: Style.space(6)
-            KeyChip { key: index < root.actionKeys.length ? root.actionKeys[index] : "" }
+            KeyChip {
+              key: Foreman.Keys.hintFor("problem:" + modelData.kind + ":" + modelData.subject)
+              opacity: Foreman.Keys.dimFor(key) ? 0.35 : 1.0
+            }
             Pill {
               label: root.actionLabel(modelData.action)
               tone: root.actionLabel(modelData.action) === "kill" ? "red" : "plain"

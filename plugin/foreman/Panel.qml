@@ -86,7 +86,22 @@ Item {
       id: keys
       anchors.fill: parent
       focus: true
-      Keys.onEscapePressed: root.dismiss()
+      // Every key runs through Keys: F freezes, ? opens the cheat
+      // sheet, Esc backs out one level (cheat, pending letter, then
+      // the panel), and two-letter hints fire their foreman verb.
+      Keys.onPressed: (event) => {
+        if (event.key === Qt.Key_Escape) {
+          var back = Foreman.Keys.handleEscape()
+          if (back === "close-panel") root.dismiss()
+          event.accepted = true
+        } else if (event.text === "?" || event.text === "f" || event.text === "F") {
+          Foreman.Keys.handleText(event.text)
+          event.accepted = true
+        } else if (event.text.length === 1) {
+          var outcome = Foreman.Keys.handleText(event.text)
+          if (outcome !== "ignored") event.accepted = true
+        }
+      }
     }
 
     Flickable {
@@ -165,6 +180,13 @@ Item {
           }
         }
       }
+    }
+
+    // The ? cheat sheet over the page. Esc returns to the panel.
+    Ui.CheatSheet {
+      anchors.centerIn: parent
+      width: Math.min(640, parent.width - 128)
+      visible: Foreman.Keys.cheatOpen
     }
   }
 }
