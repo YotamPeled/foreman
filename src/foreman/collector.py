@@ -32,7 +32,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import paths, procs, store
+from . import capacity, paths, procs, store
 from .caller import OWNER
 from .cli import subcommand
 from .entities import Session
@@ -106,14 +106,21 @@ def load_config(path: str | Path | None = None) -> CollectorConfig:
         if isinstance(markers, list) and all(
                 isinstance(m, str) and m for m in markers):
             cfg.vendor_markers = tuple(markers)
-    pools = raw.get("pools")
-    if isinstance(pools, dict):
+    # `[pool.<name>].cap` is the owner's word on how much a pool may hold
+    # (see :mod:`foreman.config`), so observed.json carries the same number
+    # the launcher refuses against; `[pools.<name>].slots_total` is the
+    # older spelling and still wins where both are written.
+    for table_name in ("pool", "pools"):
+        pools = raw.get(table_name)
+        if not isinstance(pools, dict):
+            continue
         for name, entry in pools.items():
             if not isinstance(entry, dict):
                 continue
-            for key in ("slots_total", "slots"):
+            for key in ("cap", "slots_total", "slots"):
                 total = entry.get(key)
-                if isinstance(total, int) and total >= 0:
+                if isinstance(total, int) and not isinstance(total, bool) \
+                        and total >= 0:
                     cfg.pools_total[name] = total
                     break
     return cfg
@@ -253,31 +260,33 @@ def _relaunch_count(session_id: str, state: dict, now: datetime,
     return count
 
 
-def _release_slots(session_id: str, now_iso: str) -> None:
+def _release_slots(session_id: str, now_iso: str, because: str) -> None:
     """Release every still-open slot grant for ``session_id``.
 
     Called on death, whatever happens next: a grant is held by a live
     session, so a dead, finished or killed session must not keep holding
-    one. Folded last-wins, so an already-released grant is not released
-    twice.
+    one. This is the moment a slot comes back, and it is why the collector
+    is where the killing lives: a job the screen shows as running an hour
+    after somebody stopped it is exactly the lie this daemon exists to
+    prevent. Folded last-wins, so an already-released grant is not
+    released twice.
     """
-    try:
-        records = store.read_ledger(paths.slots_path())
-    except OSError:
-        return
-    folded: dict[tuple, dict] = {}
-    for record in records:
-        folded[(record.get("pool"), record.get("session"),
-                record.get("job"), record.get("granted_at"))] = record
-    for record in folded.values():
-        if record.get("session") == session_id and \
-                record.get("released_at") is None:
-            store.append_ledger(paths.slots_path(),
-                                dict(record, released_at=now_iso))
+    capacity.release_for_session(session_id, now_iso, because)
+
+
+def _stopped_by(record: dict) -> str | None:
+    """The session that stopped this one, where a Foreman verb did it.
+
+    A verb that stops a session writes its own id onto the roster record;
+    a process that merely vanished leaves nothing, and then the job record
+    says only that it went, naming nobody.
+    """
+    who = record.get("killed_by")
+    return who if isinstance(who, str) and who else None
 
 
 def _mark_job(front: str | None, job_id: str | None, to_state: str,
-              stamp: str | None) -> None:
+              stamp: str | None, by: str | None = None) -> None:
     """Move a job to ``to_state``. A terminal state is terminal: when the
     latest record for the job is already returned, verified, failed or
     killed, nothing is appended, so a returned event is never duplicated
@@ -300,7 +309,12 @@ def _mark_job(front: str | None, job_id: str | None, to_state: str,
     revised = dict(latest, state=to_state)
     if stamp is not None and to_state == "returned":
         revised["returned_at"] = stamp
-    store.append_ledger(paths.front_jobs_path(front), revised)
+    if to_state == "killed":
+        # A killed line is authored by whoever stopped the job, and by
+        # nobody where the process merely vanished. Carrying the `by` of
+        # the line it revises would name the launcher as the killer.
+        revised.pop("by", None)
+    store.append_ledger(paths.front_jobs_path(front), revised, session_id=by)
 
 
 def _tick_lock_path() -> Path:
@@ -573,7 +587,7 @@ def _tick_inner(moment: datetime, now_iso: str,
             # checkpoint replayed, and supervisor tool grants; a headless
             # worker spawn provides none of those, so the anomaly stays
             # open saying a person must relaunch.
-            _release_slots(sid, now_iso)
+            _release_slots(sid, now_iso, "failed")
             if state in RUNNING_LIKE:
                 note_open("supervisor dead", sid,
                           f"supervisor {sid} dead; a person must relaunch it "
@@ -611,7 +625,17 @@ def _tick_inner(moment: datetime, now_iso: str,
             if finish:
                 _mark_job(record.get("front"), record.get("job"),
                           "returned", now_iso)
-            _release_slots(sid, now_iso)
+                _release_slots(sid, now_iso, "returned")
+            else:
+                # The process is gone and the log carries no finish
+                # marker, so the job did not return: it was stopped. It
+                # becomes killed on this tick rather than staying running
+                # forever, and the line names the session that stopped it
+                # where a Foreman verb did and nobody where the process
+                # merely vanished.
+                _mark_job(record.get("front"), record.get("job"),
+                          "killed", now_iso, by=_stopped_by(record))
+                _release_slots(sid, now_iso, "killed")
             if state in RUNNING_LIKE:
                 update["state"] = "exited"
         elif worker and alive and not terminal_session:
@@ -628,7 +652,7 @@ def _tick_inner(moment: datetime, now_iso: str,
                     update["state"] = "killed"
                     _mark_job(record.get("front"), record.get("job"),
                               "failed", None)
-                    _release_slots(sid, now_iso)
+                    _release_slots(sid, now_iso, "killed")
                     note_open("job timeout", sid,
                               f"elapsed {elapsed:.0f}s past timeout "
                               f"'{record.get('timeout')}' (job {job}); killed",
@@ -649,7 +673,7 @@ def _tick_inner(moment: datetime, now_iso: str,
                     update["state"] = "exited"
                     _mark_job(record.get("front"), record.get("job"),
                               "returned", now_iso)
-                    _release_slots(sid, now_iso)
+                    _release_slots(sid, now_iso, "returned")
             elif active_at is not None and (
                     moment - _parse_time(active_at)).total_seconds() > \
                     config.job_stalled_seconds:

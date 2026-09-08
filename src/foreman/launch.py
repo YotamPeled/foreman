@@ -46,7 +46,7 @@ import sys
 import uuid
 from pathlib import Path
 
-from . import caller, fronts, ids, paths, procs, store
+from . import caller, capacity, fronts, ids, paths, procs, store
 from .caller import FOREMAN, SUPERVISOR
 from .cli import subcommand
 from . import entities
@@ -343,7 +343,12 @@ def cmd_launch(args: argparse.Namespace) -> int:
     caller.check_role(me, "launch", FOREMAN, SUPERVISOR,
                       violations=identity_violations)
     # The second argument shape, dispatched before the pool is resolved:
-    # a supervisor names its front where a worker names its pool.
+    # a supervisor names its front where a worker names its pool. This
+    # line is also where the capacity checks stop: they are all below it,
+    # on the worker shape only. A supervisor holds no job slot — it is the
+    # front's own session, not work inside the front's allocation — so its
+    # ceiling is the front existing at all, which `launch supervisor`
+    # already requires of the ledger.
     if args.role == SUPERVISOR:
         return launch_supervisor_main(args, list(identity_violations))
     problems: list[str] = list(identity_violations)
@@ -360,6 +365,13 @@ def cmd_launch(args: argparse.Namespace) -> int:
         return refuse(
             f"unknown role {args.role!r}; known roles: " + ", ".join(JOB_ROLES)
         )
+    # Capacity, before anything is created: the front's ceiling for this
+    # role first, then the pool's cap. Both are read from the open slot
+    # grants, so a launch is measured against what is actually held and not
+    # against a counter somebody forgot to decrement. A dry run runs this
+    # too — the whole point of a dry run is to learn whether the real one
+    # would be refused.
+    problems.extend(capacity.launch_problems(args.role, args.pool, args.front))
     if args.timeout is not None and not TIMEOUT_RE.fullmatch(args.timeout):
         problems.append(
             f"bad timeout {args.timeout!r}; use a number with a unit, e.g. 20m"
@@ -552,6 +564,17 @@ def cmd_launch(args: argparse.Namespace) -> int:
                 pid_starttime=starttime),
             default={"sessions": {}},
         )
+        # The slot is taken at the moment the job starts, never at the
+        # moment it was planned: a ceiling is not a reservation, so nothing
+        # is held while the launch is still only intended. A dry run never
+        # reaches here, and a failed spawn returned above, so the ledger
+        # gains a grant only for a process that exists. A launch that names
+        # no job is not work on a front's queue and takes no job slot: it
+        # is a bare worker somebody started by hand, and the pool counts
+        # what is dispatched, not what wandered in.
+        if job_id:
+            capacity.grant(pool=args.pool, front=args.front, role=args.role,
+                           job=job_id, session=session_id)
         # In v0 the launcher is the only thing that makes a job exist, so
         # it records the one it just started: without that line the owner
         # sees a session counted in the header and nothing on the screen

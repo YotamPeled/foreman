@@ -1,0 +1,24 @@
+# Foreman's packaged defaults.
+#
+# This file is copied to ~/.config/foreman/foreman.toml the first time
+# anything reads the configuration and that file does not exist. From then
+# on the user's file is the one that is read, and it overrides these values
+# key by key: a user file naming one pool changes that pool and leaves
+# every other one at the value shipped here.
+#
+# `cap` is the most sessions the pool may hold at once, across every front.
+# `supervisor_cap` is how many supervisors the pool may carry; a supervisor
+# holds no job slot, so it is counted separately from `cap`.
+
+[pool.muse]
+cap = 5
+
+[pool.opus]
+cap = 2
+supervisor_cap = 2
+
+[pool.codex]
+cap = 1
+
+[pool.grok]
+cap = 1
