@@ -26,10 +26,10 @@ import tomllib
 from pathlib import Path
 
 from . import caller, capacity, cli, fronts, paths, procs, store
-from .caller import FOREMAN, SUPERVISOR, Refusal
+from .caller import FOREMAN, MERGE_DESK, SUPERVISOR, Refusal
 from .cli import subcommand
 from .collector import _checkout_root, _git_head, _package_dir, _source_mtime
-from .entities import JOB_ROLES
+from .entities import SESSION_ROLES
 
 #: Roster states a session is still supposed to be alive in. Anything
 #: else (exited, killed, failed) is the collector's closed book, not a
@@ -47,7 +47,7 @@ LIVE_JOB_STATES = ("planned", "queued", "running", "returned")
 #: it, so no verb repairs it), and a dead merge-desk entry likewise has
 #: no clearing verb — flagging either would print a divergence with no
 #: fix, which is exactly what the fix line below each finding forbids.
-CHECKED_ROLES = tuple(JOB_ROLES) + (SUPERVISOR,)
+CHECKED_ROLES = tuple(SESSION_ROLES)
 
 
 def _problems() -> list[tuple[str, str]]:
@@ -112,6 +112,12 @@ def _check_sessions() -> list[tuple[str, str]]:
         role, job = record.get("role"), record.get("job")
         if role == SUPERVISOR:
             fix = f"foreman relaunch {sid}"
+        elif role == MERGE_DESK:
+            # A dead desk is worse than a dead worker: it may hold a merge
+            # it took, and nothing else may take it while the record says
+            # it is being merged. Nobody was told, because the roles this
+            # checked were the job roles and the supervisor only.
+            fix = "foreman launch merge-desk"
         else:
             # The collector closes dead workers itself on its next tick
             # (job killed or returned, slots released, session exited):

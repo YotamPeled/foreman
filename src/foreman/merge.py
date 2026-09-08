@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import tempfile
 import tomllib
 
 from . import caller, cli, fronts, ids, paths, procs, store
@@ -323,26 +324,53 @@ def merge_land_main(ref: str | None) -> int:
     who = caller.by_line(me)
     mid = str(record.get("id"))
     branch, target = str(record.get("branch")), str(record.get("target"))
-    if _git(repo, "checkout", branch).returncode != 0:
+    if not _branch_exists(repo, branch):
         return _refuse([f"field 'branch' does not exist ({branch!r})"])
-    rebase = _git(repo, "rebase", target)
-    if rebase.returncode != 0:
-        _git(repo, "rebase", "--abort")
-        tail = (rebase.stderr.strip() or rebase.stdout.strip()).strip()
-        return _refuse([f"rebase of '{branch}' onto '{target}' conflicts; "
-                        f"the rebase was aborted: {tail}".strip()])
-    proc = subprocess.run(check, shell=True, cwd=repo,
-                          stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                          text=True)
-    if proc.returncode != 0:
-        tail = (proc.stdout or "").strip()[-2000:]
-        return _refuse([f"check '{check}' failed on '{branch}' "
-                        f"(exit {proc.returncode}): {tail}".strip()])
-    push = _git(repo, "push", "origin", branch)
-    if push.returncode != 0:
-        tail = (push.stderr.strip() or push.stdout.strip()).strip()
-        return _refuse([f"push of '{branch}' failed: {tail}".strip()])
-    head = _git(repo, "rev-parse", branch).stdout.strip()
+    # The desk works in a detached worktree of its own, never by checking
+    # the branch out in the repository. Every branch it is asked to land
+    # was produced by a worker and is still checked out in that worker's
+    # worktree, and git refuses to check out a branch twice — so the desk
+    # could land nothing at all, and said so as "branch does not exist".
+    # Detached, it also never moves the checkout somebody else is working
+    # in while it lands.
+    with tempfile.TemporaryDirectory(prefix="foreman-merge-") as tmp:
+        area = os.path.join(tmp, "landing")
+        added = _git(repo, "worktree", "add", "--detach", area, branch)
+        if added.returncode != 0:
+            tail = (added.stderr.strip() or added.stdout.strip()).strip()
+            return _refuse([f"cannot open a landing worktree for "
+                            f"'{branch}': {tail}".strip()])
+        try:
+            rebase = _git(area, "rebase", target)
+            if rebase.returncode != 0:
+                _git(area, "rebase", "--abort")
+                tail = (rebase.stderr.strip() or rebase.stdout.strip()).strip()
+                return _refuse([
+                    f"rebase of '{branch}' onto '{target}' conflicts; "
+                    f"the rebase was aborted: {tail}".strip()])
+            proc = subprocess.run(check, shell=True, cwd=area,
+                                  stdout=subprocess.PIPE,
+                                  stderr=subprocess.STDOUT, text=True)
+            if proc.returncode != 0:
+                tail = (proc.stdout or "").strip()[-2000:]
+                return _refuse([f"check '{check}' failed on '{branch}' "
+                                f"(exit {proc.returncode}): {tail}".strip()])
+            head = _git(area, "rev-parse", "HEAD").stdout.strip()
+            # A rebase rewrites the branch, so the push that follows one is
+            # always a force. With-lease, so a branch somebody moved since
+            # the request is refused rather than overwritten.
+            push = _git(area, "push", "--force-with-lease", "origin",
+                        f"HEAD:refs/heads/{branch}")
+            if push.returncode != 0:
+                tail = (push.stderr.strip() or push.stdout.strip()).strip()
+                return _refuse([f"push of '{branch}' failed: {tail}".strip()])
+            # And the local branch follows the rebase where it can. Where
+            # a worker still has it checked out, git refuses and the remote
+            # is the record: the worker's copy is stale either way once it
+            # has been rebased, and the landing is what was pushed.
+            _git(repo, "branch", "--force", branch, head)
+        finally:
+            _git(repo, "worktree", "remove", "--force", area)
     # The tasks land one verb at a time, through the same gate the desk
     # itself passed: a task that stopped being built since the request
     # refuses here and the merge stays taken, so a retry resumes it.

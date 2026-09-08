@@ -424,3 +424,21 @@ def test_callers_without_a_session_are_refused(env, monkeypatch, capsys):
                and row.get("subject") == "ses-nobody"
                and row.get("resolved_at") is None for row in anomalies)
     assert caller.read_roster() == {"sessions": {}}
+
+
+def test_doctor_reports_a_dead_merge_desk(env, monkeypatch, capsys):
+    """A dead desk is worse than a dead worker and was reported by nobody.
+
+    The roles doctor checked were the job roles and the supervisor, so a
+    merge desk whose process is gone passed silently — while it may hold a
+    merge it took, which nothing else may take while the record says it is
+    being merged. Found by running the version two done-when: the desk was
+    dead on the roster and `foreman doctor` said nothing about it.
+    """
+    roster({"ses-desk01": session("ses-desk01", "merge-desk", pid=DEAD_PID,
+                                  pid_starttime=12345)})
+    assert run(["doctor"], monkeypatch) == 1
+    out = capsys.readouterr().out
+    assert ("stale session ses-desk01 (role merge-desk): "
+            "process 999999 is gone") in out
+    assert "fix: foreman launch merge-desk" in out
