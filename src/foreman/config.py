@@ -210,11 +210,11 @@ _WARNED: set[tuple[str, str]] = set()
 
 
 def _registered_pools() -> frozenset[str]:
-    """Pool names an adapter actually registers, read at call time so a
-    test that registers a fake pool is seen like any other."""
+    """Pool names a launch can resolve, read at call time so a test that
+    registers a fake pool is seen like any other."""
     from . import pools
 
-    return frozenset(pools.REGISTRY)
+    return frozenset(pools.names())
 
 
 def load() -> Config:

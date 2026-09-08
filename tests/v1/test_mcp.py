@@ -148,7 +148,7 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     assert "mcp" not in names
     assert SUPERVISOR_TOOLS | FOREMAN_TOOLS | {"front_add", "cap",
                                               "collector"} <= names
-    assert len(names) == 29
+    assert len(names) == 33
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):

@@ -1009,6 +1009,7 @@ def import_verb_modules() -> None:
     from . import mcp as _mcp  # noqa: F401
     from . import measure as _measure  # noqa: F401
     from . import merge as _merge  # noqa: F401
+    from . import pool as _pool  # noqa: F401
     from . import progress as _progress  # noqa: F401
     from . import status as _status  # noqa: F401
     from . import verbs as _verbs  # noqa: F401
