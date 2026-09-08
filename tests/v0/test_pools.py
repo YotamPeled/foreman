@@ -45,7 +45,8 @@ def env(tmp_path, monkeypatch):
 
 
 def make_ctx(tmp: Path, pool: str = "grok", kind: str = "implement",
-             effort: str = "high", sid: str = "ses-test123") -> LaunchContext:
+             effort: str = "high", sid: str = "ses-test123",
+             window: bool = False) -> LaunchContext:
     session = Session(id=sid, role=pool, pool=pool,
                       model=get_pool(pool).model, state="running")
     return LaunchContext(
@@ -62,6 +63,7 @@ def make_ctx(tmp: Path, pool: str = "grok", kind: str = "implement",
         timeout="20m",
         effort=effort,
         kind=kind,
+        window=window,
     )
 
 
@@ -434,3 +436,20 @@ def test_vendor_binaries_resolve_on_path(env):
                  muse_pool.muse_argv(make_ctx(env, pool="muse"))):
         assert "/" not in argv[0]
         assert not Path(argv[0]).is_absolute()
+
+
+@pytest.mark.parametrize("pool,module", [
+    ("muse", muse_pool), ("grok", grok_pool), ("claude", claude_pool)])
+def test_a_configured_launcher_alone_opens_no_window(env, monkeypatch, pool,
+                                                     module):
+    """Owner ruling: swarm sessions take no desktop workspace by themselves.
+
+    Configuring a window launcher must not be enough; only a launch that
+    asked to be watched gets a window. Every pool, not just the first one
+    written, because the shared wrapper is where this can quietly regress.
+    """
+    monkeypatch.setenv("FOREMAN_WINDOW_LAUNCHER", "test-launcher")
+    headless = module.outer_argv(make_ctx(env, pool=pool))
+    assert headless[0] == "systemd-run"
+    watched = module.outer_argv(make_ctx(env, pool=pool, window=True))
+    assert watched[0] == "test-launcher"
