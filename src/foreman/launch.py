@@ -105,6 +105,21 @@ VERIFY_HINTS = (
     "sh -c",
 )
 
+#: The other shape a check takes: an interpreter run against a file, or an
+#: executable run by path. `python app.py` is the most ordinary check a
+#: small program has, and the list above accepted `python -m` and
+#: `python -c` and refused it — so the version two proof's spec was refused
+#: for "no verification command" and reworded to satisfy the checker, which
+#: is the defect this whole check exists to prevent on the other side. The
+#: file extension (or the leading `./`) is what keeps it from matching
+#: prose that merely mentions python.
+VERIFY_RUNNER_RE = re.compile(
+    r"(?:^|[\s;&|(])"
+    r"(?:(?:python3?|node|ruby|perl|bash|sh|zsh|deno|bun)\s+"
+    r"[\w./~$-]+\.[A-Za-z0-9]+"
+    r"|\./[\w./-]+)"
+    r"(?:$|[\s;&|)])")
+
 #: The owner's own debugging switch for a worker window, and the only way
 #: one can be opened. Owner ruling: worker and reviewer agents never show a
 #: command line on screen; only the foreman and supervisors are visible as
@@ -187,7 +202,10 @@ def spec_problems(text: str) -> list[str]:
             f"spec longer than one page: {len(lines)} lines (one page is {PAGE_LINES} lines)"
         )
     lowered = [line.lower() for line in lines]
-    if not any(hint in line for line in lowered for hint in VERIFY_HINTS):
+    named = any(hint in line for line in lowered for hint in VERIFY_HINTS)
+    if not named:
+        named = any(VERIFY_RUNNER_RE.search(line) for line in lowered)
+    if not named:
         problems.append("spec contains no verification command")
     return problems
 
