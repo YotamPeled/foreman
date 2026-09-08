@@ -117,6 +117,28 @@ def check_role(
     violations.append(f"role '{me.role}' may not call '{verb}'")
 
 
+def check_front_supervisor(
+    me: Caller | None, front: str | None, verb: str, *, violations: list[str]
+) -> None:
+    """Append a violation unless the caller supervises ``front``.
+
+    The progress verbs move another session's work, so a role check is not
+    enough: the roster must say this session is the supervisor of the front
+    the record belongs to. The owner is never refused.
+    """
+    if me is None or me.role == OWNER:
+        return
+    if me.role != SUPERVISOR:
+        violations.append(f"role '{me.role}' may not call '{verb}'")
+        return
+    mine = me.session.get("front")
+    if mine != front:
+        violations.append(
+            f"session '{me.session_id}' supervises "
+            f"'{mine or '(no front)'}', not '{front}'"
+        )
+
+
 def by_line(me: Caller | None) -> str:
     return me.session_id if me is not None and me.session_id else OWNER
 

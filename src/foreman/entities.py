@@ -15,6 +15,9 @@ TASK_STATES = ("waiting", "ready", "active", "built", "landed")
 JOB_STATES = ("planned", "queued", "running", "returned", "verified", "failed", "killed")
 JOB_KINDS = ("implement", "review", "merge", "research", "verify")
 JOB_ROLES = ("opus", "muse", "astra", "grok")
+#: Roles a roster session may carry: every worker role, plus the two
+#: interactive ones the launcher and `register` mint.
+SESSION_ROLES = JOB_ROLES + ("supervisor", "foreman")
 MERGE_STATES = ("requested", "merging", "landed", "failed")
 SESSION_STATES = ("running", "exited", "stalled", "killed")
 RULING_SCOPES = ("swarm", "front")
@@ -73,6 +76,8 @@ class Task(Entity):
     after: list[str] = field(default_factory=list)
     timeout: str = ""
     land_on: str = ""
+    #: The brief's `core = true`: only a core task may take an Opus worker.
+    core: bool = False
     state: str = "waiting"
     units_done: int = 0
     units_total: int = 0
@@ -161,6 +166,9 @@ class Allocation(Entity):
 
 @dataclass(frozen=True)
 class SlotGrant(Entity):
+    #: A grant is released by appending a revised copy of its own line, so
+    #: it needs an identity to fold on; held slots are the open grants.
+    id: str | None = None
     pool: str = ""
     front: str = ""
     role: str = ""
@@ -168,6 +176,8 @@ class SlotGrant(Entity):
     session: str | None = None
     granted_at: str | None = None
     released_at: str | None = None
+    #: Why the slot came back: "returned", "killed", "failed".
+    released_because: str = ""
 
 
 @dataclass(frozen=True)

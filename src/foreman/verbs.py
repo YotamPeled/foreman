@@ -23,17 +23,9 @@ _FRONT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 
 
 def _fold(records: list[dict]) -> tuple[list[dict], dict[str, dict]]:
-    """Fold revised copies last-wins, keeping first-appearance order."""
-    order: list[str] = []
-    by_id: dict[str, dict] = {}
-    for record in records:
-        rid = record.get("id")
-        if not isinstance(rid, str) or not rid:
-            continue
-        if rid not in by_id:
-            order.append(rid)
-        by_id[rid] = record
-    return [by_id[rid] for rid in order], by_id
+    """The ledger fold from :mod:`foreman.store`, also keyed by id."""
+    folded = store.fold_by_id(records)
+    return folded, {record["id"]: record for record in folded}
 
 
 def read_rulings() -> tuple[list[dict], dict[str, dict]]:

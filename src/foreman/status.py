@@ -80,18 +80,8 @@ def _since(text: str | None, now: datetime) -> str:
     return _age((now - moment).total_seconds())
 
 
-def _fold_by_id(records: list[dict]) -> list[dict]:
-    """Ledger lines folded last-wins, keeping first-appearance order."""
-    order: list[str] = []
-    by_id: dict[str, dict] = {}
-    for record in records:
-        rid = record.get("id")
-        if not isinstance(rid, str) or not rid:
-            continue
-        if rid not in by_id:
-            order.append(rid)
-        by_id[rid] = record
-    return [by_id[rid] for rid in order]
+#: The ledger fold every reader shares; see :func:`foreman.store.fold_by_id`.
+_fold_by_id = store.fold_by_id
 
 
 def _open_anomalies(records: list[dict]) -> list[dict]:

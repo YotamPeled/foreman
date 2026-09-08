@@ -81,6 +81,13 @@ def front_dir(name: str) -> Path:
     return fronts_dir() / name
 
 
+def front_record_path(name: str) -> Path:
+    """The front's own record. Append-only like every other ledger: a change
+    appends a revised copy and readers fold last-wins, so `front add`,
+    `front prefer` and `front done` never edit a byte already written."""
+    return front_dir(name) / "front.jsonl"
+
+
 def front_tasks_path(name: str) -> Path:
     return front_dir(name) / "tasks.jsonl"
 
@@ -133,12 +140,16 @@ def config_file() -> Path:
     return config_dir() / "foreman.toml"
 
 
+def config_front_dir(name: str) -> Path:
+    return config_dir() / "fronts" / name
+
+
 def brief_path(name: str) -> Path:
-    return config_dir() / "fronts" / name / "brief.toml"
+    return config_front_dir(name) / "brief.toml"
 
 
 def plan_path(name: str) -> Path:
-    return config_dir() / "fronts" / name / "plan.md"
+    return config_front_dir(name) / "plan.md"
 
 
 def pool_dir(name: str) -> Path:
