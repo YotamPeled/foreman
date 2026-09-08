@@ -445,9 +445,9 @@ def test_muse_detach_uses_the_window_launcher_only_when_asked(env, monkeypatch):
     ctx = make_ctx(env, window=True)
     monkeypatch.setenv("FOREMAN_WINDOW_LAUNCHER", "test-launcher")
     argv = muse_pool.outer_argv(ctx)
-    assert argv[:4] == ["test-launcher", f"foreman-{ctx.session.id}",
-                        "bash", "-c"]
-    assert "muse exec" in argv[4]
+    assert argv == ["test-launcher", f"foreman-{ctx.session.id}", "bash",
+                    str(ctx.pid_path.parent / "run.sh")]
+    assert "muse exec" in muse_pool.inner_command(ctx)
 
 
 def test_a_configured_launcher_alone_opens_no_window(env, monkeypatch):
@@ -461,9 +461,12 @@ def test_muse_detach_defaults_to_systemd_run(env, monkeypatch):
     ctx = make_ctx(env)
     monkeypatch.delenv("FOREMAN_WINDOW_LAUNCHER", raising=False)
     argv = muse_pool.outer_argv(ctx)
-    assert argv[:6] == ["systemd-run", "--user", "--collect",
-                        f"--unit=foreman-{ctx.session.id}", "bash", "-c"]
-    assert "muse exec" in argv[6]
+    # The worker is handed over as a script file, never as text on a
+    # systemd command line, where $$ means a literal dollar.
+    assert argv == ["systemd-run", "--user", "--collect",
+                    f"--unit=foreman-{ctx.session.id}", "bash",
+                    str(ctx.pid_path.parent / "run.sh")]
+    assert "muse exec" in muse_pool.inner_command(ctx)
 
 
 def test_muse_detach_reads_config_file(env, monkeypatch):

@@ -92,25 +92,57 @@ def wrap_inner(vendor_argv: list[str], *, pid_path: Path | str,
 
 
 def wrap_outer(session_id: str | None, inner: str, *,
-               window: bool = False) -> list[str]:
+               window: bool = False,
+               script_path: Path | str | None = None) -> list[str]:
     """Detached spawn: headless, unless this launch asked for a window.
 
     Owner ruling: swarm sessions do not take the owner's desktop
     workspaces. A window is for watching one run and is asked for per
     launch; a configured window launcher on its own never opens one.
+
+    The worker's shell is handed over as a script file, never as text on
+    the command line, because ``systemd-run`` builds a systemd command
+    line, where ``$$`` is the escape for a literal dollar and ``$WORD``
+    is a unit variable. Proven 2026-09-08: passed as text, the worker
+    wrote the two characters ``$`` and a newline into its pid file
+    instead of its pid, and the launcher declared a launch failed while
+    the job it had started ran to completion unobserved. A file has no
+    such syntax.
     """
+    run = ["bash", str(script_path)] if script_path else ["bash", "-c", inner]
     launcher = window_launcher() if window else None
     if launcher:
-        return [launcher, f"foreman-{session_id}", "bash", "-c", inner]
+        return [launcher, f"foreman-{session_id}", *run]
     return [
         "systemd-run",
         "--user",
         "--collect",
         f"--unit=foreman-{session_id}",
-        "bash",
-        "-c",
-        inner,
+        *run,
     ]
+
+
+def printable_command(argv: list[str], inner: str) -> str:
+    """What a dry run shows: how it is spawned, and what the worker runs.
+
+    The spawn hands the worker over as a script file, so the argv alone
+    would hide the vendor command; both lines are printed.
+    """
+    return (" ".join(shlex.quote(part) for part in argv)
+            + "\n  worker script: " + inner)
+
+
+def write_worker_script(path: Path | str, inner: str) -> Path:
+    """Put the worker's shell on disk, where no other syntax touches it.
+
+    Called only when a launch really starts; a dry run prints the same
+    command and writes nothing.
+    """
+    script = Path(path)
+    script.parent.mkdir(parents=True, exist_ok=True)
+    script.write_text("#!/bin/bash\n" + inner + "\n", encoding="utf-8")
+    script.chmod(0o700)
+    return script
 
 
 def spawn_and_wait(argv: list[str], *, pid_path: Path,

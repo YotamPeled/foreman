@@ -84,7 +84,8 @@ def inner_command(ctx: LaunchContext) -> str:
 def outer_argv(ctx: LaunchContext) -> list[str]:
     """Detached spawn: headless, unless this launch asked for a window."""
     return _common.wrap_outer(ctx.session.id, inner_command(ctx),
-                              window=ctx.window)
+                              window=ctx.window,
+                              script_path=ctx.pid_path.parent / "run.sh")
 
 
 def read_pid_file(path: Path) -> int | None:
@@ -108,9 +109,11 @@ class GrokAdapter(PoolAdapter):
     interactive = False
 
     def command_str(self, ctx: LaunchContext) -> str:
-        return " ".join(_quote(part) for part in outer_argv(ctx))
+        return _common.printable_command(outer_argv(ctx), inner_command(ctx))
 
     def launch(self, ctx: LaunchContext) -> int:
+        _common.write_worker_script(ctx.pid_path.parent / "run.sh",
+                                    inner_command(ctx))
         return _common.spawn_and_wait(
             outer_argv(ctx), pid_path=ctx.pid_path,
             session_id=ctx.session.id, popen=Popen,
