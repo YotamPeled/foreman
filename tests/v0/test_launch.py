@@ -576,6 +576,32 @@ def test_dry_run_leaves_roster_untouched(env, fake_pool, capsys):
     assert not Path(worktree).exists()
 
 
+@pytest.mark.parametrize("kind, voice, absent", [
+    ("implement", "You are a Foreman worker", "You are a Foreman reviewer"),
+    ("review", "You are a Foreman reviewer", "You are a Foreman worker"),
+])
+def test_the_launched_role_prompt_follows_the_job_kind(
+        env, fake_pool, capsys, kind, voice, absent):
+    """A builder is told to build and a reviewer to review.
+
+    The launcher used to choose the prompt by the pool's name alone, so
+    an implement job on a pool that also reviews was handed the reviewer
+    prompt: change no source file, write a verdict, exit. Two jobs ran
+    that way and returned nothing, both green.
+    """
+    repo = make_repo(env / "repo")
+    spec = write_spec(env, f"spec-{kind}.md", SPEC_OK)
+    worktree = env / f"wt-kind-{kind}"
+    assert launch(["grok", "fake", spec, "--repo", str(repo),
+                   "--kind", kind, "--worktree", str(worktree)]) == 0
+    capsys.readouterr()
+    role_text = (worktree / "FOREMAN-ROLE.md").read_text(encoding="utf-8")
+    job_text = (worktree / "FOREMAN-JOB.md").read_text(encoding="utf-8")
+    assert voice in role_text
+    assert absent not in role_text
+    assert voice in job_text
+
+
 def test_worker_receives_role_prompt(env, fake_pool, capsys):
     repo = make_repo(env / "repo")
     spec = write_spec(env, "spec.md", SPEC_OK)
