@@ -487,4 +487,18 @@ def cap_main(pool: str, count: str | int) -> int:
         print(f"{target}: cap {number} (the pool role '{name}' runs on)")
     else:
         print(f"{target}: cap {number}")
+    _reload_collector()
     return 0
+
+
+def _reload_collector() -> None:
+    """Push a collector reload now the ceiling it observes has changed.
+
+    Best effort: a cap change must never fail on its reload.
+    """
+    from . import collector as _collector
+
+    try:
+        _collector.reload_after_config_change()
+    except Exception:  # noqa: BLE001 - the reload is never the verb's work
+        pass

@@ -519,6 +519,44 @@ def front_prefer_main(name: str, prefer: str | int) -> int:
     return 0
 
 
+def set_front_supervisor(name: str, session_id: str | None, by: str) -> None:
+    """Name the front's supervisor on its record, appending a revised copy.
+
+    `launch supervisor` and `front take` both write it, the way `prefer`
+    and `allocate` carry every other field over: the screen resolves the
+    front's supervisor through this field first, so a summoned supervisor
+    is never a roster line the screen cannot attribute. Nothing reads it
+    as permission; the roster still says who may call.
+    """
+    key = (name or "").strip()
+    if not key:
+        return
+    record = read_front_record(key)
+    if record is None or record.get("supervisor") == session_id:
+        return
+    updated = dataclasses.replace(
+        entities.Front.from_dict(record), supervisor=session_id).to_dict()
+    if "monitors" in record:
+        updated["monitors"] = record["monitors"]
+    store.append_ledger(paths.front_record_path(key), updated,
+                        session_id=by)
+
+
+def _reload_collector() -> None:
+    """Push a collector reload after a verb changed the world it observes.
+
+    A new ceiling governs the next tick either way; the restart also clears
+    a `collector stale` line with nothing closed by hand. Best effort: a
+    ceiling change must never fail on its reload.
+    """
+    from . import collector as _collector
+
+    try:
+        _collector.reload_after_config_change()
+    except Exception:  # noqa: BLE001 - the reload is never the verb's work
+        pass
+
+
 def front_allocate_main(name: str, role: str, count: str | int) -> int:
     """Set a front's ceiling for one role, appending a revised copy.
 
@@ -575,17 +613,42 @@ def front_allocate_main(name: str, role: str, count: str | int) -> int:
     store.append_ledger(paths.front_record_path(key), updated,
                         session_id=caller.by_line(me))
     print(f"{key}: {key_role} ceiling {number}")
+    _reload_collector()
     return 0
 
 
-def front_close_main(name: str) -> int:
+def front_close_main(name: str, merged: str | None = None) -> int:
+    """Mark a front done, landing its built tasks where told.
+
+    `--merged <sha>` is the owner's word that the front's branch is on its
+    target: every task still at `built` lands at that sha through the same
+    gate a landing always passes, so a merged front's ledger says what its
+    target says instead of reading "built, never landed" forever.
+    """
     me, violations = caller.resolve("front close")
     caller.check_role(me, "front close", violations=violations)
     record = _revised(name, violations)
+    sha = (merged or "").strip() if merged is not None else None
+    if merged is not None and not sha:
+        violations.append("field '--merged' must name the merged commit "
+                          f"(got '{merged}')")
     if violations:
         return Refusal(violations).report()
     assert record is not None
     key = name.strip()
+    if sha is not None:
+        from .progress import task_landed_main
+
+        try:
+            tasks = store.fold_by_id(
+                store.read_ledger(paths.front_tasks_path(key)))
+        except OSError:
+            tasks = []
+        for task in tasks:
+            if task.get("state") != "built":
+                continue
+            if task_landed_main(str(task.get("id")), head=sha) != 0:
+                return 1
     updated = dataclasses.replace(
         entities.Front.from_dict(record), state="done").to_dict()
     if "monitors" in record:
@@ -654,6 +717,9 @@ def front_take_main(name: str) -> int:
 
     store.update_snapshot(paths.roster_path(), move,
                           default={"sessions": {}})
+    set_front_supervisor(key, sid, by=sid)
+    if mine and mine != key:
+        set_front_supervisor(mine, None, by=sid)
     print(f"{sid} supervises {key}")
     return 0
 
@@ -681,6 +747,9 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     allocate.add_argument("count", help="new ceiling (non-negative integer)")
     close = verbs.add_parser("close", help="Mark a front done.")
     close.add_argument("name", help="front name")
+    close.add_argument("--merged", default=None,
+                       help="the front's branch is on its target at this "
+                            "commit: land every built task there")
     take = verbs.add_parser(
         "take", help="Move the calling supervisor to this front.")
     take.add_argument("name", help="front name")
@@ -698,7 +767,7 @@ def _front_entry(args: argparse.Namespace) -> int:
     if args.front_verb == "allocate":
         return front_allocate_main(args.name, args.role, args.count)
     if args.front_verb == "close":
-        return front_close_main(args.name)
+        return front_close_main(args.name, merged=args.merged)
     if args.front_verb == "take":
         return front_take_main(args.name)
     raise AssertionError(f"unknown front verb {args.front_verb!r}")

@@ -1846,6 +1846,18 @@ def launch_supervisor_main(args: argparse.Namespace,
                       f"{failure or dead}")
     assert pid is not None
     _record_running(session_id, pid, starttime)
+    # The front record names its supervisor the way `front take` writes it:
+    # the screen resolves through that field first, so it never reads "no
+    # checkpoint yet" for a session this call just rostered. Bookkeeping,
+    # never the launch: a process that exists with no record write still
+    # supervises, so a failed write warns and the summon stands.
+    try:
+        fronts.set_front_supervisor(
+            front, session_id,
+            by=os.environ.get(caller.SESSION_ENV) or caller.OWNER)
+    except OSError as exc:
+        print(f"foreman launch: warning: cannot record the supervisor on "
+              f"front '{front}': {exc.strerror or exc}", file=sys.stderr)
     from . import mcp as mcp_module
 
     _print_supervisor(session_id, vendor_id, role_prompt, workspace, pid,

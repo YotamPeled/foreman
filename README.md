@@ -175,6 +175,27 @@ executables you put under `~/.config/foreman/hooks/<event>/`; they receive the e
 one that fails prints and is stepped over. A migration that cannot repair what it finds prints a notice
 and exits 0, so nothing queued behind it is blocked.
 
+## The installed command
+
+The `foreman` on your path must never be whatever branch a working checkout happens to have out.
+Two checkouts, two jobs:
+
+- The **primary checkout**, on any branch, where work happens.
+- A **main-only checkout**, with `main` checked out and never edited by hand, that the installed
+  command runs from. Install it non-editable from there, so the running code is a copy of `main`
+  and not a live view of a half-built branch.
+
+A post-merge hook keeps the second true. Copy `packaging/foreman-post-merge` to the primary
+checkout's `.git/hooks/post-merge`, make it executable, and set `FOREMAN_MAIN_CHECKOUT` to the
+main-only checkout. On every merge or pull it fast-forwards the main-only checkout to the new
+head, reinstalls the package where the merge touched its sources, and runs
+`foreman collector restart`, so the collector re-records the new code and its stale line clears
+with no hand restart. `foreman cap` and `front allocate` push the same restart after their own
+write, for the same reason.
+
+`foreman doctor` reports an installed command running off a branch as a divergence, with its
+fix: reinstall from the main-only checkout, then restart the collector.
+
 ## Status
 
 Version two runs. On this machine, on an isolated state directory: a fixture front was added with two

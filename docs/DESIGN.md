@@ -392,6 +392,7 @@ worktrees vs jobs, slot ledger vs process table, config vs schema.
 | Needs you | question · recommendation · kind · age · approve/decline/answer | inbox.jsonl |
 | Problems | one sentence per anomaly · action | anomalies.jsonl |
 | Working | per front: what it is (want, one line) · where it stands (landed/built/total, `doing now` with age) · **remaining** (tasks not landed, by title) · **estimate** (projected finish with its basis: rate over N hours) · blocked on the owner (open inbox items from this front) | observed.json, tasks, inbox |
+| Done | per finished front, once: name · landed n/n · merge sha · when; a done front appears in no other block | fronts, tasks |
 | | per task: title · state · units · jobs (model, worktree, elapsed/timeout) · after | tasks.jsonl, jobs.jsonl |
 | | monitors: question · value/of · trend · measured N ago | measurements.jsonl |
 | Job queue | per front, in the supervisor's order: job, role it waits for, waited | jobs.jsonl, slots.jsonl |

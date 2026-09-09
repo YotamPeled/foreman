@@ -1284,21 +1284,35 @@ def _service_restart() -> int:
     return 0
 
 
-def restart_collector() -> int:
+def restart_collector(quiet: bool = False) -> int:
     """Restart the collector where it runs as a user service.
 
     Where it does not, say plainly what to run instead: the person reading
-    the stale screen is whoever must run it.
+    the stale screen is whoever must run it. When quiet, a machine with no
+    service to restart is silence rather than guidance: the verbs that
+    changed a ceiling call this after every change, and their own line is
+    the whole of what they owe the owner.
     """
     if _service_active():
         if _service_restart() == 0:
             print(f"collector service {COLLECTOR_UNIT} restarting")
             return 0
         return 1
+    if quiet:
+        return 0
     print(f"collector is not running as a user service; start it with "
           f"`systemctl --user start {COLLECTOR_UNIT}`, or run "
           f"`foreman collector run` in the foreground")
     return 0
+
+
+def reload_after_config_change() -> None:
+    """Push a collector reload after a verb changed what it observes.
+
+    `foreman cap` and `front allocate` call this once their own write is
+    durable, so the `collector stale` line clears with no hand restart.
+    """
+    restart_collector(quiet=True)
 
 
 def collector_main(action: str) -> int:
