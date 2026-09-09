@@ -505,6 +505,9 @@ def test_job_fail_marks_failed_with_finding_on_task(
     assert len(findings) == findings_before + 1
     assert findings[-1]["on"] == first
     assert findings[-1]["title"] == "The draft never arrived"
+    # The finding a failed job files is named like any other, so the
+    # supervisor can refer back to it without quoting its title.
+    assert str(findings[-1]["id"]).startswith("fnd-")
     assert run(monkeypatch, ["job", "verify", "job-flow1",
                              "--confirmed",
                              "--command", "make check first",
