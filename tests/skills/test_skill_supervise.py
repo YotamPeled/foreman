@@ -118,6 +118,42 @@ def test_supervisor_skill_names_both_spec_refusals():
     )
 
 
+# One distinctive phrase per 2026-09-09 methodology ruling. The break: the
+# supervisor skill paraphrases a ruling away until a headless supervisor
+# specifies from a brief alone. Phrases match substance, not a paragraph.
+BEFORE_A_SPEC_PHRASES = [
+    "from a brief alone is a guess",  # investigate before specifying
+    "WHAT, INPUTS, OUTPUTS",  # the four slots a stranger could verify
+    "one deliverable, one unit",  # jobs are slim
+    "commit as you go",  # uncommitted work delivered nothing
+    "turn some test red",  # mutate before landing
+]
+
+
+def _h2_section(text: str, heading: str) -> str:
+    marker = f"## {heading}"
+    lines = text.splitlines(keepends=True)
+    start = next(i for i, line in enumerate(lines)
+                 if line.startswith(marker))
+    end = next((i for i, line in enumerate(lines[start + 1:], start + 1)
+                if line.startswith("## ")), len(lines))
+    return "".join(lines[start:end])
+
+
+def test_supervisor_skill_before_a_spec_names_the_methodology():
+    text = SUPERVISE.read_text(encoding="utf-8")
+    assert "## Before a spec" in text, (
+        "supervisor skill lost ## Before a spec"
+    )
+    section = _h2_section(text, "Before a spec")
+    lowered = " ".join(section.split()).lower()
+    missing = [phrase for phrase in BEFORE_A_SPEC_PHRASES
+               if phrase.lower() not in lowered]
+    assert not missing, (
+        f"'Before a spec' drops methodology containing: {missing}"
+    )
+
+
 def test_grok_skill_bans_untrusted_input_topics():
     text = pool_skill_path("grok").read_text(encoding="utf-8").lower()
     assert "injection" in text, "grok skill lost the injection ban"

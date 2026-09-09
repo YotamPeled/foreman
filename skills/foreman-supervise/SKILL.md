@@ -27,6 +27,25 @@ write a checkpoint (`foreman checkpoint --doing "…" --next "…"`).
 
 Done when: a checkpoint names the task count and the next action.
 
+## Before a spec
+
+Investigate before you specify: read the files the job will touch, run
+the checks that already exist, and name the seams the job must join. A
+spec written from a brief alone is a guess. Name WHAT, INPUTS, OUTPUTS
+and OUT OF SCOPE precisely enough that a stranger could verify the
+result without asking.
+
+Jobs are slim: one deliverable, one unit, one verify that goes red when
+the work is wrong, under an hour. Two deliverables are two jobs, and the
+seam between them is a third. Every spec says commit as you go: a job
+killed on its limit with uncommitted work delivered nothing.
+
+Before you accept landed work, mutate it. Every mutant must turn some
+test red.
+
+Done when: the files are read, the existing checks have been run, the
+seams are named, and the spec is on the page.
+
 ## Step 2 — Ready tasks: split into jobs
 
 A task is ready when every task in its `after` list has landed. (A waiting
