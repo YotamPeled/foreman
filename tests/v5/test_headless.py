@@ -70,6 +70,14 @@ def fake_claude(env, monkeypatch):
         "#!/bin/sh\n"
         f'echo "===TURN===" >> "{argv_log}"\n'
         f'printf "%s\\n" "$@" >> "{argv_log}"\n'
+        'case " $* " in\n'
+        '  *" --output-format stream-json "*)\n'
+        '    case " $* " in\n'
+        '      *" --verbose "*) : ;;\n'
+        '      *) echo "Error: When using --print, --output-format=stream-json'
+        ' requires --verbose" >&2; exit 1 ;;\n'
+        '    esac ;;\n'
+        'esac\n'
         'echo "{\\"type\\":\\"system\\",\\"subtype\\":\\"init\\",'
         '\\"session_id\\":\\"$FAKE_VENDOR\\"}"\n'
         'if [ "$FAKE_RESULT" = "none" ]; then\n'
@@ -824,3 +832,83 @@ def test_the_relaunch_wake_tells_the_session_to_read_its_checkpoint(env):
     """
     assert headless_module.RELAUNCH_TEXT == (
         "you were relaunched, read your checkpoint")
+
+
+# --------------------------------------------------------------------------
+# What the real vendor and the real systemd insist on. Every defect here
+# was invisible until the proof ran a turn for real: the fake vendor took
+# any argv it was given, and the spawn double ran the script itself
+# rather than through systemd-run, so both layers agreed with the caller
+# instead of with the world.
+# --------------------------------------------------------------------------
+
+
+def test_stream_json_is_always_asked_for_with_verbose(env):
+    """`claude -p --output-format stream-json` needs --verbose.
+
+    Without it the real CLI exits 1 before doing anything: "When using
+    --print, --output-format=stream-json requires --verbose". Both turn
+    shapes ask for the stream, so both carry the flag. The fake vendor
+    refuses the same argv the real one does, so this holds end to end
+    and not only as a string.
+    """
+    for argv in (
+        headless_module.first_turn_vendor_argv(
+            prompt_text="hello", mcp_config="/tmp/mcp.json"),
+        headless_module.resume_turn_vendor_argv(
+            vendor_id=VENDOR_ID, event_text="an event",
+            mcp_config="/tmp/mcp.json"),
+    ):
+        assert "--output-format" in argv and "stream-json" in argv
+        assert "--verbose" in argv
+
+
+def test_the_unit_pipes_its_output_back_rather_than_journalling_it(env):
+    """--pipe, never --wait.
+
+    `systemd-run --wait` returns the unit's exit status and sends its
+    stdout to the journal. The turn is judged by the result line in that
+    stdout and learns its vendor session id there, so under --wait the
+    reader gets an empty stream every time and neither is ever known.
+    """
+    argv = headless_module.turn_outer_argv("ses-probe01", "/tmp/run.sh")
+    assert "--pipe" in argv
+    assert "--wait" not in argv
+
+
+def test_a_turn_frees_its_unit_name_before_starting(env, monkeypatch):
+    """A failed transient unit keeps its name until it is reset.
+
+    The name is stable so `foreman kill` can stop a session by it, which
+    means a retry cannot dodge the collision by inventing a new one: it
+    clears the failed unit first. Without this the second attempt dies
+    on "was already loaded or has a fragment file" whatever went wrong
+    with the first, and the retry-once contract can never hold.
+    """
+    calls: list[list[str]] = []
+
+    def fake_run(argv, **kwargs):
+        calls.append(list(argv))
+        return subprocess.CompletedProcess(argv, 0, "", "")
+
+    monkeypatch.setattr(headless_module.subprocess, "run", fake_run)
+    outer = headless_module.turn_outer_argv("ses-probe01", "/tmp/run.sh")
+    headless_module._default_spawn(outer, timeout_s=5)
+    assert calls[0] == ["systemctl", "--user", "reset-failed",
+                        "foreman-ses-probe01"]
+    assert calls[1] == outer
+
+
+def test_a_spawn_double_never_reaches_systemd(env, fake_claude, fake_spawn,
+                                              capsys, monkeypatch):
+    """Freeing the unit name lives on the real door and nowhere else.
+
+    A test substitutes the spawn, so it never reaches systemd and never
+    touches the machine's own units (rul-tx35izr). Were the free called
+    from run_turn instead, every test run would reset units by name on
+    the developer's machine.
+    """
+    freed: list[str] = []
+    monkeypatch.setattr(headless_module, "free_unit_name", freed.append)
+    launch_headless_supervisor(env, capsys, monkeypatch, fake_spawn)
+    assert freed == []

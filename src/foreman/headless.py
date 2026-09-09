@@ -179,6 +179,7 @@ def first_turn_vendor_argv(*, prompt_text: str, mcp_config: Path | str,
         "--strict-mcp-config",
         "--output-format",
         "stream-json",
+        "--verbose",
     ]
 
 
@@ -206,6 +207,7 @@ def resume_turn_vendor_argv(*, vendor_id: str, event_text: str,
         "--strict-mcp-config",
         "--output-format",
         "stream-json",
+        "--verbose",
     ]
 
 
@@ -215,9 +217,12 @@ def turn_outer_argv(session_id: str, script_path: Path | str, *,
     """The transient unit one turn runs as.
 
     ``RuntimeMaxSec`` is the turn timeout in seconds — the unit enforces
-    the timeout beside the launcher's own kill. ``--wait`` keeps the
+    the timeout beside the launcher's own kill. ``--pipe`` keeps the
     launcher in the foreground until the turn ends, so the exit status
-    read back is the turn's, not the spawner's.
+    read back is the turn's and not the spawner's, and connects the
+    unit's stdout to it: under ``--wait`` the stream goes to the journal
+    instead, and the vendor session id and result line the turn is
+    judged by never reach the reader at all.
     """
     secs = turn_timeout_seconds(timeout_text)
     argv = [
@@ -229,7 +234,7 @@ def turn_outer_argv(session_id: str, script_path: Path | str, *,
         argv.append(f"--working-directory={repo}")
     argv.append(f"--property=RuntimeMaxSec={secs}")
     argv.append("--service-type=exec")
-    argv.append("--wait")
+    argv.append("--pipe")
     return [*argv, "bash", str(script_path)]
 
 
@@ -424,7 +429,44 @@ def relaunch_wake(session_id: str, by: str | None = None) -> dict:
 # --------------------------------------------------------------------------
 
 
+def unit_of(argv: list[str]) -> str | None:
+    """The transient unit an outer argv names, or None."""
+    for part in argv:
+        if isinstance(part, str) and part.startswith("--unit="):
+            return part.split("=", 1)[1]
+    return None
+
+
+def free_unit_name(unit: str) -> None:
+    """Let a failed turn's unit name be used again by the next turn.
+
+    A transient unit that exited non-zero stays loaded in its failed
+    state, and ``systemd-run`` refuses to start another under the same
+    name: "was already loaded or has a fragment file". The name is
+    stable on purpose — ``foreman kill`` stops a session by it — so the
+    retry cannot dodge the collision by inventing a fresh name; it
+    clears the corpse first. Best effort: a name that was never used
+    answers "not loaded", which is the state we wanted anyway.
+    """
+    try:
+        subprocess.run(
+            ["systemctl", "--user", "reset-failed", unit],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=30, check=False)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
 def _default_spawn(argv: list[str], *, timeout_s: float) -> Any:
+    """The real door: free the unit name, then run the turn.
+
+    Freeing lives here and not in :func:`run_turn` so that a test which
+    substitutes this function never reaches systemd (rul-tx35izr), and
+    every real turn does.
+    """
+    unit = unit_of(argv)
+    if unit:
+        free_unit_name(unit)
     return subprocess.run(
         argv,
         stdout=subprocess.PIPE,
