@@ -270,6 +270,24 @@ def make_repo(path: Path) -> Path:
     return path
 
 
+def git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ).stdout.strip()
+
+
+def add_feature_branch(repo: Path) -> str:
+    """One commit on ``feature`` past ``main``; the repo is left on ``main``."""
+    git(repo, "checkout", "-qb", "feature")
+    (repo / "feature.txt").write_text("feature\n", encoding="utf-8")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "-qm", "feature")
+    head = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "main")
+    return head
+
+
 def launch(argv: list[str]) -> int:
     return cli.main(["launch", *argv])
 
@@ -334,6 +352,41 @@ def test_launch_astra_through_codex_lands_on_the_roster(
     assert "## Verdict schema" in job_text
     schema_text = EXPECTED_SCHEMA.read_text(encoding="utf-8").strip()
     assert schema_text in job_text
+
+
+def test_review_of_an_existing_branch_through_a_fake_spawn(
+        env, monkeypatch, capsys):
+    """A review launch of ``--branch feature`` lands detached at that
+    head, names ``feature`` on the roster and the job line, and creates
+    no review branch.
+
+    Would fail if the launcher still ran ``git worktree add -b`` against
+    a branch that already exists, or if undo deleted the branch it was
+    asked to read.
+    """
+    monkeypatch.setattr(codex_module, "Popen", FakeSpawn)
+    repo = make_repo(env / "repo")
+    feature_head = add_feature_branch(repo)
+    spec = env / "spec.md"
+    spec.write_text(SPEC_OK, encoding="utf-8")
+    worktree = env / "wt-review-feature"
+
+    rc = launch(["astra", "codex", str(spec), "--repo", str(repo),
+                 "--worktree", str(worktree), "--kind", "review",
+                 "--branch", "feature", "--front", "corpus",
+                 "--job", "job-rev1"])
+    assert rc == 0
+    sid = session_line(capsys.readouterr().out)
+    assert git(worktree, "rev-parse", "HEAD") == feature_head
+    assert git(worktree, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+    assert git(repo, "branch", "--list", "feature-review") == ""
+    assert git(repo, "rev-parse", "feature") == feature_head
+    roster = store.read_snapshot(paths.roster_path(), default={})
+    assert roster["sessions"][sid]["branch"] == "feature"
+    jobs = store.read_ledger(paths.front_jobs_path("corpus"))
+    assert jobs[-1]["branch"] == "feature"
+    job_text = Path(worktree, "FOREMAN-JOB.md").read_text(encoding="utf-8")
+    assert "- branch: feature" in job_text
 
 
 def test_launch_dry_run_writes_nothing(env, capsys):

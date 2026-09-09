@@ -2,16 +2,19 @@
 
 In order: refuse while the frozen file exists and refuse callers outside
 the foreman and supervisor roles; mint a session id; create a git worktree
-on a new branch from the base branch; create the per-session directory
-holding a log file that is never reused; resolve the timeout from the
-pool's default unless ``--timeout`` overrides; write ``FOREMAN-JOB.md``
-(with the role prompt embedded, so the worker actually receives it) and
-``FOREMAN-ROLE.md`` into the worktree, refusing symlinks; record the
-session on the roster snapshot under one lock; start the process through
-the pool's adapter and move the record to running with its pid and
-process group; print the session id, the worktree, the log path and the
-pid. A failure before the spawn removes the worktree and branch; a failed
-spawn is recorded as failed, never running; a dry run records nothing.
+on a new branch from the base branch (a review of an existing branch
+checks that branch out detached instead, and creates no branch); create
+the per-session directory holding a log file that is never reused;
+resolve the timeout from the pool's default unless ``--timeout``
+overrides; write ``FOREMAN-JOB.md`` (with the role prompt embedded, so
+the worker actually receives it) and ``FOREMAN-ROLE.md`` into the
+worktree, refusing symlinks; record the session on the roster snapshot
+under one lock; start the process through the pool's adapter and move
+the record to running with its pid and process group; print the session
+id, the worktree, the log path and the pid. A failure before the spawn
+removes the worktree and, when the launch created the branch, the
+branch; a failed spawn is recorded as failed, never running; a dry run
+records nothing.
 
 Every path written into the injected files is absolute: a worker process
 runs from its own home directory, not from its worktree, so a relative
@@ -258,6 +261,16 @@ def run_git(repo: str, *args: str) -> str:
     if proc.returncode != 0:
         raise Refused(f"git {' '.join(args)} failed: {proc.stderr.strip()}")
     return proc.stdout.strip()
+
+
+def local_branch_exists(repo: str, name: str) -> bool:
+    """True when ``refs/heads/<name>`` is a local branch of ``repo``."""
+    proc = subprocess.run(
+        ["git", "-C", repo, "rev-parse", "--verify", "--quiet",
+         f"refs/heads/{name}"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    return proc.returncode == 0
 
 
 def default_base(repo: str) -> str:
@@ -556,18 +569,27 @@ def write_no_symlink(path: str, text: str) -> None:
         handle.write(text)
 
 
-def remove_launch_worktree(repo: str, branch: str, worktree: str) -> None:
-    """Best-effort undo of the worktree half of a failed launch."""
-    for argv in (("worktree", "remove", "--force", worktree),
-                 ("branch", "-D", branch)):
+def remove_launch_worktree(repo: str, branch: str, worktree: str,
+                           *, delete_branch: bool = True) -> None:
+    """Best-effort undo of the worktree half of a failed launch.
+
+    A review of an existing branch did not create that branch, so
+    ``delete_branch`` is false and the branch stays exactly where it was.
+    """
+    try:
+        run_git(repo, "worktree", "remove", "--force", worktree)
+    except Refused:
+        pass
+    if delete_branch:
         try:
-            run_git(repo, *argv)
+            run_git(repo, "branch", "-D", branch)
         except Refused:
             pass
 
 
 def remove_dry_run_files(repo: str, branch: str, worktree: str,
-                         log_path: str, session_id: str) -> None:
+                         log_path: str, session_id: str,
+                         *, delete_branch: bool = True) -> None:
     """Undo everything a dry run wrote. It starts nothing, so it keeps
     nothing.
 
@@ -577,8 +599,11 @@ def remove_dry_run_files(repo: str, branch: str, worktree: str,
     behind made the launch it was rehearsing impossible — the identical
     real launch is refused for reusing a log and a branch the rehearsal
     took. Found by the panel supervisor reading its own generated prompt.
+    A review of an existing branch leaves that branch; only the worktree
+    the rehearsal created goes.
     """
-    remove_launch_worktree(repo, branch, worktree)
+    remove_launch_worktree(repo, branch, worktree,
+                           delete_branch=delete_branch)
     try:
         os.unlink(log_path)
     except OSError:
@@ -739,8 +764,22 @@ def cmd_launch(args: argparse.Namespace) -> int:
     if os.path.exists(log_path):
         return refuse(f"log file {log_path!r} already exists; logs are never reused")
 
+    # A review of an existing branch reads that branch: detached at its
+    # head, no new branch. Naming a branch that is not there is a
+    # refusal, not a throwaway cut from --base. Every other kind still
+    # cuts a new branch from the target.
+    created_branch = True
     try:
-        run_git(repo, "worktree", "add", "-b", branch, worktree, target)
+        if args.kind == "review" and args.branch:
+            if not local_branch_exists(repo, args.branch):
+                return refuse(
+                    f"branch {args.branch!r} does not exist in {repo}; "
+                    f"a review reads an existing branch")
+            run_git(repo, "worktree", "add", "--detach", worktree,
+                    args.branch)
+            created_branch = False
+        else:
+            run_git(repo, "worktree", "add", "-b", branch, worktree, target)
     except Refused as exc:
         return refuse(str(exc))
 
@@ -799,6 +838,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
             pid=None,
             pgid=None,
             worktree=worktree,
+            branch=branch,
             log=log_path,
             timeout=timeout,
             launched_by=os.environ.get("FOREMAN_SESSION"),
@@ -832,10 +872,12 @@ def cmd_launch(args: argparse.Namespace) -> int:
                 default={"sessions": {}},
             )
     except Refused as exc:
-        remove_launch_worktree(repo, branch, worktree)
+        remove_launch_worktree(repo, branch, worktree,
+                               delete_branch=created_branch)
         return refuse(str(exc))
     except OSError as exc:
-        remove_launch_worktree(repo, branch, worktree)
+        remove_launch_worktree(repo, branch, worktree,
+                               delete_branch=created_branch)
         return refuse(f"cannot write launch files: {exc.strerror or exc}")
 
     pid: int | None = None
@@ -861,7 +903,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
                         pgid=None),
                     default={"sessions": {}},
                 )
-                remove_launch_worktree(repo, branch, worktree)
+                remove_launch_worktree(repo, branch, worktree,
+                                       delete_branch=created_branch)
                 return refuse(*denied)
         try:
             pid = adapter.launch(ctx)
@@ -929,7 +972,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
                                 job.to_dict(), session_id=session_id)
     command = adapter.command_str(ctx)
     if args.dry_run:
-        remove_dry_run_files(repo, branch, worktree, log_path, session_id)
+        remove_dry_run_files(repo, branch, worktree, log_path, session_id,
+                             delete_branch=created_branch)
 
     print(f"session: {session_id}")
     print(f"worktree: {worktree}")

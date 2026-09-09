@@ -175,6 +175,9 @@ class Session(Entity):
     pgid: int | None = None
     pid_starttime: int | None = None
     worktree: str = ""
+    #: The branch the session's worktree is on. A review of an existing
+    #: branch records that branch, not a throwaway cut from it.
+    branch: str = ""
     log: str = ""
     timeout: str = ""
     launched_by: str | None = None

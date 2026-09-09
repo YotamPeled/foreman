@@ -68,6 +68,13 @@ def fake_pool():
         pools.unregister("fake")
 
 
+def git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ).stdout.strip()
+
+
 def make_repo(path: Path) -> Path:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -83,6 +90,17 @@ def make_repo(path: Path) -> Path:
     run("add", "seed.txt")
     run("commit", "-qm", "seed")
     return path
+
+
+def add_feature_branch(repo: Path) -> str:
+    """One commit on ``feature`` past ``main``; the repo is left on ``main``."""
+    git(repo, "checkout", "-qb", "feature")
+    (repo / "feature.txt").write_text("feature\n", encoding="utf-8")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "-qm", "feature")
+    head = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "main")
+    return head
 
 
 def write_spec(root: Path, name: str, text: str) -> str:
@@ -894,3 +912,114 @@ def test_prose_mentioning_python_is_still_not_a_verification_command():
             "This job is about python and testing in general.\n")
     assert launch_module.spec_problems(spec) == [
         "spec contains no verification command"]
+
+
+def test_review_of_an_existing_branch_checks_it_out_detached(
+        env, fake_pool, capsys):
+    """A review of a built branch reads that branch, detached, with no
+    throwaway cut from it.
+
+    Naming the existing branch used to run ``git worktree add -b``, which
+    git refuses, so the review had to take ``--base feature --branch
+    feature-review`` and ran on a new branch instead of the one it was
+    asked to read.
+    """
+    repo = make_repo(env / "repo")
+    feature_head = add_feature_branch(repo)
+    spec = write_spec(env, "spec.md", SPEC_OK)
+    worktree = env / "wt-review-feature"
+    rc = launch(["astra", "fake", spec, "--repo", str(repo),
+                 "--worktree", str(worktree), "--kind", "review",
+                 "--branch", "feature", "--front", "corpus",
+                 "--job", "job-rev1"])
+    assert rc == 0
+    sid = session_line(capsys.readouterr().out)
+    assert git(worktree, "rev-parse", "HEAD") == feature_head
+    assert git(worktree, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+    assert git(repo, "branch", "--list", "feature-review") == ""
+    assert git(repo, "branch", "--list", "foreman/*") == ""
+    assert git(repo, "rev-parse", "feature") == feature_head
+    record = _roster_sessions()[sid]
+    assert record["branch"] == "feature"
+    jobs = store.read_ledger(paths.front_jobs_path("corpus"))
+    assert jobs[-1]["id"] == "job-rev1"
+    assert jobs[-1]["branch"] == "feature"
+    job_text = (worktree / "FOREMAN-JOB.md").read_text(encoding="utf-8")
+    assert "- branch: feature" in job_text
+    assert "- target: main" in job_text
+
+
+def test_review_of_existing_branch_dry_run_leaves_the_branch(
+        env, fake_pool, capsys):
+    """A dry-run review of an existing branch prints the command, takes
+    the worktree back, and leaves the branch exactly where it was."""
+    repo = make_repo(env / "repo")
+    feature_head = add_feature_branch(repo)
+    spec = write_spec(env, "spec.md", SPEC_OK)
+    worktree = env / "wt-review-dry"
+    rc = launch(["astra", "fake", spec, "--repo", str(repo),
+                 "--worktree", str(worktree), "--kind", "review",
+                 "--branch", "feature", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "command:" in out
+    assert not worktree.exists()
+    assert git(repo, "rev-parse", "feature") == feature_head
+    assert git(repo, "branch", "--list", "feature-review") == ""
+    assert not paths.roster_path().exists()
+
+
+def test_review_of_a_missing_branch_is_refused(env, fake_pool, capsys):
+    """A review of a branch that is not there names the branch and
+    creates nothing."""
+    repo = make_repo(env / "repo")
+    spec = write_spec(env, "spec.md", SPEC_OK)
+    worktree = env / "wt-review-nope"
+    rc = launch(["astra", "fake", spec, "--repo", str(repo),
+                 "--worktree", str(worktree), "--kind", "review",
+                 "--branch", "nope"])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert (f"branch 'nope' does not exist in {repo}; "
+            f"a review reads an existing branch") in err
+    assert not worktree.exists()
+    assert not paths.roster_path().exists()
+
+
+def test_implement_of_an_existing_branch_is_still_refused(
+        env, fake_pool, capsys):
+    """Implement still cuts a new branch, so naming one that exists is
+    refused the way it always was."""
+    repo = make_repo(env / "repo")
+    feature_head = add_feature_branch(repo)
+    spec = write_spec(env, "spec.md", SPEC_OK)
+    worktree = env / "wt-impl-feature"
+    rc = launch(["muse", "fake", spec, "--repo", str(repo),
+                 "--worktree", str(worktree), "--kind", "implement",
+                 "--branch", "feature"])
+    assert rc != 0
+    capsys.readouterr()
+    assert not worktree.exists()
+    assert git(repo, "rev-parse", "feature") == feature_head
+
+
+def test_failed_review_of_existing_branch_leaves_the_branch(
+        env, fake_pool, capsys, monkeypatch):
+    """A failed review launch removes its worktree and does not delete
+    the branch it was reading."""
+    repo = make_repo(env / "repo")
+    feature_head = add_feature_branch(repo)
+    spec = write_spec(env, "spec.md", SPEC_OK)
+
+    def boom(*args, **kwargs):
+        raise launch_module.Refused("no template today")
+
+    monkeypatch.setattr(launch_module, "render_role_template", boom)
+    worktree = env / "wt-review-orphan"
+    assert launch(["astra", "fake", spec, "--repo", str(repo),
+                   "--worktree", str(worktree), "--kind", "review",
+                   "--branch", "feature"]) != 0
+    capsys.readouterr()
+    assert not worktree.exists()
+    assert git(repo, "rev-parse", "feature") == feature_head
+    assert not paths.roster_path().exists()
