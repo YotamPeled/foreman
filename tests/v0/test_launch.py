@@ -325,16 +325,22 @@ def test_dry_run_prints_muse_command(env, capsys, effort):
     assert "muse exec" in out
     assert "--model muse-spark-1.3-contributor" in out
     assert f"--reasoning-effort {effort}" in out
-    assert "--yolo" in out
+    assert "--approval-mode never" in out
+    assert "--json" in out
+    assert "--yolo" not in out
     assert f"--workspace {worktree}" in out
     assert "--prompt-file" in out and "FOREMAN-JOB.md" in out
     assert "### finished rc=$?" in out
     assert out.index("### finished rc=$?") < out.index("| tee")
     assert "(not started --dry-run)" in out
-    # A dry run starts nothing, so it records nothing: the files exist,
-    # but the roster is left as found and no pid file is written.
-    assert (Path(worktree) / "FOREMAN-JOB.md").is_file()
-    assert (Path(worktree) / "FOREMAN-ROLE.md").is_file()
+    # A dry run starts nothing and keeps nothing. It builds the real
+    # worktree, job file and log to print the real command, and then takes
+    # them back: leaving them made the launch it was rehearsing impossible,
+    # because the identical real launch is refused for reusing a log and a
+    # branch the rehearsal took.
+    assert not Path(worktree).exists()
+    assert not paths.session_dir(sid).exists()
+    assert not paths.session_log_path(sid).exists()
     assert not paths.session_pid_path(sid).exists()
     assert not paths.roster_path().exists()
 
@@ -411,7 +417,8 @@ def test_muse_argv_is_exactly_the_proven_shape(env):
         "muse", "exec",
         "--model", "muse-spark-1.3-contributor",
         "--reasoning-effort", "high",
-        "--yolo",
+        "--approval-mode", "never",
+        "--json",
         "--workspace", str(ctx.worktree),
         "--prompt-file", str(ctx.job_path),
     ]
@@ -463,8 +470,11 @@ def test_muse_detach_defaults_to_systemd_run(env, monkeypatch):
     argv = muse_pool.outer_argv(ctx)
     # The worker is handed over as a script file, never as text on a
     # systemd command line, where $$ means a literal dollar.
-    assert argv == ["systemd-run", "--user", "--collect",
-                    f"--unit=foreman-{ctx.session.id}", "bash",
+    assert argv == ["systemd-run", "--user",
+                    f"--unit=foreman-{ctx.session.id}",
+                    f"--working-directory={ctx.worktree}",
+                    "--property=RuntimeMaxSec=1200",
+                    "--service-type=exec", "bash",
                     str(ctx.pid_path.parent / "run.sh")]
     assert "muse exec" in muse_pool.inner_command(ctx)
 
@@ -560,7 +570,7 @@ def test_dry_run_leaves_roster_untouched(env, fake_pool, capsys):
                    "--worktree", worktree, "--dry-run"]) == 0
     capsys.readouterr()
     assert paths.roster_path().read_bytes() == before
-    assert (Path(worktree) / "FOREMAN-JOB.md").is_file()
+    assert not Path(worktree).exists()
 
 
 def test_worker_receives_role_prompt(env, fake_pool, capsys):
@@ -603,7 +613,7 @@ def test_launch_records_process_group(env, fake_pool, capsys):
     record = _roster_sessions()[sid]
     assert record["pid"] == os.getpid()
     assert record["pgid"] == record["pid"]
-    assert muse_pool.inner_command(make_ctx(env)).startswith("setsid --wait ")
+    assert muse_pool.inner_command(make_ctx(env)).startswith("bash -c ")
 
 
 @pytest.mark.parametrize("name", ["FOREMAN-JOB.md", "FOREMAN-ROLE.md"])
@@ -823,3 +833,35 @@ def test_no_verification_sentence_refused(env, fake_pool, capsys):
                       "Do the thing.\nNo verification is required.\n")
     assert launch(["muse", "fake", spec, "--repo", str(repo)]) != 0
     assert "verification" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("check", [
+    "Run the check with: python app.py",
+    "Run the check with: python3 tools/verify.py",
+    "Run the check with: node index.js",
+    "Run the check with: bash scripts/ci.sh",
+    "Run the check with: ./check.sh",
+])
+def test_a_plain_interpreter_run_counts_as_a_verification_command(check):
+    """An interpreter run against a file is a check like any other.
+
+    The hint list took `python -m` and `python -c` and refused
+    `python app.py`, the most ordinary check a small program has — so the
+    version two proof's spec was refused for "no verification command" and
+    reworded to satisfy the checker. Rewording a spec to please a checker
+    is the defect this check exists to prevent on the other side, so the
+    checker is what gets fixed.
+    """
+    spec = ("WHAT: do the thing.\nINPUTS: a file.\nOUTPUTS: a file.\n"
+            "OUT OF SCOPE: everything else.\n" + check + "\n")
+    assert launch_module.spec_problems(spec) == []
+
+
+def test_prose_mentioning_python_is_still_not_a_verification_command():
+    """The extension, or the leading ./, is what keeps the widened check
+    from passing a spec that merely talks about the language."""
+    spec = ("WHAT: do the thing.\nINPUTS: a file.\nOUTPUTS: a file.\n"
+            "OUT OF SCOPE: everything else.\n"
+            "This job is about python and testing in general.\n")
+    assert launch_module.spec_problems(spec) == [
+        "spec contains no verification command"]

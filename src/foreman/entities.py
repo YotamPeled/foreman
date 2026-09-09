@@ -15,6 +15,9 @@ TASK_STATES = ("waiting", "ready", "active", "built", "landed")
 JOB_STATES = ("planned", "queued", "running", "returned", "verified", "failed", "killed")
 JOB_KINDS = ("implement", "review", "merge", "research", "verify")
 JOB_ROLES = ("opus", "muse", "astra", "grok")
+#: Roles a roster session may carry: every worker role, plus the two
+#: interactive ones the launcher and `register` mint.
+SESSION_ROLES = JOB_ROLES + ("supervisor", "foreman", "merge-desk")
 MERGE_STATES = ("requested", "merging", "landed", "failed")
 SESSION_STATES = ("running", "exited", "stalled", "killed")
 RULING_SCOPES = ("swarm", "front")
@@ -60,6 +63,14 @@ class Front(Entity):
     supervisor: str | None = None
     brief_path: str = ""
     state: str = "queued"
+    #: How this front's built tasks land: "" (the merge desk lands them
+    #: from a merge request) or "self" (the front's own supervisor calls
+    #: `task landed` itself — Foreman's own fronts, by owner ruling).
+    merge: str = ""
+    #: A front that exists to try the runtime out, not to ship anything.
+    #: It is marked wherever the front appears, so nobody reads a task a
+    #: probe job moved as work the front actually did.
+    fixture: bool = False
 
 
 @dataclass(frozen=True)
@@ -73,6 +84,8 @@ class Task(Entity):
     after: list[str] = field(default_factory=list)
     timeout: str = ""
     land_on: str = ""
+    #: The brief's `core = true`: only a core task may take an Opus worker.
+    core: bool = False
     state: str = "waiting"
     units_done: int = 0
     units_total: int = 0
@@ -106,6 +119,7 @@ class Job(Entity):
 @dataclass(frozen=True)
 class Merge(Entity):
     id: str | None = None
+    front: str = ""
     branch: str = ""
     tasks: list[str] = field(default_factory=list)
     target: str = ""
@@ -115,6 +129,12 @@ class Merge(Entity):
     requested_at: str | None = None
     landed_at: str | None = None
     by: str | None = None
+    #: The desk session holding this record between `take` and `land`/`fail`.
+    taken_by: str | None = None
+    taken_at: str | None = None
+    #: Why a `fail` refused the landing; the tasks stay built.
+    fail_reason: str = ""
+    failed_at: str | None = None
 
 
 @dataclass(frozen=True)
@@ -161,6 +181,9 @@ class Allocation(Entity):
 
 @dataclass(frozen=True)
 class SlotGrant(Entity):
+    #: A grant is released by appending a revised copy of its own line, so
+    #: it needs an identity to fold on; held slots are the open grants.
+    id: str | None = None
     pool: str = ""
     front: str = ""
     role: str = ""
@@ -168,6 +191,8 @@ class SlotGrant(Entity):
     session: str | None = None
     granted_at: str | None = None
     released_at: str | None = None
+    #: Why the slot came back: "returned", "killed", "failed".
+    released_because: str = ""
 
 
 @dataclass(frozen=True)
@@ -186,6 +211,11 @@ class Evidence(Entity):
     status: str = ""
     command: str = ""
     output_ref: str = ""
+    #: The spec the verified job was launched from. A verification is a
+    #: claim about a particular piece of work, and the spec is what says
+    #: which piece: without it, evidence from a probe job and evidence from
+    #: the front's own work read identically on the ledger.
+    spec_path: str = ""
 
 
 @dataclass(frozen=True)

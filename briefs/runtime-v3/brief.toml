@@ -1,0 +1,117 @@
+name      = "runtime-v3"
+order     = 3
+want      = """
+Every runtime friction the overnight fronts (runtime-v2, panel, skills) found by running Foreman on itself,
+fixed: sessions can be killed and relaunched for real, units and job outcomes are recorded truthfully,
+launches fail by name instead of hanging, supervisors record their own rulings, and the screen stops
+showing finished fronts as work. All of it is on the swarm findings ledger at
+/mnt/ssd/projects/foreman-scratch/ledger/findings.md; every task below names its origin there.
+"""
+done-when = "On an isolated state directory: `foreman kill` ends a running job and a summoned supervisor and both read killed on the roster; `foreman relaunch` of a summoned supervisor produces a session that writes a checkpoint within two minutes without a keyboard; a job launched with `--units 4` on a four-unit task and verified marks the task 4/4; a job that commits its branch and is then killed on its time limit is verified with a sentence and its units count; a windowed launch with no --workspace either lands on the launcher's default workspace or is refused by name in under a second; a supervisor writes a rule on its own front and a later launch injects it; a done front prints once in a Done strip and nowhere else; `front close` on a front whose PR merged moves built tasks to landed with the merge sha — all CONFIRMED by running."
+land-on   = "main"
+reviews   = "on request"
+after     = ["runtime-v2"]
+prefer    = 9
+
+[allocation]
+muse  = 5
+opus  = 1
+astra = 1
+grok  = 1
+
+[[task]]
+title   = "kill and relaunch"
+core    = true
+scope   = """
+WHAT: `foreman kill <session|job>`: ends the process the launcher started (unit stop, then the pid),
+writes the roster/job line killed with who and why, releases the slot; the owner and foreman may kill
+anything, a supervisor only what it launched, the desk nothing. `foreman relaunch` never resumes a vendor
+session: it summons a fresh one with the role prompt as the positional argument, the prompt pointing at the
+front's latest checkpoint, and records the new vendor id on the roster under the same Foreman session; the
+collector's automatic relaunch of a dead supervisor uses the same path; `launch supervisor` while a live
+one exists keeps refusing and names `kill` then `relaunch`.
+INPUTS: findings 'relaunch never resumes' (rul-pzvmwko) and 'no foreman kill' on the ledger; DESIGN §12;
+launch.py, collector.py.
+OUTPUTS: the two verbs, roster lines, tests driving both on a fixture with a fake vendor script.
+OUT OF SCOPE: headless supervisors.
+"""
+verify  = "python -m pytest tests -q"
+size    = 1
+after   = []
+
+[[task]]
+title   = "units and job outcomes told truthfully"
+core    = true
+scope   = """
+WHAT: `--units` on launch takes a COUNT (default: every unit the task still lacks), never unit ids; a job
+verified with `--units <n>` credits n; `job verify` accepts a job the collector marked failed or killed when
+its branch moved past its base, with a required `--because "<sentence>"` that lands on the job line and the
+screen; the collector records `returned-with-work` (branch moved, no marker) apart from `failed`; a job
+whose worker exited clean reads returned within one tick, never running. `task built` keeps refusing under
+count; overshoot stays accepted.
+INPUTS: findings '--units 4 names unit four', 'commit then die = failed', 'job left running after clean
+exit'; progress.py, launch.py, collector.py.
+OUTPUTS: verbs, collector states, tests for each sentence above.
+OUT OF SCOPE: retrying jobs automatically.
+"""
+verify  = "python -m pytest tests -q"
+size    = 1
+after   = []
+
+[[task]]
+title   = "launches fail by name, supervisors write front rules, commissioned tasks"
+scope   = """
+WHAT: a windowed launch (supervisor, desk, foreman) with no --workspace uses `default_workspace` from
+foreman.toml and otherwise is refused by name before anything is written; `foreman rule <front>` is open to
+that front's supervisor (swarm rules stay foreman-only), the ruling injected into later launches; `foreman
+task add <front> --title --scope --verify --size [--after]` lets a supervisor append a task to a running
+front so commissioned work hangs under a task, validated like a brief task and shown on the screen with a
+'added by supervisor' mark.
+INPUTS: findings 'windowed launch without --workspace hangs 30s', 'rule <front> foreman-only',
+'commissioned work runs task-less'; launch.py, verbs.py, fronts.py, progress.py.
+OUTPUTS: the three behaviours with tests.
+OUT OF SCOPE: editing existing tasks.
+"""
+verify  = "python -m pytest tests -q"
+size    = 1
+after   = []
+
+[[task]]
+title   = "the screen and the install tell the truth"
+scope   = """
+WHAT: fronts at state done print once in a `Done:` strip (name, landed n/n, merge sha, when) and appear in
+no other block, Capacity included; `front close` on a front with a merged PR (`--merged <sha>`) moves every
+built task to landed with that sha; `foreman cap`, `front allocate` and any change to the installed package
+push a collector reload (`foreman collector restart` from a post-merge hook and from the verbs) so the
+'collector stale' flag needs no hand restart; the installed `foreman` command runs from a main-only checkout
+that the post-merge hook fast-forwards, never from whichever branch the primary checkout has out (document
+the layout in README and `foreman doctor` reports a CLI that runs off a branch).
+INPUTS: findings 'done fronts still in Working', 'runtime-v2 7 built 0 landed', 'collector stale on every
+branch advance', 'installed CLI runs whatever branch the primary checkout has'; status.py, fronts.py,
+config.py, packaging/.
+OUTPUTS: Done strip, front close --merged, hooks, doctor check, README section, tests.
+OUT OF SCOPE: the panel (reads status; nothing to do here).
+"""
+verify  = "python -m pytest tests -q && foreman doctor"
+size    = 1
+after   = []
+
+[[task]]
+title   = "the proof"
+scope   = """
+WHAT: run this front's done-when on an isolated state directory (FOREMAN_STATE/FOREMAN_CONFIG carried by
+the launcher, proven on the skills front), one CONFIRMED evidence record per clause; every friction found is
+a finding on this front and, if under a page, a job here.
+INPUTS: the four tasks above landed on the front branch.
+OUTPUTS: evidence records, findings, the PR against main.
+OUT OF SCOPE: anything the done-when does not name.
+"""
+verify  = "foreman doctor && foreman status | grep -c Done"
+size    = 1
+after   = ["kill and relaunch", "units and job outcomes told truthfully", "launches fail by name, supervisors write front rules, commissioned tasks", "the screen and the install tell the truth"]
+
+[[rule]]
+text = "Every worker through foreman launch; every progress step through the verbs; every friction with Foreman itself is a finding and, if under a page, a job on this front."
+
+[[rule]]
+text = "A repair job launches with zero units; a harness never inherits FOREMAN_SESSION, FOREMAN_STATE or FOREMAN_CONFIG from its caller."

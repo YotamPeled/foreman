@@ -4,9 +4,10 @@ One tick, every two seconds: read the process table, ask each live
 session's pool adapter for cpu seconds and finish marker, read each
 worktree mtime, write the observed fields back onto the roster snapshot,
 and recompute ``observed.json`` (docs/DESIGN.md section 7, only the
-numbers v0 has a source for). Then the six anomalies of this version
+numbers v0 has a source for). Then the seven anomalies of this version
 (section 10): supervisor silent, job stalled, job timeout (kill),
-job tail, intruder, unregistered writer. Dead supervisors are flagged
+job tail, intruder, unregistered writer, collector stale. Dead
+supervisors are flagged
 for a person to relaunch from the checkpoint; the collector never
 relaunches by itself.
 
@@ -24,6 +25,7 @@ import argparse
 import fcntl
 import os
 import shutil
+import subprocess
 import sys
 import time
 import tomllib
@@ -32,7 +34,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import paths, procs, store
+from . import capacity, paths, procs, store
 from .caller import OWNER
 from .cli import subcommand
 from .entities import Session
@@ -59,7 +61,19 @@ REASSERT_KINDS = (
     "job timeout",
     "job tail",
     "intruder",
+    "collector stale",
+    "monitor stale",
+    "monitor alert",
 )
+
+#: Opened when the checkout moved under a running collector: the screen it
+#: writes can be silently wrong, which weighs the same as a silent
+#: supervisor. The subject is the collector itself.
+COLLECTOR_STALE_KIND = "collector stale"
+COLLECTOR_SUBJECT = "collector"
+
+#: The systemd user unit the collector runs as where one is installed.
+COLLECTOR_UNIT = "foreman-collector.service"
 
 JOB_LEDGER_NAMES = ("tasks.jsonl", "jobs.jsonl", "evidence.jsonl",
                     "findings.jsonl", "measurements.jsonl")
@@ -106,14 +120,21 @@ def load_config(path: str | Path | None = None) -> CollectorConfig:
         if isinstance(markers, list) and all(
                 isinstance(m, str) and m for m in markers):
             cfg.vendor_markers = tuple(markers)
-    pools = raw.get("pools")
-    if isinstance(pools, dict):
+    # `[pool.<name>].cap` is the owner's word on how much a pool may hold
+    # (see :mod:`foreman.config`), so observed.json carries the same number
+    # the launcher refuses against; `[pools.<name>].slots_total` is the
+    # older spelling and still wins where both are written.
+    for table_name in ("pool", "pools"):
+        pools = raw.get(table_name)
+        if not isinstance(pools, dict):
+            continue
         for name, entry in pools.items():
             if not isinstance(entry, dict):
                 continue
-            for key in ("slots_total", "slots"):
+            for key in ("cap", "slots_total", "slots"):
                 total = entry.get(key)
-                if isinstance(total, int) and total >= 0:
+                if isinstance(total, int) and not isinstance(total, bool) \
+                        and total >= 0:
                     cfg.pools_total[name] = total
                     break
     return cfg
@@ -215,6 +236,100 @@ def _worktree_mtime(worktree: str | None) -> float | None:
     return newest
 
 
+def _package_dir() -> Path:
+    """The directory holding this package's source files."""
+    return Path(__file__).resolve().parent
+
+
+def _checkout_root() -> Path:
+    """The checkout this module was imported from (``src/`` layout)."""
+    return Path(__file__).resolve().parent.parent.parent
+
+
+def _git_head(checkout: Path | None = None) -> str | None:
+    """The checkout's git head, or None where there is none to record.
+
+    A missing ``git``, a directory that is not a checkout and an installed
+    wheel all degrade to None, never to an error: there is no head for the
+    collector to be stale against.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(checkout or _checkout_root()),
+             "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, ValueError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def _source_mtime(package: Path | None = None) -> float | None:
+    """Newest mtime across the package's source files, None if unreadable."""
+    newest: float | None = None
+    try:
+        for path in (package or _package_dir()).rglob("*.py"):
+            try:
+                moment = path.stat().st_mtime
+            except OSError:
+                continue
+            if newest is None or moment > newest:
+                newest = moment
+    except OSError:
+        return None
+    return newest
+
+
+def _check_collector_staleness(cstate: dict, now_iso: str,
+                               note_open, asserted: set) -> None:
+    """Open ``collector stale`` when the checkout moved under this process.
+
+    The record in collector.json is what this process started with: a fresh
+    collector baselines it and never flags, while a running one flags when
+    the head moved or a source file is newer than the recorded mtime. A
+    stale tick keeps the old record so the line stays open until a restart
+    re-records; a fresh tick adopts the current values.
+    """
+    recorded_head = cstate.get("code_head")
+    recorded_mtime = cstate.get("code_mtime")
+    current_head = _git_head()
+    current_mtime = _source_mtime()
+    head_stale = (
+        isinstance(recorded_head, str) and bool(recorded_head)
+        and isinstance(current_head, str) and bool(current_head)
+        and current_head != recorded_head)
+    mtime_stale = (
+        isinstance(recorded_mtime, (int, float))
+        and isinstance(current_mtime, (int, float))
+        and current_mtime > recorded_mtime)
+    if head_stale or mtime_stale:
+        note_open(
+            COLLECTOR_STALE_KIND, COLLECTOR_SUBJECT,
+            f"collector stale since {now_iso} — foreman collector restart",
+            asserted)
+        return
+    if "code_head" not in cstate or current_head is not None:
+        cstate["code_head"] = current_head
+    if "code_mtime" not in cstate or current_mtime is not None:
+        cstate["code_mtime"] = current_mtime
+
+
+def record_startup_version() -> None:
+    """Record the checkout this process started from.
+
+    The daemon calls this once at startup, never on a tick: a restarted
+    collector therefore starts fresh by construction, and the tick's resolve
+    pass closes the old ``collector stale`` line with nothing to close by
+    hand. Reading the head costs about a millisecond and the source scan
+    far less, so neither needs a cache.
+    """
+    state = _load_state()
+    state["code_head"] = _git_head()
+    state["code_mtime"] = _source_mtime()
+    store.write_snapshot(paths.collector_path(), state)
+
+
 def _load_state() -> dict:
     state = store.read_snapshot(paths.collector_path(), default=None)
     if not isinstance(state, dict):
@@ -253,31 +368,33 @@ def _relaunch_count(session_id: str, state: dict, now: datetime,
     return count
 
 
-def _release_slots(session_id: str, now_iso: str) -> None:
+def _release_slots(session_id: str, now_iso: str, because: str) -> None:
     """Release every still-open slot grant for ``session_id``.
 
     Called on death, whatever happens next: a grant is held by a live
     session, so a dead, finished or killed session must not keep holding
-    one. Folded last-wins, so an already-released grant is not released
-    twice.
+    one. This is the moment a slot comes back, and it is why the collector
+    is where the killing lives: a job the screen shows as running an hour
+    after somebody stopped it is exactly the lie this daemon exists to
+    prevent. Folded last-wins, so an already-released grant is not
+    released twice.
     """
-    try:
-        records = store.read_ledger(paths.slots_path())
-    except OSError:
-        return
-    folded: dict[tuple, dict] = {}
-    for record in records:
-        folded[(record.get("pool"), record.get("session"),
-                record.get("job"), record.get("granted_at"))] = record
-    for record in folded.values():
-        if record.get("session") == session_id and \
-                record.get("released_at") is None:
-            store.append_ledger(paths.slots_path(),
-                                dict(record, released_at=now_iso))
+    capacity.release_for_session(session_id, now_iso, because)
+
+
+def _stopped_by(record: dict) -> str | None:
+    """The session that stopped this one, where a Foreman verb did it.
+
+    A verb that stops a session writes its own id onto the roster record;
+    a process that merely vanished leaves nothing, and then the job record
+    says only that it went, naming nobody.
+    """
+    who = record.get("killed_by")
+    return who if isinstance(who, str) and who else None
 
 
 def _mark_job(front: str | None, job_id: str | None, to_state: str,
-              stamp: str | None) -> None:
+              stamp: str | None, by: str | None = None) -> None:
     """Move a job to ``to_state``. A terminal state is terminal: when the
     latest record for the job is already returned, verified, failed or
     killed, nothing is appended, so a returned event is never duplicated
@@ -300,7 +417,12 @@ def _mark_job(front: str | None, job_id: str | None, to_state: str,
     revised = dict(latest, state=to_state)
     if stamp is not None and to_state == "returned":
         revised["returned_at"] = stamp
-    store.append_ledger(paths.front_jobs_path(front), revised)
+    if to_state == "killed":
+        # A killed line is authored by whoever stopped the job, and by
+        # nobody where the process merely vanished. Carrying the `by` of
+        # the line it revises would name the launcher as the killer.
+        revised.pop("by", None)
+    store.append_ledger(paths.front_jobs_path(front), revised, session_id=by)
 
 
 def _tick_lock_path() -> Path:
@@ -411,6 +533,7 @@ def _live_supervisor_for(front: str | None, sessions: dict,
 
 def _tick_inner(moment: datetime, now_iso: str,
                 config: CollectorConfig) -> dict:
+    from .pools import _common as pool_common
     from .pools import get as get_pool
 
     table = procs.snapshot()
@@ -426,16 +549,22 @@ def _tick_inner(moment: datetime, now_iso: str,
     cstate = _load_state()
     baselines = cstate["sessions"]
 
+    # Anomalies this tick opened (not merely reasserted): each fires one
+    # on-alert hook after the state writes below are durable.
+    opened: list[tuple[str, str, str]] = []
+
     def note_open(kind: str, subject: str, detail: str,
-                 asserted: set) -> None:
+                  asserted: set) -> None:
         asserted.add((kind, subject))
         if (kind, subject) not in open_now:
             entry = store.append_ledger(
                 paths.anomalies_path(),
                 _anomaly_line(kind, subject, now_iso, detail))
             open_now[(kind, subject)] = entry
+            opened.append((kind, subject, detail))
 
     asserted: set[tuple[str, str]] = set()
+    _check_collector_staleness(cstate, now_iso, note_open, asserted)
     roster_updates: dict[str, dict] = {}
     session_view: dict[str, dict] = {}
     alive_count = 0
@@ -573,7 +702,7 @@ def _tick_inner(moment: datetime, now_iso: str,
             # checkpoint replayed, and supervisor tool grants; a headless
             # worker spawn provides none of those, so the anomaly stays
             # open saying a person must relaunch.
-            _release_slots(sid, now_iso)
+            _release_slots(sid, now_iso, "failed")
             if state in RUNNING_LIKE:
                 note_open("supervisor dead", sid,
                           f"supervisor {sid} dead; a person must relaunch it "
@@ -608,10 +737,42 @@ def _tick_inner(moment: datetime, now_iso: str,
                           f"{config.supervisor_silent_seconds:.0f}s and runs "
                           f"no jobs", asserted)
         elif worker and pid is not None and not alive:
-            if finish:
+            # The unit is the completion signal; the marker is the
+            # fallback. Workers spawn without --collect, so a finished
+            # unit still answers Result/ExecMainStatus here — and a unit
+            # that says it failed failed even if it wrote a marker.
+            try:
+                unit_failed = pool_common.unit_reports_failure(
+                    pool_common.unit_status(sid))
+            except Exception:  # noqa: BLE001 - status never blocks a tick
+                unit_failed = False
+            if unit_failed:
+                _mark_job(record.get("front"), record.get("job"),
+                          "failed", None)
+                _release_slots(sid, now_iso, "failed")
+            elif finish:
                 _mark_job(record.get("front"), record.get("job"),
                           "returned", now_iso)
-            _release_slots(sid, now_iso)
+                _release_slots(sid, now_iso, "returned")
+            else:
+                # The process is gone and the log carries no finish
+                # marker, so the job did not return: it was stopped. It
+                # becomes killed on this tick rather than staying running
+                # forever, and the line names the session that stopped it
+                # where a Foreman verb did and nobody where the process
+                # merely vanished.
+                _mark_job(record.get("front"), record.get("job"),
+                          "killed", now_iso, by=_stopped_by(record))
+                _release_slots(sid, now_iso, "killed")
+            # The status above has been read, so the finished unit can be
+            # forgotten on the collector's own schedule; without this every
+            # finished unit lingers as failed. Best-effort and only while
+            # the session is still around to own the unit.
+            if unit_failed or state in RUNNING_LIKE:
+                try:
+                    pool_common.reset_failed_unit(sid)
+                except Exception:  # noqa: BLE001 - cleanup never blocks
+                    pass
             if state in RUNNING_LIKE:
                 update["state"] = "exited"
         elif worker and alive and not terminal_session:
@@ -628,7 +789,7 @@ def _tick_inner(moment: datetime, now_iso: str,
                     update["state"] = "killed"
                     _mark_job(record.get("front"), record.get("job"),
                               "failed", None)
-                    _release_slots(sid, now_iso)
+                    _release_slots(sid, now_iso, "killed")
                     note_open("job timeout", sid,
                               f"elapsed {elapsed:.0f}s past timeout "
                               f"'{record.get('timeout')}' (job {job}); killed",
@@ -649,7 +810,7 @@ def _tick_inner(moment: datetime, now_iso: str,
                     update["state"] = "exited"
                     _mark_job(record.get("front"), record.get("job"),
                               "returned", now_iso)
-                    _release_slots(sid, now_iso)
+                    _release_slots(sid, now_iso, "returned")
             elif active_at is not None and (
                     moment - _parse_time(active_at)).total_seconds() > \
                     config.job_stalled_seconds:
@@ -726,6 +887,8 @@ def _tick_inner(moment: datetime, now_iso: str,
                           f"ledger line in {label} claims unknown "
                           f"session '{by}'", asserted)
 
+    monitors_view = _monitors_tick(moment, now_iso, note_open, asserted)
+
     # Resolve what this tick no longer asserts. Unregistered-writer lines
     # clear only when the roster learns the id: the ledger line itself is
     # append-only, so absence from this tick's scan proves nothing. A dead
@@ -793,8 +956,17 @@ def _tick_inner(moment: datetime, now_iso: str,
         "jobs": _jobs_view(moment),
         "pools": _pools_view(config),
         "swarm": _swarm_view(moment, len(sessions), alive_count),
+        "monitors": monitors_view,
     }
     store.write_snapshot(paths.observed_path(), observed_payload)
+    if opened:
+        # Hooks observe after the writes are durable, never inside them:
+        # a failing hook prints and the tick's records stand either way.
+        from . import hooks as _hooks
+
+        for kind, subject, detail in opened:
+            _hooks.fire("on-alert", {"kind": kind, "subject": subject,
+                                     "detail": detail})
     return observed_payload
 
 
@@ -908,6 +1080,135 @@ def _swarm_view(moment: datetime, registered: int, observed: int) -> dict:
     return view
 
 
+def _front_monitor_decls() -> dict[str, tuple[dict, list[dict]]]:
+    """Every front with a record: (folded record, its monitor list)."""
+    try:
+        names = sorted(entry.name for entry in Path(paths.fronts_dir()).iterdir()
+                       if entry.is_dir())
+    except OSError:
+        return {}
+    out: dict[str, tuple[dict, list[dict]]] = {}
+    for name in names:
+        try:
+            records = store.read_ledger(paths.front_record_path(name))
+        except OSError:
+            continue
+        folded = store.fold_by_id(records)
+        if not folded:
+            continue
+        record = folded[-1]
+        declared = record.get("monitors")
+        declared = declared if isinstance(declared, list) else []
+        out[name] = (record, [entry for entry in declared
+                              if isinstance(entry, dict)])
+    return out
+
+
+def _monitors_tick(moment: datetime, now_iso: str,
+                   note_open, asserted: set) -> dict:
+    """Snapshot the latest measurement per monitor; flag stale and alert.
+
+    Stale fires when the newest measurement is older than twice the
+    monitor's ``every`` cadence, and only where ``every`` parses as a
+    duration: an event cadence like ``landing`` or ``job`` carries no
+    clock to be stale against. Alert fires when the monitor's alert
+    expression holds of the latest value (the value/of ratio where a
+    denominator is known, else the raw value). Both are anomalies of the
+    same kind the collector already raises, under Problems. A monitor
+    with no measurement yet is neither stale nor alerting.
+    """
+    from . import monitors as _monitors
+
+    view: dict[str, dict] = {}
+    for front, (_record, declared) in _front_monitor_decls().items():
+        try:
+            ledger = store.read_ledger(paths.front_measurements_path(front))
+        except OSError:
+            ledger = []
+        per: dict[str, dict] = {}
+        for decl in declared:
+            measure = str(decl.get("measure") or "").strip()
+            if not measure:
+                continue
+            matched = _monitors.matching_measurements(ledger, decl)
+            if not matched:
+                continue
+            latest = matched[-1]
+            previous = matched[-2] if len(matched) > 1 else None
+            value = latest.get("value")
+            if not isinstance(value, (int, float)) or isinstance(value, bool):
+                continue
+            stamped = latest.get("at")
+            at_moment = _parse_time(stamped)
+            age_s = (moment - at_moment).total_seconds() \
+                if at_moment is not None else None
+            question = str(decl.get("question") or measure)
+            subject = f"{front}:{measure}"
+            cadence = parse_duration(decl.get("every"))
+            stale = bool(cadence is not None and age_s is not None
+                         and age_s > 2 * cadence)
+            if stale:
+                assert isinstance(cadence, (int, float))
+                note_open(
+                    "monitor stale", subject,
+                    f"monitor '{question}' on front '{front}' stale: "
+                    f"last measurement "
+                    f"{f'{age_s:.0f}s' if age_s is not None else 'unknown'} "
+                    f"ago (every {decl.get('every')})",
+                    asserted)
+            effective = _monitors.effective_value(latest, decl)
+            alert_text = decl.get("alert")
+            alerting = bool(
+                effective is not None and isinstance(alert_text, str)
+                and alert_text.strip()
+                and _monitors.evaluate_alert(effective, alert_text))
+            if alerting:
+                shown = latest.get("of")
+                if isinstance(shown, (int, float)) and not isinstance(
+                        shown, bool):
+                    reading = (f"{_monitors.format_number(value)}/"
+                               f"{_monitors.format_number(shown)}")
+                else:
+                    reading = _monitors.format_number(value)
+                note_open(
+                    "monitor alert", subject,
+                    f"monitor '{question}' on front '{front}' alert: "
+                    f"{reading} {str(alert_text).strip()}",
+                    asserted)
+            entry: dict = {
+                "question": question,
+                "measure": measure,
+                "value": float(value),
+                "at": stamped,
+            }
+            unit = decl.get("unit")
+            if isinstance(unit, str) and unit.strip():
+                entry["unit"] = unit.strip()
+            for key in ("of",):
+                val = latest.get(key)
+                if isinstance(val, (int, float)) and not isinstance(val, bool):
+                    entry[key] = float(val)
+            every = decl.get("every")
+            if isinstance(every, str) and every.strip():
+                entry["every"] = every.strip()
+            if isinstance(alert_text, str) and alert_text.strip():
+                entry["alert"] = alert_text.strip()
+            entry["stale"] = stale
+            entry["alerting"] = alerting
+            prev_value = previous.get("value") if isinstance(
+                previous, dict) else None
+            if isinstance(prev_value, bool) or not isinstance(
+                    prev_value, (int, float)):
+                prev_value = None
+            entry["trend"] = _monitors.trend_of(
+                float(prev_value) if prev_value is not None else None,
+                float(value))
+            per[measure] = entry
+        if per:
+            view[front] = per
+    return view
+
+
 #: Fallback when the checkout's packaging/ directory is not around
 #: (an installed package); kept identical to the template file.
 UNIT_TEMPLATE = """\
@@ -954,6 +1255,52 @@ def render_unit() -> str:
             .replace("@CONFIG_DIR@", str(paths.config_dir())))
 
 
+def _service_active() -> bool:
+    """True when the collector runs as an active user service."""
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--user", "is-active", "--quiet", COLLECTOR_UNIT],
+            capture_output=True, timeout=10)
+    except (OSError, ValueError):
+        return False
+    return proc.returncode == 0
+
+
+def _service_restart() -> int:
+    """Restart the collector user service; never raises on a missing setup."""
+    try:
+        proc = subprocess.run(
+            ["systemctl", "--user", "restart", COLLECTOR_UNIT],
+            capture_output=True, text=True, timeout=60)
+    except (OSError, ValueError) as exc:
+        print(f"foreman collector: cannot restart {COLLECTOR_UNIT}: {exc}")
+        return 1
+    if proc.returncode != 0:
+        detail = proc.stderr.strip() or proc.stdout.strip()
+        print(f"foreman collector: restart failed"
+              f"{f': {detail}' if detail else ''}; run "
+              f"`systemctl --user restart {COLLECTOR_UNIT}` by hand")
+        return proc.returncode
+    return 0
+
+
+def restart_collector() -> int:
+    """Restart the collector where it runs as a user service.
+
+    Where it does not, say plainly what to run instead: the person reading
+    the stale screen is whoever must run it.
+    """
+    if _service_active():
+        if _service_restart() == 0:
+            print(f"collector service {COLLECTOR_UNIT} restarting")
+            return 0
+        return 1
+    print(f"collector is not running as a user service; start it with "
+          f"`systemctl --user start {COLLECTOR_UNIT}`, or run "
+          f"`foreman collector run` in the foreground")
+    return 0
+
+
 def collector_main(action: str) -> int:
     if action == "unit":
         print(render_unit(), end="")
@@ -961,8 +1308,15 @@ def collector_main(action: str) -> int:
     if action == "once":
         tick()
         return 0
-    config = load_config()
+    if action == "restart":
+        return restart_collector()
+    record_startup_version()
     while True:
+        # The configuration is re-read on every tick, never held from
+        # startup: a cap the owner changed mid-run governs the next tick's
+        # totals with no restart. No file watcher — reading a small TOML
+        # file once every two seconds is cheaper than being wrong.
+        config = load_config()
         try:
             tick(config=config)
         except KeyboardInterrupt:
@@ -977,9 +1331,9 @@ def collector_main(action: str) -> int:
 
 
 def add_collector_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("action", choices=("run", "once", "unit"),
-                        help="run the daemon, run one tick, or print the "
-                             "systemd user unit")
+    parser.add_argument("action", choices=("run", "once", "unit", "restart"),
+                        help="run the daemon, run one tick, print the "
+                             "systemd user unit, or restart the daemon")
 
 
 @subcommand("collector", help="Observe the swarm, flag anomalies.")
@@ -987,7 +1341,10 @@ def _collector_entry(args: argparse.Namespace) -> int:
     from . import caller as _caller
 
     me, violations = _caller.resolve("collector")
-    _caller.check_role(me, "collector", violations=violations)
+    if args.action != "restart":
+        _caller.check_role(me, "collector", violations=violations)
+    # Restart is the owner's verb, and any caller with a role may call it
+    # too: the person who notices the stale screen is whoever reads it.
     if violations:
         from .caller import Refusal as _Refusal
         return _Refusal(violations).report()

@@ -1,0 +1,73 @@
+name      = "harbor-tally"
+order     = 2
+want      = """
+The harbor master bills visiting boats by slip-night from a paper log, and
+the log, the dock walk, and the invoices disagree every month. Reconcile
+all three so one monthly invoice run is trusted.
+"""
+done-when = "The paper log, the dock walk, and the invoices agree for one full month."
+land-on   = "main"
+reviews   = "on request"
+after     = []
+prefer    = 0
+
+[allocation]
+muse  = 3
+opus  = 1
+astra = 1
+grok  = 1
+
+[[task]]
+title   = "transcribe the log"
+scope   = """
+WHAT: transcribe one month of the paper slip log into log.csv, one row per stay.
+INPUTS: the paper slip log for the month, the slip-number map on the office wall.
+OUTPUTS: log.csv with one row per stay (boat, slip, nights).
+OUT OF SCOPE: judging whether any stay was billed correctly (the reconcile task).
+"""
+verify  = "python -m pytest tests -q"
+size    = 2
+after   = []
+
+[[task]]
+title   = "walk the docks"
+scope   = """
+WHAT: walk every dock and record which boat occupies each slip, producing dock.csv.
+INPUTS: the docks themselves, the slip-number map on the office wall.
+OUTPUTS: dock.csv with one row per slip (slip, boat or empty).
+OUT OF SCOPE: confronting boat owners about unpaid stays.
+"""
+verify  = "python -m pytest tests -q"
+size    = 2
+after   = []
+
+[[task]]
+title   = "reconcile and invoice"
+core    = true
+scope   = """
+WHAT: reconcile log.csv against dock.csv and the invoice book, then produce the month's invoices.
+INPUTS: log.csv, dock.csv, the invoice book.
+OUTPUTS: invoices/ with one invoice per boat, plus discrepancies.txt listing every mismatch.
+OUT OF SCOPE: collecting payment, changing the harbor's rates.
+"""
+verify  = "python -m pytest tests -q"
+size    = 3
+after   = ["transcribe the log", "walk the docks"]
+
+[[monitor]]
+question = "how many stays are transcribed?"
+measure  = "tally-stays log.csv"
+unit     = "stays"
+of       = 400
+every    = "landing"
+alert    = "< 0.90"
+
+[[monitor]]
+question = "how many slips are walked?"
+measure  = "tally-slips dock.csv"
+unit     = "slips"
+of       = 120
+every    = "job"
+
+[[rule]]
+text = "Never name a boat owner in a finding; slips and stays only."

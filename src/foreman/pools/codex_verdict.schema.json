@@ -1,0 +1,30 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Foreman review verdict",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["passed", "summary", "findings"],
+  "properties": {
+    "passed": {
+      "type": "boolean",
+      "description": "Whether the branch under review passes judgement."
+    },
+    "summary": {
+      "type": "string",
+      "description": "One or two sentences saying what was judged and the outcome."
+    },
+    "findings": {
+      "type": "array",
+      "description": "One entry per issue found; empty when the review passes cleanly.",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["title", "detail"],
+        "properties": {
+          "title": {"type": "string"},
+          "detail": {"type": "string"}
+        }
+      }
+    }
+  }
+}

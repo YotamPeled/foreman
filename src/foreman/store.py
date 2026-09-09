@@ -68,6 +68,27 @@ def read_ledger(path: str | Path) -> list[dict]:
     return records
 
 
+def fold_by_id(records: list[dict]) -> list[dict]:
+    """Fold an append-only ledger last-wins, keeping first-appearance order.
+
+    Every ledger in the state directory is append-only: a record is changed
+    by appending a revised copy of the whole line, never by editing a byte
+    already written. Every reader therefore folds the same way, and this is
+    the one place that says how. Lines with no id are not records and are
+    dropped.
+    """
+    order: list[str] = []
+    by_id: dict[str, dict] = {}
+    for record in records:
+        rid = record.get("id")
+        if not isinstance(rid, str) or not rid:
+            continue
+        if rid not in by_id:
+            order.append(rid)
+        by_id[rid] = record
+    return [by_id[rid] for rid in order]
+
+
 def _replace_with(target: Path, obj: Any) -> None:
     """Stage the value beside the target and rename it into place."""
     fd, tmp = tempfile.mkstemp(
