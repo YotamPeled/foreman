@@ -630,3 +630,63 @@ def _open_anomalies(kind: str, subject: str) -> list[dict]:
         else:
             open_lines.pop(key, None)
     return list(open_lines.values())
+
+
+def test_relaunch_refuses_a_dirty_checkout_and_names_the_files(
+        env, fakes, capsys):
+    """Uncommitted work at relaunch is the supervisor's call, not the
+    launcher's.
+
+    A session summoned into a checkout carrying changes nobody accounted
+    for either commits somebody else's work as its own or throws it away.
+    Seen on the panel front: a dead job's worktree left two modified files
+    on top of its last commit. The refusal names them, so the supervisor
+    can rule keep or discard and ask again.
+    """
+    repo = make_repo(env / "repo")
+    add_panel_front()
+    capsys.readouterr()
+    sid = summon(env, capsys, repo)
+
+    (repo / "half-done.py").write_text("x = 1\n", encoding="utf-8")
+    (repo / "notes.md").write_text("what I was doing\n", encoding="utf-8")
+
+    assert cli.main(["relaunch", sid, "--workspace", "6"]) == 1
+    err = capsys.readouterr().err
+    assert "uncommitted changes" in err
+    assert "half-done.py" in err and "notes.md" in err
+    assert "keep it" in err and "discard it" in err
+    # Refused before anything moved: the roster still carries the session
+    # it had, on the conversation it had.
+    assert roster()[sid]["state"] == "running"
+
+
+def test_relaunch_takes_a_clean_checkout_after_the_work_is_kept(
+        env, fakes, capsys):
+    """The way out the refusal names actually works."""
+    repo = make_repo(env / "repo")
+    add_panel_front()
+    capsys.readouterr()
+    sid = summon(env, capsys, repo)
+
+    (repo / "half-done.py").write_text("x = 1\n", encoding="utf-8")
+    assert cli.main(["relaunch", sid, "--workspace", "6"]) == 1
+    capsys.readouterr()
+
+    subprocess.run(["git", "-C", str(repo), "add", "-A"], check=True)
+    subprocess.run(["git", "-C", str(repo), "-c",
+                    "user.email=test@example.invalid", "-c",
+                    "user.name=foreman-test", "commit", "-q", "-m", "kept"],
+                   check=True)
+    assert cli.main(["relaunch", sid, "--workspace", "6"]) == 0
+
+
+def test_a_dirty_check_that_cannot_read_the_tree_reports_nothing(tmp_path):
+    """An unreadable checkout is not evidence of a dirty one.
+
+    The branch check refuses a directory that is not a git repository
+    before this runs, so silence here must not become a refusal of its
+    own.
+    """
+    assert launch_module.uncommitted_paths(str(tmp_path / "nowhere")) == []
+    assert launch_module.dirty_tree_problem(str(tmp_path / "nowhere")) is None

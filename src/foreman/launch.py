@@ -272,6 +272,54 @@ def _branch_of_checkout(repo: str, asked: str | None,
     return on
 
 
+#: How many dirty paths a refusal prints before it says "and N more":
+#: enough to recognise the work, short enough to stay one screen.
+DIRTY_SHOWN = 10
+
+
+def uncommitted_paths(repo: str) -> list[str]:
+    """Every path git reports as changed or untracked, or an empty list.
+
+    A checkout that cannot be read is not evidence of a clean one, but it
+    is not evidence of a dirty one either: the branch check above already
+    refuses a directory that is not a git repository, so silence here
+    means nothing to report.
+    """
+    try:
+        done = subprocess.run(
+            ["git", "-C", repo, "status", "--porcelain"],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if done.returncode != 0:
+        return []
+    return [line[3:].strip() for line in done.stdout.splitlines()
+            if line.strip()]
+
+
+def dirty_tree_problem(repo: str) -> str | None:
+    """The refusal a relaunch owes a working tree nobody accounted for.
+
+    A session summoned into a checkout carrying uncommitted work inherits
+    changes it did not make and cannot explain: it will either commit
+    somebody else's work as its own or throw it away. Neither is the
+    launcher's call, so the relaunch refuses and names the files, and the
+    supervisor rules keep or discard before asking again. Seen on the
+    panel front: a dead job's worktree left two modified files on top of
+    its last commit.
+    """
+    paths_dirty = uncommitted_paths(repo)
+    if not paths_dirty:
+        return None
+    shown = paths_dirty[:DIRTY_SHOWN]
+    more = len(paths_dirty) - len(shown)
+    listed = ", ".join(shown) + (f", and {more} more" if more else "")
+    return (f"checkout {repo} has uncommitted changes ({listed}); a "
+            f"relaunched session must not inherit work nobody accounted "
+            f"for, so keep it (commit it) or discard it (git restore / git "
+            f"clean) and relaunch again")
+
+
 def read_rulings(front: str | None = None) -> list[str]:
     """Swarm rulings plus this front's own; nothing else travels.
 
@@ -2591,6 +2639,10 @@ def relaunch_main(session_id: str, *, workspace: str | None = None,
     # Another live supervisor of the same front is the one thing a relaunch
     # must not add to. The session being relaunched is itself, so it is not
     # counted against itself.
+    if os.path.isdir(where) and on_branch is not None:
+        dirty = dirty_tree_problem(where)
+        if dirty is not None:
+            problems.append(dirty)
     other = live_front_supervisor(front, ignore=session_id) if old else None
     if other is not None:
         held, entry = other
