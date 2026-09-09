@@ -211,8 +211,8 @@ QtObject {
   // untouched. Where the anomaly names a supported verb outright the
   // panel derives it from kind and subject: a silent or dead supervisor
   // is relaunched from its checkpoint, an intruder carries the mock's
-  // kill pill (whose key reports the verb absent, this runtime ships
-  // no kill). Job kinds need a job id the anomaly does not carry, so
+  // kill pill (the runtime ships kill, and Keys asks it so at load).
+  // Job kinds need a job id the anomaly does not carry, so
   // like defect repeated they stay keyless rather than guessing one.
   function actionForAnomaly(row) {
     var explicit = row.action || ""
