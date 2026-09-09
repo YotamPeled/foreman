@@ -6,7 +6,9 @@ oldest unclaimed record, ``land`` rebases it onto the target, runs the
 target's check command from ``foreman.toml``, pushes the rebased head to
 the target (lease on the sha the rebase was onto) then the branch, marks
 the tasks landed, and ``fail`` sends the record back with a reason while
-the tasks stay built and the branch is left alone.
+the tasks stay built and the branch is left alone. A target that moved
+under the lease is re-queued once (attempt recorded, desk woken) and
+failed with the reason on the second refusal.
 
 Gates, per docs/DESIGN.md section 12: ``request`` is the front's own
 supervisor (like every progress verb); ``take``, ``land`` and ``fail`` are
@@ -258,6 +260,42 @@ def _check_desk(me: caller.Caller | None, verb: str,
     caller.check_role(me, verb, MERGE_DESK, violations=violations)
 
 
+def _land_attempts(record: dict) -> int:
+    """How many target-moved refusals this record has already stored."""
+    try:
+        return int(record.get("land_attempts") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _target_moved_next(record: dict, who: str, reason: str) -> int:
+    """Re-queue a target-moved land once; fail it the second time.
+
+    The land still refuses to the caller either way: the desk's turn
+    has ended, and the wake (or the fail) is what brings anyone back.
+    """
+    mid = str(record.get("id"))
+    front = str(record.get("front") or "")
+    branch = str(record.get("branch") or "")
+    now = store.utcnow_iso()
+    if _land_attempts(record) == 0:
+        store.append_ledger(
+            paths.merges_path(),
+            dict(record, result=REQUESTED, taken_by=None, taken_at=None,
+                 land_attempts=1, fail_reason=reason),
+            session_id=who,
+        )
+        wake.emit_merge_requested(front, mid, branch, now)
+        return _refuse([reason])
+    store.append_ledger(
+        paths.merges_path(),
+        dict(record, result=FAILED, fail_reason=reason, failed_at=now),
+        session_id=who,
+    )
+    wake.emit_merge_failed(front, mid, branch, record.get("by"), now)
+    return _refuse([reason])
+
+
 def merge_take_main(ref: str | None) -> int:
     verb = "merge take"
     me, violations = caller.resolve(verb)
@@ -388,9 +426,12 @@ def merge_land_main(ref: str | None) -> int:
                 found = remote[0] if remote else ""
                 tail = (target_push.stderr.strip()
                         or target_push.stdout.strip()).strip()
-                return _refuse([
+                reason = (
                     f"push of '{target}' failed: expected {base}, "
-                    f"found {found}: {tail}".strip()])
+                    f"found {found}: {tail}".strip())
+                if found and found != base:
+                    return _target_moved_next(record, who, reason)
+                return _refuse([reason])
             # A rebase rewrites the branch, so the push that follows one is
             # always a force. With-lease, so a branch somebody moved since
             # the request is refused rather than overwritten.
@@ -416,7 +457,8 @@ def merge_land_main(ref: str | None) -> int:
     now = store.utcnow_iso()
     store.append_ledger(paths.merges_path(),
                         dict(record, result=LANDED, head=head,
-                             landed_at=now),
+                             landed_at=now, land_attempts=0,
+                             fail_reason=""),
                         session_id=who)
     wake.emit_merge_landed(str(record.get("front") or ""), mid,
                            str(record.get("branch") or ""),

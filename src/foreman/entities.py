@@ -151,6 +151,10 @@ class Merge(Entity):
     #: Why a `fail` refused the landing; the tasks stay built.
     fail_reason: str = ""
     failed_at: str | None = None
+    #: How many times a target-moved lease has already sent this
+    #: record back. Zero (or absent on an older line) means none;
+    #: one is the retry; a second target-moved refusal fails it.
+    land_attempts: int = 0
 
 
 @dataclass(frozen=True)
