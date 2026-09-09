@@ -170,7 +170,8 @@ def unit_name(session_id: str | None) -> str:
 
 def wrap_inner(vendor_argv: list[str], *, pid_path: Path | str,
                log_path: Path | str,
-               stdin_path: Path | str | None = None) -> str:
+               stdin_path: Path | str | None = None,
+               env: dict[str, str] | None = None) -> str:
     """Shell running the worker: pid first, marker inside the redirection.
 
     The vendor process starts in the worktree because the *unit* does
@@ -178,11 +179,18 @@ def wrap_inner(vendor_argv: list[str], *, pid_path: Path | str,
     and nothing about a launch is left to be guessed. ``stdin_path``
     redirects the vendor command's standard input from a file (for CLIs
     whose prompt arrives on stdin); the marker stays inside the braces so
-    it always reaches the log.
+    it always reaches the log. ``env`` is exported inside the braces,
+    before the vendor, so a systemd unit, a window and a dry run all
+    carry the assignments — the pipeline would otherwise start the group
+    in a subshell that never saw them.
     """
     vendor = " ".join(shlex.quote(part) for part in vendor_argv)
     if stdin_path is not None:
         vendor += " < " + shlex.quote(str(stdin_path))
+    if env:
+        assignments = " ".join(
+            f"{name}={shlex.quote(value)}" for name, value in env.items())
+        vendor = f"export {assignments}; {vendor}"
     worker = (
         f"echo $$ > {shlex.quote(str(pid_path))}; "
         "{ " + vendor + '; echo "### finished rc=$?"; '

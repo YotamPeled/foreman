@@ -156,6 +156,36 @@ def test_grok_wrapper_writes_pid_and_marker_to_log(env, monkeypatch):
     assert "### finished rc=3" in lines
 
 
+def test_grok_inner_exports_claude_family_switches(env, monkeypatch):
+    """A grok that reads the owner's Claude skills is the launch missing
+    these six; they must be exported as false in the inner command itself
+    so a unit, a window and a dry run all carry them."""
+    ctx = make_ctx(env)
+    ctx.log_path.parent.mkdir(parents=True, exist_ok=True)
+    names = grok_pool.CLAUDE_FAMILY_SWITCHES
+    assert names == (
+        "GROK_CLAUDE_SKILLS_ENABLED",
+        "GROK_CURSOR_SKILLS_ENABLED",
+        "GROK_CLAUDE_AGENTS_ENABLED",
+        "GROK_CLAUDE_RULES_ENABLED",
+        "GROK_CLAUDE_MCPS_ENABLED",
+        "GROK_CLAUDE_HOOKS_ENABLED",
+    )
+    body = "".join(f'printf "%s\\n" "${{{name}}}"\n' for name in names)
+    write_stub(env / "bin", "grok", body + "exit 0\n", monkeypatch)
+    inner = grok_pool.inner_command(ctx)
+    vendor_at = inner.index("grok --prompt-file")
+    for name in names:
+        token = f"{name}=false"
+        assert token in inner
+        assert inner.index(token) < vendor_at
+    subprocess.run(["bash", "-c", inner], check=True,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    lines = ctx.log_path.read_text(encoding="utf-8").splitlines()
+    assert lines[:6] == ["false"] * 6
+    assert lines[-1] == "### finished rc=0"
+
+
 def test_grok_launch_returns_the_pid_file(env, monkeypatch):
     """Returning the spawner's pid instead of the worker's would aim a
     later kill at the wrong process group."""
@@ -425,6 +455,24 @@ def session_line(out: str) -> str:
         if line.startswith("session: "):
             return line.split("session: ", 1)[1].strip()
     raise AssertionError(f"no session line in output:\n{out}")
+
+
+def test_launch_dry_run_prints_grok_claude_family_switches(env, capsys):
+    """A dry run that hides the six switches would launch a grok that
+    still reads the owner's Claude skills: the printed command is the
+    one a unit and a window would run."""
+    repo = make_repo(env / "repo")
+    spec = env / "spec.md"
+    spec.write_text(SPEC_OK, encoding="utf-8")
+    rc = launch(["grok", "grok", str(spec), "--repo", str(repo),
+                 "--worktree", str(env / "wt-switches"), "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    vendor_at = out.index("grok --prompt-file")
+    for name in grok_pool.CLAUDE_FAMILY_SWITCHES:
+        token = f"{name}=false"
+        assert token in out
+        assert out.index(token) < vendor_at
 
 
 def test_launch_dry_run_accepts_medium_effort(env, capsys):

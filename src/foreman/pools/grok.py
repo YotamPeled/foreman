@@ -21,7 +21,10 @@ and the ``MCPTool(...)`` spelling is accepted). A review job
 only those three denials do. Those three are valid bare tool-name rules.
 
 Wrapping, pid file, finish marker and ``observe`` are the shared ones in
-:mod:`foreman.pools._common`, identical to the muse adapter.
+:mod:`foreman.pools._common`, identical to the muse adapter. Every grok
+inner command also exports :data:`CLAUDE_FAMILY_SWITCHES` as ``false``
+before the vendor starts, so a unit, a window and a dry run all carry
+them.
 
 ``--output-format json`` prints one result object carrying ``usage`` and
 ``total_cost_usd``; ``usage`` reads its input/output tokens from the log
@@ -50,6 +53,17 @@ EFFORTS = ("high", "medium")
 SWARM_DENIES = ("MCPTool(foreman__*)", "MCPTool(boxes__*)")
 #: Extra denials a review job carries: the only thing proven to stop writes.
 REVIEWER_DENIES = ("Write", "Edit", "Bash")
+#: Proven names from the corpus runner ``bin/gt_run.sh``. The grok CLI
+#: reads the owner's Claude skills, agents, rules, MCP servers and hooks,
+#: and Cursor skills, unless these six are ``false``.
+CLAUDE_FAMILY_SWITCHES = (
+    "GROK_CLAUDE_SKILLS_ENABLED",
+    "GROK_CURSOR_SKILLS_ENABLED",
+    "GROK_CLAUDE_AGENTS_ENABLED",
+    "GROK_CLAUDE_RULES_ENABLED",
+    "GROK_CLAUDE_MCPS_ENABLED",
+    "GROK_CLAUDE_HOOKS_ENABLED",
+)
 
 
 def grok_argv(ctx: LaunchContext, *, review: bool | None = None) -> list[str]:
@@ -83,11 +97,16 @@ def grok_argv(ctx: LaunchContext, *, review: bool | None = None) -> list[str]:
 
 
 def inner_command(ctx: LaunchContext) -> str:
-    """Shell running the worker: pid first, marker inside the redirection."""
+    """Shell running the worker: pid first, marker inside the redirection.
+
+    The six Claude-family switches are exported here, in the command
+    itself, so a systemd unit, a window and a dry run all carry them.
+    """
     return _common.wrap_inner(
         grok_argv(ctx),
         pid_path=ctx.pid_path,
         log_path=ctx.log_path,
+        env={name: "false" for name in CLAUDE_FAMILY_SWITCHES},
     )
 
 
