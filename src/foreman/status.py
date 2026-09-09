@@ -786,10 +786,17 @@ def _working(roster: dict, observed: dict | None, now: datetime,
                 lines.append(f"    {done_when.strip()}")
             allocation = front_record.get("allocation") or {}
             if isinstance(allocation, dict) and allocation:
+                from . import capacity
                 open_grants = _slots_held()
-                parts = [f"{role} {open_grants.get((name, role), 0)}/"
-                         f"{allocation[role]}"
-                         for role in sorted(allocation)]
+                parts = []
+                for role in sorted(allocation):
+                    shown = capacity.allocation_out(role, now)
+                    if shown is None:
+                        parts.append(
+                            f"{role} {open_grants.get((name, role), 0)}/"
+                            f"{allocation[role]}")
+                    else:
+                        parts.append(f"{role} {shown}")
                 lines.append(f"    allocation: {', '.join(parts)}")
         try:
             evidence = store.read_ledger(paths.front_evidence_path(name))
@@ -930,15 +937,18 @@ def _merge_queue(titles: dict[str, str], now: datetime) -> list[str]:
     return lines
 
 
-def _capacity(observed: dict | None) -> list[str]:
+def _capacity(observed: dict | None, now: datetime | None = None) -> list[str]:
     """Held/cap per pool, held/ceiling per allocated front role, and the
     jobs waiting on a full pool — built from the slot ledger and the front
     records, so it is right whether or not the collector has ticked. The
     whole computation lives in :mod:`foreman.capacity`, imported here and
-    not at the top so this module keeps the import list it had."""
+    not at the top so this module keeps the import list it had.
+
+    ``now`` is the same clock Working uses, so a pool that is out cannot
+    print held here and out there."""
     from . import capacity
 
-    return capacity.capacity_lines(observed)
+    return capacity.capacity_lines(observed, now=now)
 
 
 def render(now: datetime | None = None) -> str:
@@ -963,7 +973,7 @@ def render(now: datetime | None = None) -> str:
               *_done_block(loaded, moment),
               *_job_queue(moment),
               *_merge_queue(titles, moment),
-              *_capacity(observed),
+              *_capacity(observed, moment),
               _overall(loaded, inbox, moment)]
     return "\n".join(blocks) + "\n"
 
