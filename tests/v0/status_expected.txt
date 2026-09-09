@@ -14,7 +14,7 @@ Working:
       grok job stalled 18m of 20m, write 14m ago
     Label the atlas roads — ready · units 0/5 · after: Draw the atlas map
     Bind the atlas book — landed · units 4/4
-      muse job verified 2h ago
+      muse job verified 2h ago · foreman/job-a4
     want: (not recorded)
     REMAINING (2): Draw the atlas map, Label the atlas roads
     ESTIMATE: about 2d (1 job in last 24h)
@@ -23,7 +23,7 @@ Working:
     doing now — Reading the light measurements · 26m ago
     progress — 0/2 tasks
     Light the beacon — built · units 6/6
-      astra job returned 40m ago
+      astra job returned 40m ago · foreman/job-b1
     Guard the beacon — waiting · units 0/2 · after: Light the beacon
     want: (not recorded)
     REMAINING (2): Light the beacon, Guard the beacon

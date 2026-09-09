@@ -473,6 +473,12 @@ def _job_detail(job: dict, observed_jobs: dict, roster: dict,
     if state in TERMINAL:
         stamp = job.get("verified_at") or job.get("returned_at")
         detail = f"{role} job {state} {_since(stamp, now)} ago"
+        branch = job.get("branch")
+        if isinstance(branch, str) and branch.strip():
+            detail += f" \u00b7 {branch.strip()}"
+            head = job.get("head")
+            if isinstance(head, str) and head.strip():
+                detail += f" @ {head.strip()[:7]}"
         because = job.get("verify_because")
         if isinstance(because, str) and because.strip():
             detail += f" \u2014 {' '.join(because.split())}"

@@ -366,3 +366,80 @@ def test_remaining_tasks_are_never_clipped():
     joined = " ".join(line.strip() for line in lines)
     for title in titles:
         assert title in joined
+
+
+def test_terminal_job_row_prints_branch_and_short_head(
+        monkeypatch, capsys, tmp_path):
+    """A returned job that carries branch and head prints both on the
+    row: the branch, then the first seven characters of the sha."""
+    out = run_state(monkeypatch, capsys, tmp_path, {
+        "roster.json": json.dumps({"sessions": {}}),
+        "fronts/pace/front.jsonl": _jsonl({
+            "id": "front-pace", "name": "pace",
+            "want": "The crew that paces the work.",
+            "done_when": "The job is done.", "allocation": {},
+            "state": "active"}),
+        "fronts/pace/tasks.jsonl": _jsonl(
+            {"id": "t1", "front": "pace", "title": "Fast task",
+             "state": "active", "units_done": 1, "units_total": 2}),
+        "fronts/pace/jobs.jsonl": _jsonl({
+            "id": "j1", "task": "t1", "role": "grok", "state": "returned",
+            "branch": "job/tf-wait",
+            "head": "1a2b3c4def0123456789abcdef",
+            "started_at": "2026-09-08T10:30:00+00:00",
+            "returned_at": "2026-09-08T11:57:00+00:00"}),
+    })
+    rows = [line for line in out.splitlines() if "job returned" in line]
+    assert rows == ["      grok job returned 3m ago \u00b7 job/tf-wait @ 1a2b3c4"]
+
+
+def test_terminal_job_row_prints_branch_alone_when_head_is_empty(
+        monkeypatch, capsys, tmp_path):
+    """A returned job with a branch and no head prints the branch and
+    nothing after it."""
+    out = run_state(monkeypatch, capsys, tmp_path, {
+        "roster.json": json.dumps({"sessions": {}}),
+        "fronts/pace/front.jsonl": _jsonl({
+            "id": "front-pace", "name": "pace",
+            "want": "The crew that paces the work.",
+            "done_when": "The job is done.", "allocation": {},
+            "state": "active"}),
+        "fronts/pace/tasks.jsonl": _jsonl(
+            {"id": "t1", "front": "pace", "title": "Fast task",
+             "state": "active", "units_done": 1, "units_total": 2}),
+        "fronts/pace/jobs.jsonl": _jsonl({
+            "id": "j1", "task": "t1", "role": "grok", "state": "returned",
+            "branch": "job/tf-wait", "head": "",
+            "started_at": "2026-09-08T10:30:00+00:00",
+            "returned_at": "2026-09-08T11:57:00+00:00"}),
+    })
+    rows = [line for line in out.splitlines() if "job returned" in line]
+    assert rows == ["      grok job returned 3m ago \u00b7 job/tf-wait"]
+
+
+def test_terminal_job_row_keeps_verify_because_after_branch_and_head(
+        monkeypatch, capsys, tmp_path):
+    """The `--because` sentence stays after branch and head, the same
+    place it sat after the age."""
+    out = run_state(monkeypatch, capsys, tmp_path, {
+        "roster.json": json.dumps({"sessions": {}}),
+        "fronts/pace/front.jsonl": _jsonl({
+            "id": "front-pace", "name": "pace",
+            "want": "The crew that paces the work.",
+            "done_when": "The job is done.", "allocation": {},
+            "state": "active"}),
+        "fronts/pace/tasks.jsonl": _jsonl(
+            {"id": "t1", "front": "pace", "title": "Fast task",
+             "state": "active", "units_done": 1, "units_total": 2}),
+        "fronts/pace/jobs.jsonl": _jsonl({
+            "id": "j1", "task": "t1", "role": "grok", "state": "returned",
+            "branch": "job/tf-wait",
+            "head": "1a2b3c4def0123456789abcdef",
+            "verify_because": "the branch holds the finished draft",
+            "started_at": "2026-09-08T10:30:00+00:00",
+            "returned_at": "2026-09-08T11:57:00+00:00"}),
+    })
+    rows = [line for line in out.splitlines() if "job returned" in line]
+    assert rows == [
+        "      grok job returned 3m ago \u00b7 job/tf-wait @ 1a2b3c4 "
+        "\u2014 the branch holds the finished draft"]
