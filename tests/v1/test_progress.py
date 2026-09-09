@@ -538,6 +538,40 @@ def test_confirmed_evidence_without_command_is_refused(
     assert evidence[0]["status"] == "PLAUSIBLE"
 
 
+def test_finding_task_is_the_same_flag_as_on(env, monkeypatch, capsys):
+    """``--task`` writes the same finding record that ``--on`` writes.
+
+    ``finding`` took ``--on`` and ``launch`` took ``--task`` for the
+    same subject, so a supervisor guessing the other spelling was refused.
+    """
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    second = tasks_by_title("flow")["second"]["id"]
+    assert run(monkeypatch, ["finding", "--on", "second",
+                             "--class", "scope",
+                             "--title", "The second draft needs the first",
+                             "--detail", "Nothing to label yet"], SUP) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["finding", "--task", "second",
+                             "--class", "scope",
+                             "--title", "The second draft also needs a bound",
+                             "--detail", "Still nothing to label"], SUP) == 0
+    capsys.readouterr()
+    findings = store.read_ledger(paths.front_findings_path("flow"))
+    assert [row["on"] for row in findings] == [second, second]
+    assert findings[0]["class"] == findings[1]["class"] == "scope"
+
+
+def test_finding_help_names_on_and_task(env, capsys):
+    """Both spellings appear in ``finding --help``."""
+    with pytest.raises(SystemExit) as exited:
+        cli.main(["finding", "--help"])
+    assert exited.value.code == 0
+    out = capsys.readouterr().out
+    assert "--on" in out
+    assert "--task" in out
+
+
 def test_finding_appends_and_names_its_subject(
         env, monkeypatch, capsys):
     """`finding` lands on the front's ledger with the task id; a job is

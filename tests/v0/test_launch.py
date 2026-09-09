@@ -1023,3 +1023,37 @@ def test_failed_review_of_existing_branch_leaves_the_branch(
     assert not worktree.exists()
     assert git(repo, "rev-parse", "feature") == feature_head
     assert not paths.roster_path().exists()
+
+
+def test_launch_on_is_the_same_flag_as_task(env, fake_pool, capsys,
+                                            monkeypatch):
+    """``--on`` names the task the way ``--task`` does.
+
+    ``finding`` takes ``--on`` and ``launch`` took ``--task`` for the
+    same thing, so a supervisor guessing the other spelling was refused.
+    """
+    repo = make_repo(env / "repo")
+    spec = write_spec(env, "spec.md", SPEC_OK)
+    seen = {}
+    real = launch_module.build_job_file
+
+    def capture(job, kind, task, front, *rest, **kwargs):
+        seen["task"] = task
+        return real(job, kind, task, front, *rest, **kwargs)
+
+    monkeypatch.setattr(launch_module, "build_job_file", capture)
+    rc = launch(["muse", "fake", spec, "--repo", str(repo),
+                 "--on", "second reads", "--dry-run"])
+    assert rc == 0
+    capsys.readouterr()
+    assert seen["task"] == "second reads"
+
+
+def test_launch_help_names_task_and_on(env, capsys):
+    """Both spellings appear in ``launch --help``."""
+    with pytest.raises(SystemExit) as exited:
+        cli.main(["launch", "--help"])
+    assert exited.value.code == 0
+    out = capsys.readouterr().out
+    assert "--task" in out
+    assert "--on" in out

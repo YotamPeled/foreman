@@ -156,11 +156,18 @@ def _roles_for_forms(gates: dict[str, set[str]],
 def _prop_name(action: argparse.Action) -> str:
     """The tool argument naming one argparse action.
 
-    An option is named by its longest flag (``--dry-run`` is ``dry_run``,
+    An option is named by its dest when that dest is one of its flags
+    (so a synonym like ``--task`` for ``--on`` does not rename the
+    argument), else by its longest flag (``--dry-run`` is ``dry_run``,
     ``--class`` is ``class``); a positional keeps its dest.
     """
     if action.option_strings:
-        return max(action.option_strings, key=len).lstrip("-").replace("-", "_")
+        flags = [opt.lstrip("-").replace("-", "_")
+                 for opt in action.option_strings]
+        dest = action.dest.rstrip("_")
+        if dest in flags:
+            return dest
+        return max(flags, key=len)
     return action.dest
 
 

@@ -991,8 +991,8 @@ _evidence_entry.add_arguments = add_evidence_arguments  # type: ignore[attr-defi
 
 
 def add_finding_arguments(sub: argparse.ArgumentParser) -> None:
-    sub.add_argument("--on", default=None,
-                     help="task id or title, or front (required)")
+    sub.add_argument("--task", "--on", dest="on", default=None,
+                     help="task id or title, or front (--on or --task)")
     sub.add_argument("--class", dest="class_", default=None,
                      help="finding class, one word (required)")
     sub.add_argument("--title", default=None,

@@ -158,7 +158,8 @@ def add_launch_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--workspace", default=None,
                         help="workspace to open a supervisor's window on")
     parser.add_argument("--front", default=None, help="front name")
-    parser.add_argument("--task", default=None, help="task id or title")
+    parser.add_argument("--on", "--task", dest="task", default=None,
+                        help="task id or title (--task or --on)")
     parser.add_argument("--job", default=None, help="job id this session runs")
     parser.add_argument("--kind", default="implement", choices=JOB_KINDS)
     parser.add_argument("--branch", default=None, help="new branch for the worktree")
