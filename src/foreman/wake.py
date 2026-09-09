@@ -278,6 +278,91 @@ def emit_rule_landed(front: str, rule_id: str, now_iso: str) -> dict | None:
                         front=front)
 
 
+def desk_for(front: str | None) -> str | None:
+    """The roster's merge desk for ``front``: a live one where there is
+    one, else any the roster still names, else None.
+
+    The live desk owns no front — one desk holds the swarm's queue — so
+    a session with no front serves every front. A desk rostered onto a
+    front serves only that front. A roster that names no matching desk
+    session returns None, and the caller writes nothing.
+    """
+    if not front:
+        return None
+    try:
+        sessions = caller.read_roster().get("sessions", {})
+    except OSError:
+        return None
+    if not isinstance(sessions, dict):
+        return None
+    from .collector import RUNNING_LIKE
+
+    fallback: str | None = None
+    for sid in sorted(sessions):
+        record = sessions[sid]
+        if not isinstance(record, dict):
+            continue
+        if record.get("role") != MERGE_DESK:
+            continue
+        held = record.get("front")
+        if held not in (None, "", front):
+            continue
+        if fallback is None:
+            fallback = sid
+        if record.get("state") in RUNNING_LIKE:
+            return sid
+    return fallback
+
+
+def _rostered_session(session_id: str | None) -> str | None:
+    """``session_id`` if the roster still names it, else None.
+
+    The owner is not a session and holds no ledger. A session id nobody
+    holds is not written to — the heartbeat is the fallback.
+    """
+    if not session_id or session_id == OWNER:
+        return None
+    try:
+        sessions = caller.read_roster().get("sessions", {})
+    except OSError:
+        return None
+    if not isinstance(sessions, dict) or session_id not in sessions:
+        return None
+    return session_id
+
+
+def emit_merge_requested(front: str, merge_id: str, branch: str,
+                         now_iso: str) -> dict | None:
+    """Wake the front's merge desk. None where the roster names none."""
+    target = desk_for(front)
+    if target is None:
+        return None
+    return append_event(target, "merge requested", now_iso, merge=merge_id,
+                        front=front, branch=branch)
+
+
+def emit_merge_landed(front: str, merge_id: str, branch: str,
+                      requester: str | None, sha: str,
+                      now_iso: str) -> dict | None:
+    """Wake the supervisor that asked. None where nobody holds that id."""
+    target = _rostered_session(requester)
+    if target is None:
+        return None
+    return append_event(target, "merge landed", now_iso, merge=merge_id,
+                        front=front, branch=branch, sha=sha)
+
+
+def emit_merge_failed(front: str, merge_id: str, branch: str,
+                      requester: str | None,
+                      now_iso: str) -> dict | None:
+    """Wake the supervisor that asked. None where nobody holds that id."""
+    target = _rostered_session(requester)
+    if target is None:
+        return None
+    return append_event(target, "merge failed", now_iso, merge=merge_id,
+                        front=front, branch=branch)
+
+
 def heartbeat_tick(moment: datetime, config=None) -> int:
     """Wake idle turn-contract sessions that heard nothing since last wake.
 

@@ -26,7 +26,7 @@ import subprocess
 import tempfile
 import tomllib
 
-from . import caller, cli, fronts, ids, paths, procs, store
+from . import caller, cli, fronts, ids, paths, procs, store, wake
 from .caller import MERGE_DESK, OWNER, SUPERVISOR, Refusal
 from . import entities
 
@@ -214,6 +214,7 @@ def merge_request_main(branch: str | None, front: str | None,
         return _refuse(violations)
     who = caller.by_line(me)
     mid = ids.mint("merge")
+    now = store.utcnow_iso()
     store.append_ledger(
         paths.merges_path(),
         entities.Merge(
@@ -221,11 +222,12 @@ def merge_request_main(branch: str | None, front: str | None,
             tasks=[str(record.get("id")) for record in resolved],
             target=want, review_refs=[str(job).strip() for job in (reviews or [])
                                       if str(job).strip()],
-            result=REQUESTED, requested_at=store.utcnow_iso(),
+            result=REQUESTED, requested_at=now,
             by=who,
         ).to_dict(),
         session_id=who,
     )
+    wake.emit_merge_requested(front_name, mid, name, now)
     print(f"{mid} requested ({name} -> {want})")
     return 0
 
@@ -383,6 +385,9 @@ def merge_land_main(ref: str | None) -> int:
                         dict(record, result=LANDED, head=head,
                              landed_at=now),
                         session_id=who)
+    wake.emit_merge_landed(str(record.get("front") or ""), mid,
+                           str(record.get("branch") or ""),
+                           record.get("by"), head, now)
     print(f"{mid} landed {head}")
     return 0
 
@@ -404,10 +409,15 @@ def merge_fail_main(ref: str | None, reason: str | None) -> int:
         return _refuse(violations)
     assert record is not None
     who = caller.by_line(me)
+    now = store.utcnow_iso()
     store.append_ledger(paths.merges_path(),
                         dict(record, result=FAILED, fail_reason=why,
-                             failed_at=store.utcnow_iso()),
+                             failed_at=now),
                         session_id=who)
+    wake.emit_merge_failed(str(record.get("front") or ""),
+                           str(record.get("id")),
+                           str(record.get("branch") or ""),
+                           record.get("by"), now)
     print(f"{record.get('id')} failed: {why}")
     return 0
 
