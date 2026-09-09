@@ -1270,6 +1270,7 @@ def import_verb_modules() -> None:
     from . import config as _config  # noqa: F401
     from . import doctor as _doctor  # noqa: F401
     from . import fronts as _fronts  # noqa: F401
+    from . import headless as _headless  # noqa: F401
     from . import hooks as _hooks  # noqa: F401
     from . import mcp as _mcp  # noqa: F401
     from . import measure as _measure  # noqa: F401
