@@ -160,9 +160,9 @@ def test_full_roundtrip_is_byte_exact(home):
         right.index({"id": "omarchy.tray"}) + 1)
     assert binding.BEGIN in bindings(home).read_text()
     assert install_mod.install(repo, home) == 0
-    assert snapshot(home) == snapshot(home)  # sanity: readable twice
     mid = snapshot(home)
     assert mid != before
+    assert mid[".config/hypr/bindings.lua"][0] == "file"
     assert install_mod.uninstall(repo, home) == 0
     assert snapshot(home) == before
 
