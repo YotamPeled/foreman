@@ -114,6 +114,94 @@ is waiting on a human.
 
 Done when: no step above broke one of the three to get there.
 
+## STARTUP
+
+Run this before you admit anything. A swarm you cannot see is a swarm
+you cannot hold. A person or a session runs this; nothing here is
+automated.
+
+1. Confirm the collector is active and running the current code.
+   `foreman doctor` is the check: a stale collector prints
+   `foreman collector restart` as the fix; run the fix. One tick by
+   hand is `foreman collector once`.
+2. Register yourself with `foreman register --role foreman --pid <pid>`
+   and export `FOREMAN_SESSION` to the id it prints. The export is a
+   shell assignment, not a Foreman verb. A summoned foreman is already
+   on the roster; skip the register, still export.
+3. Summon the merge desk named in the configuration:
+   `foreman launch merge-desk --headless`. Always headless: a windowed
+   desk accumulates wakes the clock never delivers. One desk at a time;
+   a live one is reused, not doubled.
+4. Read the swarm rulings (`foreman rule list`), the inbox
+   (`foreman inbox`), and `foreman status`. A rule not in that list
+   does not exist for this swarm.
+5. Confirm every roster session is observed: `foreman doctor` and
+   `foreman status` together. A live session whose process is gone is
+   relaunched (`foreman relaunch <session>` for a supervisor,
+   `foreman launch merge-desk` for a dead desk) or killed; it is not
+   left.
+
+Done when: doctor is clean, this session is on the roster with
+`FOREMAN_SESSION` set, the merge desk is live and headless, and every
+roster session is observed.
+
+## PER LANDING
+
+Run this at the head of every landing, in this order. The reinstall is
+the step a skipped night paid for in a SyntaxError. A person or a
+session runs this; nothing here is automated.
+
+1. Re-run the suite at the head sha in a fresh worktree. This is a
+   shell checkout plus the verify command, not a Foreman verb.
+2. Grep the diff for secrets. This is a shell `grep`, not a Foreman
+   verb.
+3. Merge. The desk lands with `foreman merge land`; you do not push.
+   A self-landing front is a git fast-forward, a shell command.
+4. Pull and reinstall the main-only checkout. This is a shell
+   `git pull` plus the package install into that checkout's
+   environment, not a Foreman verb. The live command must run from
+   that checkout, never from a branch with work out.
+5. Close the front: `foreman front close <front> --merged <sha>` so
+   every built task lands at that commit.
+6. Restart the collector: `foreman collector restart`.
+7. Smoke-check the installed CLI with one
+   `foreman launch <role> <pool> <spec> --dry-run`. A refusal here is
+   the install, not the swarm.
+8. Append a line to the ledger naming the landing. This is a file
+   write, not a Foreman verb.
+9. Report the landing to the orchestrator. This is a message, not a
+   Foreman verb.
+
+Done when: the suite was green at the landed sha, the secrets grep was
+clean, the main-only checkout is reinstalled, the front is closed, the
+collector is on the new code, and a dry-run launch succeeds.
+
+## PER SHIFT
+
+Run this across the shift, not once at the end. A person or a session
+runs this; nothing here is automated.
+
+1. Checkpoint on every state change and at least every twenty minutes:
+   `foreman checkpoint --doing "…" --next "…"`. Silent with no running
+   jobs for fifteen minutes is stalled by definition.
+2. The owner report is the shape in the `foreman-status` skill: one
+   block per front (what it is, where it stands, remaining, estimate,
+   blocked on him), then Overall. Compose it from `foreman status`
+   and the ledgers; this checkout has no `digest` verb.
+3. Check usage against the owner's cap on the Capacity block of
+   `foreman status`. `foreman cap` sets a cap; it does not measure
+   usage. When a pool is at the cap, stop launching into it and
+   report. Spend that would exceed the owner's money cap is an inbox
+   item of kind money, with a recommendation.
+4. Shutdown: message the supervisors with
+   `foreman tell <session> "stand by"`, then
+   `foreman kill <session> --reason "shift end"` only for sessions you
+   launched. Never kill the collector.
+
+Done when: the last checkpoint is current, the owner has a report in
+that shape, usage is inside the cap or reported, and every process
+still running is one you mean to leave up.
+
 ## Reference: the contracts you stand between (§11)
 
 - Owner ↔ foreman: briefs in; inbox items of the four kinds out, each with a
