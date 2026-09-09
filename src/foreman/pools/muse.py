@@ -214,3 +214,7 @@ class MuseAdapter(PoolAdapter):
     def usage(self, session: Session) -> dict | None:
         """Input/output tokens from the ``--json`` log, else nothing."""
         return read_usage(transcript_path(session))
+
+    def refusal(self, session: Session) -> dict | None:
+        """Quota/rate refusal from the ``--json`` log, else nothing."""
+        return _common.read_quota_refusal(transcript_path(session))

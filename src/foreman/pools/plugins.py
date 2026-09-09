@@ -383,6 +383,12 @@ class DirectoryPool(PoolAdapter):
             return impl.usage(session)
         return None
 
+    def refusal(self, session: Session) -> dict | None:
+        impl = self._impl()
+        if impl is not None and self.manifest.vendor_argv is None:
+            return impl.refusal(session)
+        return None
+
     def verdict(self, path: Path | str) -> dict:
         """A review job's verdict file, normalised to pass/fail + summary."""
         impl = self._impl()

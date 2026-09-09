@@ -443,6 +443,55 @@ def _stopped_by(record: dict) -> str | None:
     return who if isinstance(who, str) and who else None
 
 
+def _note_pool_refusal(adapter, record: dict, sid: str) -> None:
+    """If this dead worker's transcript is a quota refusal, append one
+    pools.jsonl record before the job is marked. A second tick over the
+    same job writes nothing."""
+    if adapter is None:
+        return
+    job = record.get("job")
+    try:
+        existing = store.read_ledger(paths.pools_path())
+    except OSError:
+        existing = []
+    for line in existing:
+        if not isinstance(line, dict):
+            continue
+        if job and line.get("job") == job:
+            return
+        if not job and line.get("session") == sid:
+            return
+    try:
+        refusal = adapter.refusal(Session.from_dict(record))
+    except Exception:  # noqa: BLE001 - a broken adapter must not
+        return          # take the daemon down
+    if not isinstance(refusal, dict):
+        return
+    reset = refusal.get("reset")
+    if not isinstance(reset, str) or not reset:
+        return
+    try:
+        datetime.fromisoformat(reset.replace("Z", "+00:00"))
+    except ValueError:
+        return
+    pool = record.get("pool") or getattr(adapter, "name", "") or ""
+    if not isinstance(pool, str) or not pool:
+        return
+    kind = refusal.get("kind")
+    because = kind if isinstance(kind, str) and kind else "quota"
+    detail = refusal.get("detail")
+    detail = " ".join(detail.split()) if isinstance(detail, str) else ""
+    store.append_ledger(paths.pools_path(), {
+        "id": pool,
+        "pool": pool,
+        "out_until": reset,
+        "because": because,
+        "detail": detail,
+        "job": job,
+        "session": sid,
+    }, session_id=sid)
+
+
 def _mark_job(front: str | None, job_id: str | None, to_state: str,
               stamp: str | None, by: str | None = None,
               reason: str | None = None) -> None:
@@ -1052,6 +1101,7 @@ def _tick_inner(moment: datetime, now_iso: str,
             # fallback. Workers spawn without --collect, so a finished
             # unit still answers Result/ExecMainStatus here — and a unit
             # that says it failed failed even if it wrote a marker.
+            _note_pool_refusal(adapter, record, sid)
             try:
                 unit_failed = pool_common.unit_reports_failure(
                     pool_common.unit_status(sid))
