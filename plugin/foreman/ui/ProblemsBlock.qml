@@ -25,8 +25,9 @@ Item {
     return "waited " + Math.floor(m / 60) + "h " + (m % 60) + "m"
   }
 
-  // The model carries the full CLI action (e.g. "foreman kill pid-41180");
-  // the panel shows the mock's short verb.
+  // The model carries the full CLI action (e.g. the mock intruder's
+  // "foreman kill ses-wcorp002 --reason intruder-pid-41180"); the panel
+  // shows the mock's short verb.
   function actionLabel(action) {
     var words = String(action || "").replace(/^\s*foreman\s+/i, "").split(/\s+/)
     return words.length > 0 ? words[0] : ""
