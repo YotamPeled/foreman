@@ -50,7 +50,17 @@ def _parse_time(text: str | None) -> datetime | None:
 
 def append_event(session_id: str, reason: str,
                  now: datetime | str | None = None, **fields) -> dict:
-    """Append one undelivered event for ``session_id``. Returns the line."""
+    """Append one undelivered event for ``session_id``. Returns the line.
+
+    The reason must be one the vocabulary names. A turn decides what it
+    is about by reading the reason, so a misspelled one is a wake no
+    session can act on: refuse it here rather than write it and find out
+    a turn later.
+    """
+    if reason not in entities.WAKE_REASONS:
+        raise ValueError(
+            f"unknown wake reason {reason!r}; the reasons are "
+            + ", ".join(entities.WAKE_REASONS))
     at = now if isinstance(now, str) else _now_iso(now)
     record = entities.WakeEvent(
         id=ids.mint("wake"), session=session_id, reason=reason, at=at,

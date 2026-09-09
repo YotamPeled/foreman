@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from foreman import cli, paths, procs, store
+from foreman import cli, entities, paths, procs, store
 from foreman import wake as wake_module
 from foreman.caller import SESSION_ENV
 from foreman.collector import _mark_job, load_config, tick
@@ -429,3 +429,80 @@ def test_wake_cli_parses(env, monkeypatch, capsys):
     args = parser.parse_args(["wake", "next", SUP])
     assert args._handler(args) == 0
     assert wake_module.pending_events(SUP) == []
+
+
+def test_an_overdue_worker_wakes_a_timeout_through_the_tick(env, fake_pool,
+                                                            children):
+    """The reason travels from the tick, not only from _mark_job's
+    argument: an overdue worker killed by the collector wakes its
+    launcher with the cause, while the job itself reads failed."""
+    proc = sleeper(children)
+    sup_proc = sleeper(children)
+    seat({SUP: session(SUP, "supervisor", pid=sup_proc.pid,
+                       pgid=sup_proc.pid,
+                       pid_starttime=procs.proc_starttime(sup_proc.pid),
+                       last_declared_at=iso(now())),
+          WORKER: session(WORKER, "muse", pid=proc.pid, pgid=proc.pid,
+                          pid_starttime=procs.proc_starttime(proc.pid),
+                          job=JOB, launched_by=SUP, timeout="1m",
+                          started_at=ago(30))})
+    running_job()
+    tick(now=now())
+    assert [event["reason"] for event in events_for(SUP)] == ["job timed out"]
+    latest = store.read_ledger(paths.front_jobs_path(FRONT))[-1]
+    assert latest["state"] == "failed"
+
+
+def test_a_job_launched_by_the_owner_wakes_nobody(env):
+    """'owner' is the launcher of a job the owner started by hand. It
+    names no session with a ledger, so nothing is written for it."""
+    seat({WORKER: session(WORKER, "muse", job=JOB, launched_by="owner")})
+    running_job()
+    _mark_job(FRONT, JOB, "returned", iso(now()))
+    assert events_for("owner") == []
+    assert not paths.session_events_path("owner").exists()
+
+
+def test_a_swarm_rule_wakes_nobody(env, monkeypatch, capsys):
+    """Swarm scope names no front and therefore no supervisor: a rule
+    every session lives under is not one session's event."""
+    from foreman import verbs
+
+    seat({SUP: session(SUP, "supervisor"),
+          FOREMAN_SES: session(FOREMAN_SES, "foreman")})
+    run_as(monkeypatch, FOREMAN_SES)
+    assert verbs.rule_main("swarm", ["Every worker through foreman launch."]) \
+        == 0
+    capsys.readouterr()
+    assert events_for(SUP) == []
+    assert verbs.rule_main(FRONT, ["Every worker through foreman launch."]) \
+        == 0
+    capsys.readouterr()
+    assert [event["reason"] for event in events_for(SUP)] == ["rule landed"]
+
+
+def test_only_turn_contract_roles_hear_a_heartbeat(env):
+    """A worker is one vendor process, not a series of turns: the clock
+    wakes supervisors, the foreman and the desk, and nobody else."""
+    seat({SUP: session(SUP, "supervisor", started_at=ago(60)),
+          WORKER: session(WORKER, "muse", started_at=ago(60)),
+          "ses-dsk00001": session("ses-dsk00001", "merge-desk",
+                                  started_at=ago(60))})
+    assert wake_module.heartbeat_tick(now(), load_config()) == 2
+    assert [event["reason"] for event in events_for(SUP)] == ["heartbeat"]
+    assert [event["reason"] for event in events_for("ses-dsk00001")] == [
+        "heartbeat"]
+    assert events_for(WORKER) == []
+
+
+def test_an_unknown_reason_is_refused_rather_than_written(env):
+    """The reason vocabulary is what the next task reads to decide what a
+    turn is about. A reason outside it is a typo, and a typo that reaches
+    the ledger is a wake nobody can act on."""
+    seat({SUP: session(SUP, "supervisor")})
+    with pytest.raises(ValueError) as caught:
+        wake_module.append_event(SUP, "job returrned", job=JOB)
+    assert "job returrned" in str(caught.value)
+    assert events_for(SUP) == []
+    for reason in entities.WAKE_REASONS:
+        assert wake_module.append_event(SUP, reason)["reason"] == reason
