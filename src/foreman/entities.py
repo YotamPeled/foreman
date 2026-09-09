@@ -252,6 +252,7 @@ class Evidence(Entity):
 class Finding(Entity):
     _aliases: ClassVar[dict[str, str]] = {"class_": "class"}
 
+    id: str | None = None
     on: str = ""
     class_: str = ""
     title: str = ""

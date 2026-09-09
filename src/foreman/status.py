@@ -747,6 +747,18 @@ def _done_block(loaded: list[tuple[str, list[dict], list[dict]]],
     return lines
 
 
+def _finding_line(finding: dict) -> str:
+    """One finding on the Working block: id with the title, or the title
+    alone when the ledger line predates ids."""
+    title = _one_line(finding.get("title") or "")
+    fid = finding.get("id")
+    if isinstance(fid, str) and fid.strip():
+        if title:
+            return f"      {fid.strip()} {title}"
+        return f"      {fid.strip()}"
+    return f"      {title}"
+
+
 def _working(roster: dict, observed: dict | None, now: datetime,
              loaded: list[tuple[str, list[dict], list[dict]]],
              inbox: list[dict]) -> list[str]:
@@ -812,6 +824,8 @@ def _working(roster: dict, observed: dict | None, now: datetime,
             lines.append(f"    evidence: {len(evidence)} "
                          f"({confirmed} confirmed) "
                          f"\u00b7 findings: {len(findings)}")
+            for finding in findings:
+                lines.append(_finding_line(finding))
         lines.extend(_monitor_lines(name, front_record, tasks, roster,
                                     sessions_view, now))
         for task in tasks:

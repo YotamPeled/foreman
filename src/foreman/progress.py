@@ -465,7 +465,8 @@ def job_fail_main(job_id: str, finding: str | None = None) -> int:
                         dict(record, state="failed"), session_id=who)
     store.append_ledger(
         paths.front_findings_path(front),
-        entities.Finding(on=task.get("id") or "", class_="failure",
+        entities.Finding(id=ids.mint("finding"),
+                         on=task.get("id") or "", class_="failure",
                          title=text, detail=f"job '{key}' failed",
                          evidence_ref="").to_dict(),
         session_id=who,
@@ -761,13 +762,14 @@ def finding_main(on: str, class_: str, title: str,
     assert front is not None
     caller.check_self_contained(headline, "finding title")
     who = caller.by_line(me)
+    fid = ids.mint("finding")
     store.append_ledger(
         paths.front_findings_path(front),
-        entities.Finding(on=stored_on, class_=word, title=headline,
+        entities.Finding(id=fid, on=stored_on, class_=word, title=headline,
                          detail=body, evidence_ref="").to_dict(),
         session_id=who,
     )
-    print(f"finding on {stored_on}")
+    print(f"{fid} on {stored_on}")
     return 0
 
 

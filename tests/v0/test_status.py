@@ -153,6 +153,39 @@ def test_front_with_rate_projects_with_basis(monkeypatch, capsys, tmp_path):
     assert "    Blocked on you: nothing blocked on you" in out
 
 
+def test_old_finding_without_id_still_renders_beside_named_one(
+        monkeypatch, capsys, tmp_path):
+    """A ledger line from before findings had ids still prints, and the
+    named finding next to it shows its id with the title."""
+    out = run_state(monkeypatch, capsys, tmp_path, {
+        "roster.json": json.dumps({"sessions": {}}),
+        "fronts/pace/front.jsonl": _jsonl({
+            "id": "front-pace", "name": "pace",
+            "want": "The crew that paces the work.",
+            "done_when": "Both jobs are done.", "allocation": {},
+            "state": "active"}),
+        "fronts/pace/tasks.jsonl": _jsonl(
+            {"id": "t1", "front": "pace", "title": "Fast task",
+             "state": "active", "units_done": 1, "units_total": 2}),
+        "fronts/pace/jobs.jsonl": "",
+        "fronts/pace/findings.jsonl": _jsonl(
+            {"on": "t1", "class": "scope",
+             "title": "The old brief assumed a harbor",
+             "detail": "It did not name the light."},
+            {"id": "fnd-abc1234", "on": "t1", "class": "scope",
+             "title": "The new brief names the light",
+             "detail": "It does."}),
+    })
+    old_lines = [line for line in out.splitlines()
+                 if "The old brief assumed a harbor" in line]
+    new_lines = [line for line in out.splitlines()
+                 if "The new brief names the light" in line]
+    assert old_lines
+    assert all("fnd-" not in line for line in old_lines)
+    assert new_lines
+    assert all("fnd-abc1234" in line for line in new_lines)
+
+
 def test_front_without_rate_says_so(monkeypatch, capsys, tmp_path):
     """No job finished lately — a running job and a failed one carry no
     pace — so the ESTIMATE says "no rate yet" instead of guessing."""

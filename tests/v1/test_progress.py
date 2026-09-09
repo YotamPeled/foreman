@@ -561,6 +561,51 @@ def test_finding_appends_and_names_its_subject(
     assert len(store.read_ledger(paths.front_findings_path("flow"))) == 1
 
 
+def test_finding_lands_with_id_and_prints_it(env, monkeypatch, capsys):
+    """A finding filed through the verb is named with an fnd- id on the
+    ledger and on stdout, so a supervisor can copy it."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    second = tasks_by_title("flow")["second"]["id"]
+    assert run(monkeypatch, ["finding", "--on", "second",
+                             "--class", "scope",
+                             "--title", "The second draft needs the first",
+                             "--detail", "Nothing to label yet"], SUP) == 0
+    out = capsys.readouterr().out
+    findings = store.read_ledger(paths.front_findings_path("flow"))
+    assert len(findings) == 1
+    fid = findings[0]["id"]
+    assert isinstance(fid, str) and fid.startswith("fnd-")
+    assert f"{fid} on {second}" in out
+
+
+def test_two_findings_in_the_same_millisecond_get_different_ids(
+        env, monkeypatch, capsys):
+    """Two findings filed while the clock stands still still get distinct
+    ids, so a supervisor can name each one."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    monkeypatch.setattr("foreman.ids.time.time_ns",
+                        lambda: 1_725_000_000_000_000_000)
+    assert run(monkeypatch, ["finding", "--on", "first",
+                             "--class", "scope",
+                             "--title", "The first draft is missing a label",
+                             "--detail", "Nothing to file yet"], SUP) == 0
+    first_out = capsys.readouterr().out
+    assert run(monkeypatch, ["finding", "--on", "first",
+                             "--class", "scope",
+                             "--title", "The first draft also lacks a bound",
+                             "--detail", "Still nothing to file"], SUP) == 0
+    second_out = capsys.readouterr().out
+    findings = store.read_ledger(paths.front_findings_path("flow"))
+    ids = [row["id"] for row in findings]
+    assert len(ids) == 2
+    assert ids[0] != ids[1]
+    assert all(isinstance(fid, str) and fid.startswith("fnd-") for fid in ids)
+    assert ids[0] in first_out
+    assert ids[1] in second_out
+
+
 def test_worker_may_not_move_a_task(env, monkeypatch, capsys):
     """Progress verbs sit on the supervisor's row: a worker session is
     refused by role name and nothing is appended."""

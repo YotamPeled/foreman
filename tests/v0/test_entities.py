@@ -141,6 +141,7 @@ INSTANCES = [
         output_ref="/w/out.log",
     ),
     Finding(
+        id="fnd-abc1234",
         on="tas-abc1234",
         class_="scope",
         title="scope crept",
@@ -213,6 +214,7 @@ def test_wire_names_for_keywords():
         InboxItem(id="i", from_="f", kind="k", question="q").to_dict()["from"] == "f"
     )
     assert Finding.from_dict({"on": "t", "class": "c"}).class_ == "c"
+    assert Finding.from_dict({"on": "t", "class": "c"}).id is None
     assert InboxItem.from_dict({"from": "f"}).from_ == "f"
 
 
