@@ -194,6 +194,30 @@ def test_claude_argv_denies_swarm_tools_with_bare_binary(env):
     assert "/" not in argv[0]
 
 
+def test_claude_argv_uses_the_session_model_when_set(env):
+    """A session that already carries a model is started with it, not
+    with the role pin. A user pool wrapping this adapter records its
+    manifest model on the session; without this read, every such pool
+    would launch claude-opus-5."""
+    from dataclasses import replace
+
+    ctx = make_ctx(env, pool="claude", role="opus")
+    ctx = replace(ctx, session=replace(ctx.session, model="claude-fable-5-1"))
+    argv = claude_pool.claude_argv(ctx)
+    assert argv[argv.index("--model") + 1] == "claude-fable-5-1"
+
+
+def test_claude_argv_falls_back_to_the_role_pin_when_the_session_has_none(env):
+    """A session that carries no model still gets the role pin, never
+    the machine default."""
+    from dataclasses import replace
+
+    ctx = make_ctx(env, pool="claude", role="opus")
+    ctx = replace(ctx, session=replace(ctx.session, model=""))
+    argv = claude_pool.claude_argv(ctx)
+    assert argv[argv.index("--model") + 1] == "claude-opus-5"
+
+
 def test_claude_worker_names_model_directory_and_permission_mode(env):
     """All three things a launch must not leave to the machine: the model
     for the role, the worktree as the working directory, and the permission

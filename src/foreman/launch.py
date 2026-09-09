@@ -635,6 +635,23 @@ def _move_session(roster, session_id: str, **fields):
     return roster
 
 
+def _adapter_model(adapter, role: str) -> str:
+    """The model recorded on a worker session.
+
+    An adapter that pins a model per role answers that pin (the packaged
+    claude pool, so an opus worker still records ``claude-opus-5``). Every
+    other adapter answers its ``model`` attribute, which for a directory
+    pool is the manifest's — so a user pool wrapping claude launches the
+    model it named, not the role pin.
+    """
+    method = getattr(adapter, "model_for_role", None)
+    if callable(method):
+        named = method(role)
+        if isinstance(named, str) and named:
+            return named
+    return adapter.model
+
+
 @subcommand("launch", help="Mint a session, build its worktree, start its worker.")
 def cmd_launch(args: argparse.Namespace) -> int:
     # The freeze is a violation like any other, never an early return: a
@@ -833,7 +850,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
             id=session_id,
             role=args.role,
             pool=args.pool,
-            model=adapter.model,
+            model=_adapter_model(adapter, args.role),
             front=args.front,
             job=job_id,
             pid=None,

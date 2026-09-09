@@ -357,6 +357,41 @@ def test_fifth_pool_launches_a_job_end_to_end(env, monkeypatch, capsys):
     assert jobs["job-e2e"] == "returned"
 
 
+def test_user_claude_pool_launches_its_manifest_model(env, capsys):
+    """A user pool wrapping the claude adapter launches the model its
+    manifest named, not the packaged role pin. The packaged claude pool
+    still launches the role's model. No ``[vendor]`` table: the adapter
+    is the implementation, and the session model is what it is started
+    with."""
+    write_user_pool(env, "fable",
+                    'name = "fable"\n'
+                    'model = "claude-fable-5-1"\n'
+                    'timeout_default = "20m"\n'
+                    'interactive = false\n'
+                    'roles = ["opus"]\n'
+                    'adapter = "claude"\n')
+    repo = make_repo(env / "repo")
+    spec = env / "spec.md"
+    spec.write_text(SPEC_OK, encoding="utf-8")
+    rc = cli.main(["launch", "opus", "fable", str(spec),
+                   "--repo", str(repo),
+                   "--worktree", str(env / "wt-fable"),
+                   "--dry-run"])
+    assert rc == 0, capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert "--model claude-fable-5-1" in out
+    assert "--model claude-opus-5" not in out
+
+    rc = cli.main(["launch", "opus", "claude", str(spec),
+                   "--repo", str(repo),
+                   "--worktree", str(env / "wt-claude"),
+                   "--dry-run"])
+    assert rc == 0, capsys.readouterr().err
+    packaged = capsys.readouterr().out
+    assert "--model claude-opus-5" in packaged
+    assert "--model claude-fable-5-1" not in packaged
+
+
 def test_directory_pool_without_adapter_reports_no_meter(env):
     """A directory-declared pool has no token counter and no quota
     meter: usage and meter answer nothing, while a review verdict still

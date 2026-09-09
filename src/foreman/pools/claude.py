@@ -58,7 +58,14 @@ DISALLOWED_TOOLS = "mcp__foreman__* mcp__boxes__*"
 
 
 def claude_argv(ctx: LaunchContext) -> list[str]:
-    """The vendor command. The spec arrives on stdin (see inner_command)."""
+    """The vendor command. The spec arrives on stdin (see inner_command).
+
+    The model is the one the session was launched with. A user pool that
+    wraps this adapter records its manifest model on the session, and
+    that is what the vendor is started with. Only a session that carries
+    none falls back to the role pin.
+    """
+    model = ctx.session.model or model_for(ctx.session.role)
     return [
         "claude",
         "-p",
@@ -66,7 +73,7 @@ def claude_argv(ctx: LaunchContext) -> list[str]:
         "stream-json",
         "--verbose",
         "--model",
-        model_for(ctx.session.role),
+        model,
         "--dangerously-skip-permissions",
         "--disallowedTools",
         DISALLOWED_TOOLS,
@@ -162,6 +169,10 @@ class ClaudeAdapter(PoolAdapter):
     binary_is_foreman_worker = False
     timeout_default = "20m"
     interactive = False
+
+    def model_for_role(self, role: str) -> str:
+        """The model this role runs on the packaged claude pool."""
+        return model_for(role)
 
     def command_str(self, ctx: LaunchContext) -> str:
         return _common.printable_command(outer_argv(ctx), inner_command(ctx))
