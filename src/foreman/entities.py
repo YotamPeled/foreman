@@ -125,6 +125,15 @@ class Job(Entity):
     #: The `--because` sentence a failed or killed job was verified with.
     #: Empty on every other job; the screen renders it beside the job.
     verify_because: str = ""
+    #: The command ``job verify --run`` executed. Empty until a run.
+    verify_command: str = ""
+    #: The run's exit status. None until a run.
+    verify_exit: int | None = None
+    #: Seconds the run took. None until a run.
+    verify_seconds: int | None = None
+    #: Path of the run's output file under the job's session. Empty until
+    #: a run.
+    verify_output_ref: str = ""
     attempt: int = 1
     state: str = "planned"
     planned_at: str | None = None

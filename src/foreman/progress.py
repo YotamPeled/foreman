@@ -1,14 +1,16 @@
 """Progress verbs: a task moves because a supervisor said so, with evidence.
 
 ``job verify --confirmed`` appends CONFIRMED evidence, marks the job
-verified and adds its units to the task; ``job fail`` marks the job failed
-with a finding on the task; ``job fail --closed`` records a job on a
-done front as history and writes no finding, because the task may no
-longer be on the ledger and the work already landed; ``task built`` and
-``task landed`` move the task once every unit is accounted for;
-``evidence`` and ``finding`` append free-standing records to the front's
-ledgers. A CONFIRMED claim with no command behind it is refused: running
-the command is what turns a claim into evidence.
+verified and adds its units to the task; ``job verify --run`` executes
+the task's verify in a detached worktree of the job's head and, on
+exit 0, does the same; ``job fail`` marks the job failed with a finding
+on the task; ``job fail --closed`` records a job on a done front as
+history and writes no finding, because the task may no longer be on the
+ledger and the work already landed; ``task built`` and ``task landed``
+move the task once every unit is accounted for; ``evidence`` and
+``finding`` append free-standing records to the front's ledgers. A
+CONFIRMED claim with no command behind it is refused: running the
+command is what turns a claim into evidence.
 
 Every verb that moves work refuses a caller who is not the front's
 supervisor. ``finding`` is the exception: it records something seen and
@@ -23,6 +25,8 @@ import argparse
 import os
 import shutil
 import subprocess
+import tempfile
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -351,12 +355,102 @@ def _store_output_file(src: str, dest: Path) -> str:
     return str(dest.resolve())
 
 
+def _git_at(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", repo, *args],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def _job_repository(record: dict) -> str:
+    """The git repository a job's worktree belongs to.
+
+    ``git worktree add`` must run from the main checkout: a linked
+    worktree's common dir sits inside it, so the repository is that
+    dir's parent. When the worktree itself is gone, the recorded path
+    is all we have.
+    """
+    worktree = record.get("worktree") \
+        if isinstance(record.get("worktree"), str) else ""
+    worktree = worktree.strip()
+    if worktree and os.path.isdir(worktree):
+        proc = _git_at(worktree, "rev-parse", "--git-common-dir")
+        common = proc.stdout.strip() if proc.returncode == 0 else ""
+        if common:
+            common_path = Path(common) if os.path.isabs(common) \
+                else Path(worktree) / common
+            try:
+                return str(common_path.resolve().parent)
+            except OSError:
+                pass
+    return worktree
+
+
+def _job_head(record: dict, repo: str) -> tuple[str, str]:
+    """The sha ``--run`` checks out, or a refusal naming job and branch."""
+    stored = record.get("head")
+    if isinstance(stored, str) and stored.strip():
+        return stored.strip(), ""
+    branch = (record.get("branch") or "").strip() \
+        if isinstance(record.get("branch"), str) else ""
+    key = record.get("id") or ""
+    if not branch or not repo or not os.path.isdir(repo):
+        return "", f"job '{key}' branch '{branch}' does not resolve"
+    proc = _git_at(repo, "rev-parse", "--verify", branch)
+    sha = proc.stdout.strip() if proc.returncode == 0 else ""
+    if not sha:
+        return "", f"job '{key}' branch '{branch}' does not resolve"
+    return sha, ""
+
+
+def _execute_verify_run(record: dict, repo: str, head: str,
+                        command: str) -> tuple[int, str, int, str] | None:
+    """Run ``command`` in a detached worktree of ``head``.
+
+    Returns ``(exit, output_path, seconds, output_text)``. The worktree
+    is gone when this returns. Setup failures refuse and return None.
+    """
+    key = record.get("id") or ""
+    sid = str(record.get("session") or "").strip()
+    dest_dir = paths.session_dir(sid) / "verify"
+    if not repo or not os.path.isdir(repo):
+        _refuse([f"job '{key}' branch "
+                 f"'{record.get('branch') or ''}' does not resolve"])
+        return None
+    child_env = os.environ.copy()
+    for name in (caller.SESSION_ENV, paths.STATE_ENV, paths.CONFIG_ENV):
+        child_env.pop(name, None)
+    with tempfile.TemporaryDirectory(prefix="foreman-verify-") as tmp:
+        area = os.path.join(tmp, "verify")
+        added = _git_at(repo, "worktree", "add", "--detach", area, head)
+        if added.returncode != 0:
+            tail = (added.stderr.strip() or added.stdout.strip()).strip()
+            _refuse([f"cannot open a verify worktree for '{key}': "
+                     f"{tail}".strip()])
+            return None
+        try:
+            started = time.monotonic()
+            proc = subprocess.run(
+                command, shell=True, cwd=area,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, env=child_env)
+            seconds = int(round(time.monotonic() - started))
+            output_body = proc.stdout or ""
+            exit_code = proc.returncode if proc.returncode is not None else 1
+        finally:
+            _git_at(repo, "worktree", "remove", "--force", area)
+    dest = dest_dir / f"{_next_copy_n(dest_dir)}-run.log"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(output_body, encoding="utf-8")
+    return exit_code, str(dest.resolve()), seconds, output_body
+
+
 def job_verify_main(job_id: str, confirmed: bool,
                     command: str | None = None,
                     output: str | None = None,
                     units: str | None = None,
                     because: str | None = None,
-                    output_file: str | None = None) -> int:
+                    output_file: str | None = None,
+                    run: bool = False) -> int:
     verb = "job verify"
     me, violations = caller.resolve(verb)
     key = (job_id or "").strip()
@@ -366,22 +460,33 @@ def job_verify_main(job_id: str, confirmed: bool,
     if key and record is None:
         violations.append(f"unknown job '{key}'")
     _check(me, front, verb, violations)
-    if not confirmed:
-        violations.append("field '--confirmed' is required for 'job verify'")
-    if not (command or "").strip():
-        violations.append("field '--command' is required with '--confirmed' "
-                          "(a claim with no command behind it is not evidence)")
+    command_text = (command or "").strip()
     output_text = (output or "").strip()
     file_text = (output_file or "").strip()
-    if output_text and file_text:
-        violations.append("give --output or --output-file, not both")
-    elif not output_text and not file_text:
-        violations.append("field '--output' is required with '--confirmed' "
-                          "(a claim with no output behind it is not evidence)")
-    if file_text:
-        unreadable = _unreadable_output_file(file_text)
-        if unreadable:
-            violations.append(unreadable)
+    if confirmed and run:
+        violations.append("give --confirmed or --run, not both")
+    if run:
+        if command_text or output_text or file_text:
+            violations.append(
+                "give --run without --command, --output or --output-file")
+    else:
+        if not confirmed:
+            violations.append(
+                "field '--confirmed' is required for 'job verify'")
+        if not command_text:
+            violations.append(
+                "field '--command' is required with '--confirmed' "
+                "(a claim with no command behind it is not evidence)")
+        if output_text and file_text:
+            violations.append("give --output or --output-file, not both")
+        elif not output_text and not file_text:
+            violations.append(
+                "field '--output' is required with '--confirmed' "
+                "(a claim with no output behind it is not evidence)")
+        if file_text:
+            unreadable = _unreadable_output_file(file_text)
+            if unreadable:
+                violations.append(unreadable)
     override: int | None = None
     if units is not None:
         text = units.strip()
@@ -394,6 +499,9 @@ def job_verify_main(job_id: str, confirmed: bool,
     because_text = (because or "").strip()
     task = None
     task_violation = ""
+    repo = ""
+    head = ""
+    verify_cmd = ""
     if record is not None:
         state = record.get("state")
         if state == "verified":
@@ -430,15 +538,28 @@ def job_verify_main(job_id: str, confirmed: bool,
         # outside a brief arrives that way. It is verified like any other
         # and adds its units to nothing, because there is nothing for them
         # to be units of. A job naming a task the ledger does not have is
-        # still a refusal.
+        # still a refusal. `--run` needs the task's verify command, so a
+        # job with no task, or a task with an empty verify, is refused.
         if str(record.get("task") or "").strip():
             task, task_violation = _task_of_job(front or "", record)
             if task is None:
                 violations.append(task_violation)
-        if file_text:
+            elif run:
+                verify_cmd = str(task.get("verify") or "").strip()
+                if not verify_cmd:
+                    violations.append(
+                        f"task '{task.get('title')}' has no verify")
+        elif run:
+            violations.append(f"job '{key}' names no task")
+        if file_text or run:
             sid = record.get("session")
             if not (isinstance(sid, str) and sid.strip()):
                 violations.append(f"job '{key}' names no session")
+        if run:
+            repo = _job_repository(record)
+            head, head_err = _job_head(record, repo)
+            if head_err:
+                violations.append(head_err)
     if violations:
         return _refuse(violations)
     assert front is not None and record is not None
@@ -448,19 +569,46 @@ def job_verify_main(job_id: str, confirmed: bool,
     who = caller.by_line(me)
     now = store.utcnow_iso()
     copied = ""
-    if file_text:
+    run_fields: dict = {}
+    extra = ""
+    if run:
+        ran = _execute_verify_run(record, repo, head, verify_cmd)
+        if ran is None:
+            return 1
+        exit_code, output_path, seconds, output_body = ran
+        run_fields = {
+            "verify_command": verify_cmd,
+            "verify_exit": exit_code,
+            "verify_seconds": seconds,
+            "verify_output_ref": output_path,
+        }
+        if exit_code != 0:
+            store.append_ledger(paths.front_jobs_path(front),
+                                dict(record, **run_fields),
+                                session_id=who)
+            print(f"{key} verify failed (exit {exit_code} in {seconds}s), "
+                  f"output: {output_path}")
+            tail = "\n".join((output_body or "").splitlines()[-20:])
+            if tail:
+                print(tail)
+            return 1
+        command_text = verify_cmd
+        output_ref = output_path
+        extra = f" exit 0 in {seconds}s, output: {output_path}"
+    elif file_text:
         sid = str(record.get("session") or "").strip()
         dest_dir = paths.session_dir(sid) / "verify"
         basename = Path(file_text).name or "output"
         copied = _store_output_file(
             file_text, dest_dir / f"{_next_copy_n(dest_dir)}-{basename}")
         output_ref = copied
+        extra = f" output: {copied}"
     else:
         output_ref = output_text
     store.append_ledger(
         paths.front_evidence_path(front),
         entities.Evidence(on=key, claim=f"job '{key}' verified",
-                          status=CONFIRMED, command=(command or "").strip(),
+                          status=CONFIRMED, command=command_text,
                           output_ref=output_ref,
                           spec_path=str(record.get("spec_path") or "")
                           ).to_dict(),
@@ -468,7 +616,7 @@ def job_verify_main(job_id: str, confirmed: bool,
     )
     # The `--because` sentence travels on the job line, so the screen can
     # show why a job that died still counted.
-    revised = dict(record, state="verified", verified_at=now)
+    revised = dict(record, state="verified", verified_at=now, **run_fields)
     if because_text:
         revised["verify_because"] = because_text
     store.append_ledger(paths.front_jobs_path(front), revised,
@@ -477,7 +625,6 @@ def job_verify_main(job_id: str, confirmed: bool,
         store.append_ledger(paths.front_tasks_path(front),
                             _moved(task, units_done=done), session_id=who)
     spec = str(record.get("spec_path") or "")
-    extra = f" output: {copied}" if copied else ""
     if task is not None:
         print(f"{key} verified "
               f"({add} units on task '{task.get('title')}': {done}/{total})"
@@ -882,6 +1029,9 @@ def add_job_arguments(sub: argparse.ArgumentParser) -> None:
     verify.add_argument("job", help="job id")
     verify.add_argument("--confirmed", action="store_true",
                         help="the supervisor re-ran the verification")
+    verify.add_argument("--run", action="store_true",
+                        help="run the task's verify in a detached worktree "
+                             "of the job's head")
     verify.add_argument("--command", default=None,
                         help="verification command that was re-run (required)")
     verify.add_argument("--output", default=None,
@@ -910,7 +1060,8 @@ def _job_entry(args: argparse.Namespace) -> int:
         return job_verify_main(args.job, args.confirmed,
                                command=args.command, output=args.output,
                                units=args.units, because=args.because,
-                               output_file=args.output_file)
+                               output_file=args.output_file,
+                               run=args.run)
     if args.job_verb == "fail":
         return job_fail_main(args.job, finding=args.finding,
                              closed=args.closed)

@@ -1003,8 +1003,8 @@ def test_units_still_have_to_be_accounted_for_without_the_flag(
     assert "every unit must be accounted for" in capsys.readouterr().err
 
 
-def _returned_job(front, jid, task_id, units=1, session=WRK):
-    store.append_ledger(paths.front_jobs_path(front), {
+def _returned_job(front, jid, task_id, units=1, session=WRK, **fields):
+    record = {
         "id": jid, "task": task_id, "kind": "implement", "role": "muse",
         "priority": 1, "spec_path": "/tmp/specs/job.md", "session": session,
         "worktree": "", "branch": "", "log": "", "timeout": "20m",
@@ -1014,7 +1014,42 @@ def _returned_job(front, jid, task_id, units=1, session=WRK):
         "started_at": iso(NOW - timedelta(minutes=8)),
         "returned_at": iso(NOW - timedelta(minutes=2)),
         "verified_at": None, "artifact": "", "verdict_path": "",
-    })
+    }
+    record.update(fields)
+    store.append_ledger(paths.front_jobs_path(front), record)
+
+
+def _git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["git", "-C", str(repo), *args], check=check,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+
+
+def _make_built_repo(path: Path, content: str = "the artifact\n") -> tuple[Path, str]:
+    """A fixture repo whose job-branch commits a file named ``built``."""
+    path.mkdir(parents=True, exist_ok=True)
+    _git(path, "init", "-q", "-b", "main")
+    _git(path, "config", "user.email", "test@example.invalid")
+    _git(path, "config", "user.name", "test")
+    _git(path, "commit", "-q", "--allow-empty", "-m", "root")
+    _git(path, "checkout", "-qb", "job-branch")
+    (path / "built").write_text(content, encoding="utf-8")
+    _git(path, "add", "built")
+    _git(path, "commit", "-qm", "the work")
+    head = _git(path, "rev-parse", "HEAD").stdout.strip()
+    return path, head
+
+
+def _set_verify(front: str, title: str, command: str) -> None:
+    task = tasks_by_title(front)[title]
+    store.append_ledger(paths.front_tasks_path(front),
+                        dict(task, verify=command))
+
+
+def _worktree_paths(repo: Path) -> list[str]:
+    listed = _git(repo, "worktree", "list", "--porcelain").stdout
+    return [line[len("worktree "):] for line in listed.splitlines()
+            if line.startswith("worktree ")]
 
 
 def test_verify_output_file_copies_under_the_job_session(
@@ -1181,3 +1216,145 @@ def test_finding_help_names_output_file(env, capsys):
         cli.main(["finding", "--help"])
     assert caught.value.code == 0
     assert "--output-file" in capsys.readouterr().out
+
+
+def test_job_verify_run_credits_a_green_verify(env, monkeypatch, capsys):
+    """`--run` executes the task's verify at the job's head and, on exit
+    0, verifies the job the way `--confirmed` does."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    _set_verify("flow", "first", "test -f built && cat built")
+    repo, head = _make_built_repo(env / "fixture")
+    originals = _worktree_paths(repo)
+    _returned_job("flow", "job-run1", first, units=1,
+                  worktree=str(repo), branch="job-branch", head=head)
+
+    assert run(monkeypatch, ["job", "verify", "job-run1", "--run"], SUP) == 0
+    out = capsys.readouterr().out
+    job = folded_job("flow", "job-run1")
+    assert job["state"] == "verified"
+    assert job["verify_command"] == "test -f built && cat built"
+    assert job["verify_exit"] == 0
+    assert isinstance(job["verify_seconds"], int)
+    dest = Path(job["verify_output_ref"])
+    assert dest.is_file()
+    assert dest.name == "1-run.log"
+    assert dest.read_text(encoding="utf-8") == "the artifact\n"
+    assert dest.parent == paths.session_dir(WRK) / "verify"
+    assert tasks_by_title("flow")["first"]["units_done"] == 1
+    evidence = store.read_ledger(paths.front_evidence_path("flow"))
+    assert evidence[-1]["status"] == "CONFIRMED"
+    assert evidence[-1]["command"] == "test -f built && cat built"
+    assert evidence[-1]["output_ref"] == str(dest)
+    assert "job-run1 verified" in out
+    assert "exit 0 in" in out
+    assert f"output: {dest}" in out
+    assert _worktree_paths(repo) == originals
+
+
+def test_job_verify_run_records_a_nonzero_exit(env, monkeypatch, capsys):
+    """A non-zero verify leaves the job returned, credits no unit, and
+    still writes the four fields and the output file."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    _set_verify("flow", "first", "exit 7")
+    repo, head = _make_built_repo(env / "fixture")
+    originals = _worktree_paths(repo)
+    jobs_before = len(store.read_ledger(paths.front_jobs_path("flow")))
+    _returned_job("flow", "job-run2", first, units=1,
+                  worktree=str(repo), branch="job-branch", head=head)
+    jobs_before += 1
+
+    assert run(monkeypatch, ["job", "verify", "job-run2", "--run"], SUP) == 1
+    out = capsys.readouterr().out
+    job = folded_job("flow", "job-run2")
+    assert job["state"] == "returned"
+    assert job["verify_command"] == "exit 7"
+    assert job["verify_exit"] == 7
+    assert isinstance(job["verify_seconds"], int)
+    dest = Path(job["verify_output_ref"])
+    assert dest.is_file()
+    assert dest.name == "1-run.log"
+    assert tasks_by_title("flow")["first"]["units_done"] == 0
+    assert store.read_ledger(paths.front_evidence_path("flow")) == []
+    assert len(store.read_ledger(paths.front_jobs_path("flow"))) == jobs_before + 1
+    assert "job-run2 verify failed (exit 7" in out
+    assert f"output: {dest}" in out
+    assert _worktree_paths(repo) == originals
+
+
+def test_job_verify_run_drops_foreman_env(env, monkeypatch, capsys):
+    """The verify subprocess sees none of FOREMAN_SESSION, FOREMAN_STATE
+    or FOREMAN_CONFIG, even when the caller has all three set."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    _set_verify("flow", "first", "env | grep -c ^FOREMAN_ || true")
+    repo, head = _make_built_repo(env / "fixture")
+    # Head empty: --run asks git for the branch, the way a job line
+    # that has not yet recorded a head still names its branch.
+    _returned_job("flow", "job-run3", first, units=1,
+                  worktree=str(repo), branch="job-branch")
+    # The env fixture already set STATE and CONFIG; SUP sets SESSION.
+    assert run(monkeypatch, ["job", "verify", "job-run3", "--run"], SUP) == 0
+    capsys.readouterr()
+    job = folded_job("flow", "job-run3")
+    assert job["state"] == "verified"
+    assert job["verify_exit"] == 0
+    dest = Path(job["verify_output_ref"])
+    assert dest.read_text(encoding="utf-8").strip() == "0"
+
+
+def test_job_verify_run_refuses_confirmed_output_and_no_task(
+        env, monkeypatch, capsys):
+    """`--run` is an alternative to `--confirmed`, not a companion, and
+    it needs the task's verify command."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    _returned_job("flow", "job-run4", first)
+    jobs_before = len(store.read_ledger(paths.front_jobs_path("flow")))
+
+    assert run(monkeypatch, ["job", "verify", "job-run4",
+                             "--run", "--confirmed",
+                             "--command", "make check first",
+                             "--output", "ok"], SUP) == 1
+    err = capsys.readouterr().err
+    assert "--confirmed" in err
+    assert "--run" in err
+    assert folded_job("flow", "job-run4")["state"] == "returned"
+
+    assert run(monkeypatch, ["job", "verify", "job-run4",
+                             "--run", "--output", "x"], SUP) == 1
+    err = capsys.readouterr().err
+    assert "--run" in err
+    assert "--output" in err
+    assert folded_job("flow", "job-run4")["state"] == "returned"
+    assert len(store.read_ledger(paths.front_jobs_path("flow"))) == jobs_before
+    assert store.read_ledger(paths.front_evidence_path("flow")) == []
+
+    store.append_ledger(paths.front_jobs_path("flow"), {
+        "id": "job-run5", "task": "", "kind": "implement",
+        "role": "muse", "priority": 1, "spec_path": "",
+        "session": WRK, "worktree": "", "branch": "", "log": "",
+        "timeout": "20m", "units": 1, "attempt": 1, "state": "returned",
+        "planned_at": iso(NOW), "queued_at": iso(NOW),
+        "started_at": iso(NOW), "returned_at": iso(NOW),
+        "verified_at": None, "artifact": "", "verdict_path": "",
+    })
+    assert run(monkeypatch, ["job", "verify", "job-run5", "--run"],
+               SUP) == 1
+    err = capsys.readouterr().err
+    assert "job-run5" in err
+    assert "no task" in err
+    assert folded_job("flow", "job-run5")["state"] == "returned"
+
+
+def test_job_verify_help_names_run(env, capsys):
+    """`job verify --help` names `--run`."""
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["job", "verify", "--help"])
+    assert caught.value.code == 0
+    assert "--run" in capsys.readouterr().out
