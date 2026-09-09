@@ -42,6 +42,7 @@ import argparse
 import json
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from typing import Any
 
@@ -255,10 +256,33 @@ def package_export() -> str:
     return f'export PYTHONPATH="{safe}${{PYTHONPATH:+:$PYTHONPATH}}"\n'
 
 
-def turn_script_inner(vendor_argv: list[str]) -> str:
-    """The turn script's body: this checkout's package, then the vendor."""
-    return package_export() + " ".join(
-        shlex.quote(part) for part in vendor_argv) + "\n"
+#: Stamp the running turn's marker with this shell's pid before the
+#: vendor starts, so the collector can claim the tree mid-turn. ``$$``
+#: is the shell; the vendor is its child (or this pid after exec).
+_RECORD_TURN_PID = (
+    "from foreman.wake import record_turn_pid as r;"
+    "import sys; r(sys.argv[1], int(sys.argv[2]))"
+)
+
+
+def turn_script_inner(vendor_argv: list[str],
+                      session_id: str | None = None) -> str:
+    """The turn script's body: claim this shell, then run the vendor.
+
+    The claim is this shell's pid, the way a launch records the wrapper
+    — the vendor is a descendant, so the collector's tree walk covers
+    it. A failed stamp does not fail the turn: better an intruder line
+    than a skipped wake.
+    """
+    body = package_export()
+    if session_id:
+        body += (
+            f"{shlex.quote(sys.executable)} -c "
+            f"{shlex.quote(_RECORD_TURN_PID)} "
+            f"{shlex.quote(session_id)} $$ || true\n"
+        )
+    body += " ".join(shlex.quote(part) for part in vendor_argv) + "\n"
+    return body
 
 
 def render_event_text(events: list[dict]) -> str:
@@ -501,7 +525,8 @@ def run_turn(*, session_id: str, vendor_argv: list[str],
     secs = turn_timeout_seconds(resolved_timeout)
     script = Path(script_path) if script_path is not None \
         else paths.session_dir(session_id) / "run.sh"
-    _common.write_worker_script(script, turn_script_inner(vendor_argv))
+    _common.write_worker_script(
+        script, turn_script_inner(vendor_argv, session_id=session_id))
     outer = turn_outer_argv(session_id, script, repo=repo,
                             timeout_text=resolved_timeout)
     run = spawn if spawn is not None else _default_spawn
@@ -585,23 +610,28 @@ def run_first_turn(session_id: str, *, prompt_text: str,
         mcp_config=mcp_config if mcp_config is not None
         else _ensure_mcp_config(session_id),
         model=model)
-    attempts = [run_turn(
-        session_id=session_id, vendor_argv=vendor_argv, repo=repo,
-        timeout_text=timeout_text, spawn=spawn, attempt=1, kind="first")]
-    if not attempts[0]["ok"]:
-        attempts.append(run_turn(
+    wake.turn_started(session_id)
+    try:
+        attempts = [run_turn(
             session_id=session_id, vendor_argv=vendor_argv, repo=repo,
-            timeout_text=timeout_text, spawn=spawn, attempt=2, kind="first"))
-    vendor_session: str | None = None
-    for attempt in attempts:
-        if attempt["vendor_session"]:
-            vendor_session = attempt["vendor_session"]
-            break
-    return {
-        "attempts": attempts,
-        "ok": any(attempt["ok"] for attempt in attempts),
-        "vendor_session": vendor_session,
-    }
+            timeout_text=timeout_text, spawn=spawn, attempt=1, kind="first")]
+        if not attempts[0]["ok"]:
+            attempts.append(run_turn(
+                session_id=session_id, vendor_argv=vendor_argv, repo=repo,
+                timeout_text=timeout_text, spawn=spawn, attempt=2,
+                kind="first"))
+        vendor_session: str | None = None
+        for attempt in attempts:
+            if attempt["vendor_session"]:
+                vendor_session = attempt["vendor_session"]
+                break
+        return {
+            "attempts": attempts,
+            "ok": any(attempt["ok"] for attempt in attempts),
+            "vendor_session": vendor_session,
+        }
+    finally:
+        wake.turn_ended(session_id)
 
 
 def run_wake(session_id: str, *, spawn: Any = None,

@@ -1947,7 +1947,8 @@ def _print_headless(session_id: str, vendor_id: str | None,
         print(f"branch: {branch}")
     print("window: none (headless — one turn per wake, no long-lived process)")
     print("pid: (none — a headless session holds no process between turns)")
-    inner = headless_module.turn_script_inner(vendor_argv)
+    inner = headless_module.turn_script_inner(
+        vendor_argv, session_id=session_id)
     print(f"command: {_common.printable_command(outer_argv, inner)}")
     print_world()
 

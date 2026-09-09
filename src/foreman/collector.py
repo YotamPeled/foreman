@@ -589,6 +589,35 @@ def _tick_lock_path() -> Path:
     return paths.state_dir() / "collector.lock"
 
 
+def _tree_of(pid: int | None, starttime, table: dict[int, dict]) -> set[int]:
+    """The live tree of ``pid`` when its starttime still matches, else empty.
+
+    A missing pid, a dead pid, or a starttime that does not match claims
+    nothing: a recycled pid is not the session's.
+    """
+    if pid is None or not isinstance(pid, int) or pid <= 0:
+        return set()
+    if not procs.same_process(pid, starttime, table):
+        return set()
+    return procs.descendants(pid, table) if table else (
+        {pid} if procs.pid_alive(pid) else set())
+
+
+def _turn_tree(sid: str, table: dict[int, dict]) -> set[int]:
+    """The process tree a live turn marker claims, or empty.
+
+    The marker records the vendor the way a launch records a session:
+    pid plus starttime. A stale marker — pid gone, or starttime not the
+    process now at that pid — claims nothing.
+    """
+    marker = store.read_snapshot(paths.session_turn_path(sid), default=None)
+    if not isinstance(marker, dict):
+        return set()
+    pid = marker.get("pid")
+    pid = pid if isinstance(pid, int) and pid > 0 else None
+    return _tree_of(pid, marker.get("pid_starttime"), table)
+
+
 def _territory(sessions: dict) -> list[str]:
     """The directories a swarm process would be working in."""
     places = [str(paths.state_dir())]
@@ -925,14 +954,9 @@ def _tick_inner(moment: datetime, now_iso: str,
             continue
         pid = record.get("pid")
         pid = pid if isinstance(pid, int) and pid > 0 else None
-        if pid is None:
-            trees[sid] = set()
-            continue
-        if not procs.same_process(pid, record.get("pid_starttime"), table):
-            trees[sid] = set()
-            continue
-        trees[sid] = procs.descendants(pid, table) if table else (
-            {pid} if procs.pid_alive(pid) else set())
+        claimed = _tree_of(pid, record.get("pid_starttime"), table)
+        claimed |= _turn_tree(sid, table)
+        trees[sid] = claimed
 
     for sid, record in sessions.items():
         if not isinstance(record, dict):

@@ -10,8 +10,10 @@ exactly once.
 A wake is never delivered while a turn of that session is running: a
 queued event waits for the turn to end, then one wake carries every
 event queued during it. The turn marker is a small file with a start
-time, cleared by staleness rather than held as an unbounded flag, so a
-crashed turn cannot wedge the queue for ever.
+time and, once the vendor process exists, that process's pid and
+starttime — the same identity a launch records — so the collector can
+claim the tree. It is cleared by staleness rather than held as an
+unbounded flag, so a crashed turn cannot wedge the queue for ever.
 """
 
 from __future__ import annotations
@@ -164,11 +166,48 @@ def last_wake(session_id: str) -> dict | None:
     return latest
 
 
-def turn_started(session_id: str, now: datetime | None = None) -> None:
-    """Mark a turn running. Overwrites whatever marker came before."""
-    store.write_snapshot(paths.session_turn_path(session_id),
-                         {"session": session_id,
-                          "started_at": _now_iso(now)})
+def turn_started(session_id: str, now: datetime | None = None,
+                 pid: int | None = None,
+                 pid_starttime: int | None = None) -> None:
+    """Mark a turn running. Overwrites whatever marker came before.
+
+    ``pid`` and ``pid_starttime`` are the vendor process the turn owns,
+    recorded the way a launch records them. Omitted until the process
+    exists; :func:`record_turn_pid` fills them in without resetting
+    ``started_at``.
+    """
+    marker: dict = {"session": session_id, "started_at": _now_iso(now)}
+    if isinstance(pid, int) and pid > 0:
+        marker["pid"] = pid
+    if pid_starttime is not None:
+        marker["pid_starttime"] = pid_starttime
+    store.write_snapshot(paths.session_turn_path(session_id), marker)
+
+
+def record_turn_pid(session_id: str, pid: int,
+                    pid_starttime: int | None = None) -> None:
+    """Stamp the live turn marker with the process the turn started.
+
+    A missing marker is left missing: this updates a running turn, it
+    does not start one. ``pid_starttime`` is the process identity the
+    collector matches; omitted, it is read off the process now. A pid
+    that cannot be identified (gone, or no starttime) is not recorded,
+    so a recycled pid cannot inherit the claim.
+    """
+    if not isinstance(pid, int) or pid <= 0:
+        return
+    path = paths.session_turn_path(session_id)
+    marker = store.read_snapshot(path, default=None)
+    if not isinstance(marker, dict):
+        return
+    from . import procs
+    start = pid_starttime if pid_starttime is not None \
+        else procs.proc_starttime(pid)
+    if start is None:
+        return
+    marker["pid"] = pid
+    marker["pid_starttime"] = start
+    store.write_snapshot(path, marker)
 
 
 def turn_ended(session_id: str) -> None:
