@@ -15,7 +15,7 @@ One front is implemented, `panel`, and two of its checks:
                    header numbers, and for each rendered block the number
                    of cards and the title text of each
 
-`--keys` drives every key against a throwaway copy of the fixture and
+`--stall` runs a 100 ms timer beside a live model and reports every gap\nover 50 ms, with the block counts at each end so an empty model cannot\npass as a fast one; FOREMAN_PROBE_MS sets how long it watches.\n\n`--keys` drives every key against a throwaway copy of the fixture and
 asserts the ledger line; `--install-roundtrip` runs the root `install`
 and `uninstall` against temporary homes and asserts the round trip is
 byte-exact.
@@ -41,6 +41,7 @@ PLUGIN = REPO / "plugin" / "foreman"
 HARNESS = PLUGIN / "Harness.qml"
 PANEL_HARNESS = PLUGIN / "PanelHarness.qml"
 KEYS_HARNESS = PLUGIN / "KeysHarness.qml"
+STALL_PROBE = PLUGIN / "StallProbe.qml"
 FIXTURE = PLUGIN / "test" / "fixture"
 FIXTURE_LIVE = PLUGIN / "test" / "fixture-live"
 
@@ -1522,6 +1523,66 @@ def _refusal(home: Path) -> None:
     print("install-roundtrip [refused]: uninstall restored the rest")
 
 
+#: How long `--stall` watches the main thread, and the lateness that counts
+#: as a block. A 100 ms timer cannot run late unless something else held the
+#: thread, so the lateness is the block; 50 ms is well above scheduler noise
+#: on an idle box and well below anything a human would call a freeze.
+STALL_MS = int(os.environ.get("FOREMAN_PROBE_MS") or 60000)
+STALL_GAP_MS = 50
+
+
+def stall(state_dir: Path) -> int:
+    """Watch the model layer hold the main thread, and say by how much.
+
+    The probe is a 100 ms timer beside a live Model. It reports the block
+    counts at the start and at the end as well as the lateness, because a
+    model that folds nothing never blocks: without the counts, an empty
+    panel passes as a fast one.
+    """
+    quickshell = find_quickshell()
+    if not STALL_PROBE.is_file():
+        raise Failure("stall: missing " + str(STALL_PROBE))
+    env = headless_env(fed(state_dir))
+    env["FOREMAN_PROBE_MS"] = str(STALL_MS)
+    try:
+        result = subprocess.run(
+            [quickshell, "-p", str(STALL_PROBE)], capture_output=True,
+            text=True, timeout=STALL_MS / 1000.0 + 120, env=env)
+    except subprocess.TimeoutExpired:
+        raise Failure("stall: the probe never finished in %d ms + 120 s; a "
+                      "run that cannot report its own lateness is itself the "
+                      "worst possible result" % STALL_MS)
+    output = _clean(result.stdout + result.stderr)
+
+    done = re.search(r"PROBE done ticks=(\d+) over50=(\d+) worst=(\d+) "
+                     r"blockedMs=(\d+)", output)
+    if not done:
+        raise Failure("stall: the probe printed no summary; output was:\n"
+                      + output[-2000:])
+    ticks, over, worst, blocked = (int(g) for g in done.groups())
+
+    counts = dict(re.findall(r"(\w+)=(-?\d+)",
+                             re.search(r"PROBE counts at-end (.*)", output).group(1))
+                  ) if re.search(r"PROBE counts at-end", output) else {}
+    missing = [name for name in BLOCKS if name not in counts]
+    if missing:
+        raise Failure("stall: the probe never reported the block counts (%s); "
+                      "speed with nothing rendered is not a pass"
+                      % ", ".join(missing))
+    for name in BLOCKS:
+        print("stall block %s %s" % (name, counts[name]))
+    if not any(int(counts[name]) > 0 for name in BLOCKS):
+        raise Failure("stall: every block came back empty, so the probe "
+                      "measured a model that folds nothing")
+    for line in output.splitlines():
+        if line.strip().startswith("STALL "):
+            print(line.strip())
+    print("stall: %d tick(s) in %d ms, %d over %d ms, worst %d ms, "
+          "%d ms blocked" % (ticks, STALL_MS, over, STALL_GAP_MS, worst,
+                             blocked))
+    return 0
+
+
 def install_roundtrip(state_dir: Path) -> int:
     """The whole plugin, installed and uninstalled inside temporary homes.
 
@@ -1573,7 +1634,8 @@ def main(argv: list[str]) -> int:
                         help="state directory to read (default: the fixture)")
 
     known = set(NOT_IMPLEMENTED) | {"--loads", "--blocks-count", "--blocks",
-                                         "--keys", "--install-roundtrip"}
+                                         "--keys", "--stall",
+                                         "--install-roundtrip"}
     rest, check = [], None
     for token in argv:
         if token in known and check is None:
@@ -1599,7 +1661,7 @@ def main(argv: list[str]) -> int:
 
     checks = {"--loads": loads, "--blocks-count": blocks_count,
               "--blocks": panel_blocks, "--keys": panel_keys,
-              "--install-roundtrip": install_roundtrip}
+              "--stall": stall, "--install-roundtrip": install_roundtrip}
     if args.check not in checks:
         print("foreman-verify: unknown check %r for front panel" % args.check,
               file=sys.stderr)
