@@ -3,9 +3,10 @@
 A front's supervisor hands a built branch over with ``merge request``; the
 merge desk consumes the queue first come, first served: ``take`` claims the
 oldest unclaimed record, ``land`` rebases it onto the target, runs the
-target's check command from ``foreman.toml``, pushes and marks the tasks
-landed, and ``fail`` sends the record back with a reason while the tasks
-stay built and the branch is left alone.
+target's check command from ``foreman.toml``, pushes the rebased head to
+the target (lease on the sha the rebase was onto) then the branch, marks
+the tasks landed, and ``fail`` sends the record back with a reason while
+the tasks stay built and the branch is left alone.
 
 Gates, per docs/DESIGN.md section 12: ``request`` is the front's own
 supervisor (like every progress verb); ``take``, ``land`` and ``fail`` are
@@ -343,6 +344,13 @@ def merge_land_main(ref: str | None) -> int:
             return _refuse([f"cannot open a landing worktree for "
                             f"'{branch}': {tail}".strip()])
         try:
+            # The sha the rebase will sit on, recorded before it runs so
+            # the target push can lease against exactly that value.
+            base_proc = _git(area, "rev-parse", target)
+            if base_proc.returncode != 0:
+                return _refuse(
+                    [f"field 'target' does not exist ({target!r})"])
+            base = base_proc.stdout.strip()
             rebase = _git(area, "rebase", target)
             if rebase.returncode != 0:
                 _git(area, "rebase", "--abort")
@@ -358,6 +366,24 @@ def merge_land_main(ref: str | None) -> int:
                 return _refuse([f"check '{check}' failed on '{branch}' "
                                 f"(exit {proc.returncode}): {tail}".strip()])
             head = _git(area, "rev-parse", "HEAD").stdout.strip()
+            # Advance the target first, leased to `base`. The rebase put
+            # `head` directly on top of `base`, so this is a fast-forward
+            # exactly when the remote target is still `base`, and the
+            # lease refuses it otherwise. Nothing else is pushed if it
+            # refuses — no half-landed branch, no merge commit.
+            target_push = _git(
+                area, "push",
+                f"--force-with-lease=refs/heads/{target}:{base}",
+                "origin", f"HEAD:refs/heads/{target}")
+            if target_push.returncode != 0:
+                remote = _git(area, "ls-remote", "origin",
+                              f"refs/heads/{target}").stdout.split()
+                found = remote[0] if remote else ""
+                tail = (target_push.stderr.strip()
+                        or target_push.stdout.strip()).strip()
+                return _refuse([
+                    f"push of '{target}' failed: expected {base}, "
+                    f"found {found}: {tail}".strip()])
             # A rebase rewrites the branch, so the push that follows one is
             # always a force. With-lease, so a branch somebody moved since
             # the request is refused rather than overwritten.

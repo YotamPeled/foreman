@@ -123,6 +123,7 @@ def make_repo(root: Path) -> tuple[Path, Path]:
     origin = root / "origin.git"
     git(root, "init", "-q", "--bare", "-b", "main", str(origin))
     git(repo, "remote", "add", "origin", str(origin))
+    git(repo, "push", "-q", "origin", "HEAD:refs/heads/main")
     return repo, origin
 
 
@@ -270,6 +271,7 @@ def test_flow_2_request_take_land(env, monkeypatch, capsys):
     (repo / "moved.txt").write_text("moved\n", encoding="utf-8")
     git(repo, "add", "moved.txt")
     git(repo, "commit", "-qm", "target moves")
+    git(repo, "push", "-q", "origin", "main")
     old_head = git(repo, "rev-parse", "feat")
 
     assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
@@ -283,7 +285,9 @@ def test_flow_2_request_take_land(env, monkeypatch, capsys):
     assert head in out
     assert git(repo, "merge-base", "--is-ancestor", "main", "feat") == ""
     assert (repo / "moved.txt").is_file()
-    # Pushed: the bare origin holds the rebased branch.
+    # Pushed: the bare origin holds the rebased head on the target
+    # and on the branch.
+    assert git(origin, "rev-parse", "refs/heads/main") == head
     assert git(origin, "rev-parse", "refs/heads/feat") == head
 
     record = merges_by_id()[mid]
@@ -501,6 +505,121 @@ def test_land_failing_check_leaves_the_tasks_built(env, monkeypatch, capsys):
     assert "failed" in err
     assert tasks_by_title("flow")["first"]["state"] == "built"
     assert merges_by_id()[mid]["result"] == "merging"
+
+
+def test_land_advances_the_target(env, monkeypatch, capsys):
+    """After land, the origin's target ref is the landed head, not the
+    sha it started at; the branch and the task record match it."""
+    repo, origin = make_repo(env)
+    make_branch(repo, "feat", "feat.txt")
+    write_check(env, "test -f feat.txt")
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "flow"))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "flow"),
+                session_record(DESK, "merge-desk"))
+    first = build_task(monkeypatch, capsys, "flow", "first")
+    old_main = git(origin, "rev-parse", "refs/heads/main")
+    mid = request_id(monkeypatch, capsys, "feat", "flow", [first],
+                     "main", cwd=repo)
+    assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo) == 0
+    capsys.readouterr()
+    head = git(repo, "rev-parse", "feat")
+    assert head != old_main
+    assert git(origin, "rev-parse", "refs/heads/main") == head
+    assert git(origin, "rev-parse", "refs/heads/feat") == head
+    assert git(repo, "rev-parse", "feat") == head
+    record = merges_by_id()[mid]
+    assert record["result"] == "landed"
+    assert record["head"] == head
+    assert tasks_by_title("flow")["first"]["state"] == "landed"
+    assert tasks_by_title("flow")["first"]["head"] == head
+
+
+def test_land_is_a_fast_forward(env, monkeypatch, capsys):
+    """The target's new tip has the old target as its first parent, and
+    the landed range contains no merge commit."""
+    repo, origin = make_repo(env)
+    make_branch(repo, "feat", "feat.txt")
+    write_check(env, "test -f feat.txt")
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "flow"))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "flow"),
+                session_record(DESK, "merge-desk"))
+    first = build_task(monkeypatch, capsys, "flow", "first")
+    old_main = git(origin, "rev-parse", "refs/heads/main")
+    mid = request_id(monkeypatch, capsys, "feat", "flow", [first],
+                     "main", cwd=repo)
+    assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo) == 0
+    capsys.readouterr()
+    head = git(origin, "rev-parse", "refs/heads/main")
+    assert git(origin, "rev-parse", f"{head}^") == old_main
+    parents = subprocess.run(
+        ["git", "--git-dir", str(origin), "cat-file", "-p", head],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert parents.returncode == 0
+    parent_lines = [line for line in parents.stdout.splitlines()
+                    if line.startswith("parent ")]
+    assert parent_lines == [f"parent {old_main}"]
+    assert git(origin, "rev-list", "--merges", f"{old_main}..{head}") == ""
+
+
+def test_land_refuses_when_the_target_moved_during_the_check(
+        env, monkeypatch, capsys):
+    """A check that pushes a new commit onto the origin's target leaves
+    land refusing: origin stays at that commit, the branch is unmoved,
+    the merge record stays taken, and the refusal names the sha the
+    lease expected and the sha it found."""
+    repo, origin = make_repo(env)
+    make_branch(repo, "feat", "feat.txt")
+    during = env / "during"
+    write_check(env, (
+        f"git clone --quiet {origin} {during} && "
+        f"git -C {during} config user.email test@example.invalid && "
+        f"git -C {during} config user.name test && "
+        f"echo during > {during}/during.txt && "
+        f"git -C {during} add during.txt && "
+        f"git -C {during} commit -qm during-check && "
+        f"git -C {during} push origin HEAD:refs/heads/main"
+    ))
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "flow"))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "flow"),
+                session_record(DESK, "merge-desk"))
+    first = build_task(monkeypatch, capsys, "flow", "first")
+    old_main = git(origin, "rev-parse", "refs/heads/main")
+    old_feat = git(repo, "rev-parse", "feat")
+    mid = request_id(monkeypatch, capsys, "feat", "flow", [first],
+                     "main", cwd=repo)
+    assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo) == 1
+    err = capsys.readouterr().err
+    found = git(origin, "rev-parse", "refs/heads/main")
+    assert found != old_main
+    assert git(origin, "show", "refs/heads/main:during.txt") == "during"
+    missing_feat = subprocess.run(
+        ["git", "--git-dir", str(origin), "cat-file", "-e",
+         "refs/heads/main:feat.txt"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert missing_feat.returncode != 0
+    assert old_main in err
+    assert found in err
+    assert "push of 'feat'" not in err
+    assert git(repo, "rev-parse", "feat") == old_feat
+    absent = subprocess.run(
+        ["git", "--git-dir", str(origin), "show-ref", "--verify", "--quiet",
+         "refs/heads/feat"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert absent.returncode != 0
+    assert merges_by_id()[mid]["result"] == "merging"
+    assert tasks_by_title("flow")["first"]["state"] == "built"
 
 
 # --------------------------------------------------------------------------
