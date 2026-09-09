@@ -18,7 +18,7 @@ from foreman import paths, procs, store
 from foreman import headless as headless_module
 from foreman import wake as wake_module
 from foreman.caller import SESSION_ENV
-from foreman.collector import tick
+from foreman.collector import _turn_tree, tick
 from foreman.entities import Session
 from foreman.pools import _common
 
@@ -217,3 +217,59 @@ def test_the_turn_script_records_the_process_on_the_marker(env):
         child.kill()
         child.wait()
         wake_module.turn_ended(sid)
+
+
+def test_a_stamp_before_the_marker_exists_still_claims(env):
+    """A stamp that lands before the marker exists still claims: the
+    shell that runs it is the turn, so a missing marker is a race, not
+    an absence. Without the write, ``_turn_tree`` would return empty
+    and the collector would treat the turn's own process as unclaimed."""
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        wake_module.record_turn_pid(SUP, child.pid)
+        tree = _turn_tree(SUP, procs.snapshot())
+        assert child.pid in tree
+    finally:
+        child.kill()
+        child.wait()
+        wake_module.turn_ended(SUP)
+
+
+def test_turn_started_keeps_a_stamped_pid_and_a_new_turn_starts_clean(env):
+    """``turn_started`` for the same turn does not drop a pid already
+    stamped; a ``turn_started`` that begins a new turn starts clean.
+    Overwriting the marker without the pid is how a whole turn's vendor
+    looks like an intruder."""
+    wake_module.record_turn_pid(SUP, WRAPPER, pid_starttime=START)
+    wake_module.turn_started(SUP, now=NOW)
+    marker = store.read_snapshot(paths.session_turn_path(SUP), default=None)
+    assert isinstance(marker, dict)
+    assert marker["pid"] == WRAPPER
+    assert marker["pid_starttime"] == START
+
+    wake_module.turn_ended(SUP)
+    wake_module.turn_started(SUP, now=NOW)
+    marker = store.read_snapshot(paths.session_turn_path(SUP), default=None)
+    assert isinstance(marker, dict)
+    assert "pid" not in marker
+    assert "pid_starttime" not in marker
+
+
+def test_a_tick_with_the_stamp_landed_files_no_intruder(env, monkeypatch):
+    """A tick taken while a turn is running, with the stamp landed
+    before ``turn_started``, files no intruder anomaly for the turn's
+    own vendor. The ledger is the proof, not the claim set: a claim
+    that never reaches the anomaly pass would still look green here
+    if we only inspected trees."""
+    worktree = env / "wt"
+    worktree.mkdir()
+    seat({SUP: session(SUP, worktree=str(worktree))})
+    wake_module.record_turn_pid(SUP, WRAPPER, pid_starttime=START)
+    wake_module.turn_started(SUP, now=NOW)
+    drive_table(monkeypatch, mid_turn_table(), str(worktree))
+
+    tick(now=NOW)
+
+    assert lines_for("intruder", str(WRAPPER)) == []
+    assert lines_for("intruder", str(VENDOR)) == []

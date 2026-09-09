@@ -169,45 +169,66 @@ def last_wake(session_id: str) -> dict | None:
 def turn_started(session_id: str, now: datetime | None = None,
                  pid: int | None = None,
                  pid_starttime: int | None = None) -> None:
-    """Mark a turn running. Overwrites whatever marker came before.
+    """Mark a turn running.
 
-    ``pid`` and ``pid_starttime`` are the vendor process the turn owns,
-    recorded the way a launch records them. Omitted until the process
-    exists; :func:`record_turn_pid` fills them in without resetting
-    ``started_at``.
+    A pid already stamped for this turn stands: the shell may have
+    recorded it before this write lands, and overwriting the marker
+    without that pid is how a whole turn's vendor looks like an
+    intruder. A missing marker starts clean (no pid unless this call
+    supplies one). ``pid`` and ``pid_starttime`` are the process the
+    turn owns, recorded the way a launch records them; omitted until
+    the process exists, :func:`record_turn_pid` fills them in without
+    resetting ``started_at``.
     """
-    marker: dict = {"session": session_id, "started_at": _now_iso(now)}
-    if isinstance(pid, int) and pid > 0:
-        marker["pid"] = pid
-    if pid_starttime is not None:
-        marker["pid_starttime"] = pid_starttime
-    store.write_snapshot(paths.session_turn_path(session_id), marker)
+    def change(current):
+        marker: dict = {"session": session_id, "started_at": _now_iso(now)}
+        if isinstance(current, dict):
+            old_pid = current.get("pid")
+            if isinstance(old_pid, int) and old_pid > 0:
+                marker["pid"] = old_pid
+            if "pid_starttime" in current:
+                marker["pid_starttime"] = current["pid_starttime"]
+        if isinstance(pid, int) and pid > 0:
+            marker["pid"] = pid
+        if pid_starttime is not None:
+            marker["pid_starttime"] = pid_starttime
+        return marker
+    store.update_snapshot(paths.session_turn_path(session_id), change,
+                          default=None)
 
 
 def record_turn_pid(session_id: str, pid: int,
                     pid_starttime: int | None = None) -> None:
     """Stamp the live turn marker with the process the turn started.
 
-    A missing marker is left missing: this updates a running turn, it
-    does not start one. ``pid_starttime`` is the process identity the
-    collector matches; omitted, it is read off the process now. A pid
-    that cannot be identified (gone, or no starttime) is not recorded,
-    so a recycled pid cannot inherit the claim.
+    The shell that runs this is the turn, so a missing marker is a race
+    against :func:`turn_started`, not an absence: write the claim
+    anyway. Keep ``started_at`` when a marker already exists.
+    ``pid_starttime`` is the process identity the collector matches;
+    omitted, it is read off the process now. A pid that cannot be
+    identified (gone, or no starttime) is not recorded, so a recycled
+    pid cannot inherit the claim.
     """
     if not isinstance(pid, int) or pid <= 0:
-        return
-    path = paths.session_turn_path(session_id)
-    marker = store.read_snapshot(path, default=None)
-    if not isinstance(marker, dict):
         return
     from . import procs
     start = pid_starttime if pid_starttime is not None \
         else procs.proc_starttime(pid)
     if start is None:
         return
-    marker["pid"] = pid
-    marker["pid_starttime"] = start
-    store.write_snapshot(path, marker)
+
+    def change(current):
+        if isinstance(current, dict):
+            marker = dict(current)
+        else:
+            marker = {"session": session_id, "started_at": _now_iso()}
+        marker.setdefault("session", session_id)
+        marker.setdefault("started_at", _now_iso())
+        marker["pid"] = pid
+        marker["pid_starttime"] = start
+        return marker
+    store.update_snapshot(paths.session_turn_path(session_id), change,
+                          default=None)
 
 
 def turn_ended(session_id: str) -> None:
