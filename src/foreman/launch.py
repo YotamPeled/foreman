@@ -1265,6 +1265,7 @@ def import_verb_modules() -> None:
     gates at all — and a verb with no gate is a verb open to every role.
     Which modules happened to be imported decided who was offered what.
     """
+    from . import attach as _attach  # noqa: F401
     from . import collector as _collector  # noqa: F401
     from . import config as _config  # noqa: F401
     from . import doctor as _doctor  # noqa: F401
