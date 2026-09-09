@@ -52,8 +52,12 @@ SUPERVISOR_COMMANDS = (
     "foreman register --role <role> --pid <pid>",
     "foreman job verify <job> --confirmed --command <command> --output <output>",
     "foreman job fail <job> --finding <finding>",
+    "foreman task add <front> --title <title> --scope <scope> "
+    "--verify <verify> --size <size>",
     "foreman task built <task>",
     "foreman task landed <task> --head <head>",
+    "foreman front done <name>",
+    "foreman rule <scope> <text ...>",
     "foreman evidence --on <on> --claim <claim> --status <status> --command <command>",
     "foreman finding --on <on> --class <class> --title <title> --detail <detail>",
     "foreman measure <front> <monitor> --value <value> --of <of> "
@@ -73,7 +77,7 @@ NOT_THE_SUPERVISORS = (
 )
 #: The design's supervisor row that this checkout does not ship. Named as
 #: missing, never as callable.
-UNSHIPPED = ("task ready", "job plan", "job order", "front done")
+UNSHIPPED = ("task ready", "job plan", "job order")
 
 
 @pytest.fixture()
@@ -331,7 +335,7 @@ def test_a_verb_added_to_the_cli_appears_in_the_prompt(env, capsys,
     monkeypatch.setitem(cli.SUBCOMMANDS, "trial",
                         (_trial_verb, {"help": "A verb added for one test."}))
     capsys.readouterr()
-    assert cli.main(["launch", "supervisor", "panel", "--repo",
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6", "--repo",
                      str(env / "repo"), "--dry-run"]) == 0
     prompt = Path(line(capsys.readouterr().out, "role prompt: ")).read_text(
         encoding="utf-8")
@@ -353,7 +357,7 @@ def test_dry_run_records_nothing_and_starts_nothing(env, capsys):
     make_repo(env / "repo")
     add_panel_front()
     capsys.readouterr()
-    assert cli.main(["launch", "supervisor", "panel", "--repo",
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6", "--repo",
                      str(env / "repo"), "--dry-run"]) == 0
     out = capsys.readouterr().out
     sid = line(out, "session: ")
@@ -465,7 +469,7 @@ def test_launch_pre_answers_both_first_launch_dialogs(env, fakes, capsys):
     repo = make_repo(env / "repo")
     add_panel_front()
     capsys.readouterr()
-    assert cli.main(["launch", "supervisor", "panel", "--repo",
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6", "--repo",
                      str(repo)]) == 0
     capsys.readouterr()
     config = json.loads(
@@ -481,7 +485,7 @@ def test_unreadable_vendor_config_is_left_alone(env, fakes, capsys):
     config = launch_module.vendor_config_path()
     config.parent.mkdir(parents=True, exist_ok=True)
     config.write_text("{not json at all", encoding="utf-8")
-    assert cli.main(["launch", "supervisor", "panel", "--repo",
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6", "--repo",
                      str(repo)]) == 0
     capsys.readouterr()
     assert config.read_text(encoding="utf-8") == "{not json at all"
@@ -497,11 +501,11 @@ def test_a_second_supervisor_for_a_live_front_is_refused_by_name(
     repo = make_repo(env / "repo")
     add_panel_front()
     capsys.readouterr()
-    assert cli.main(["launch", "supervisor", "panel", "--repo",
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6", "--repo",
                      str(repo)]) == 0
     first = line(capsys.readouterr().out, "session: ")
 
-    assert cli.main(["launch", "supervisor", "panel", "--repo",
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6", "--repo",
                      str(repo)]) != 0
     err = capsys.readouterr().err
     assert "already has a live supervisor" in err
@@ -519,7 +523,7 @@ def test_a_front_whose_supervisor_is_gone_can_be_summoned_again(
     repo = make_repo(env / "repo")
     add_panel_front()
     capsys.readouterr()
-    assert cli.main(["launch", "supervisor", "panel", "--repo",
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6", "--repo",
                      str(repo)]) == 0
     first = line(capsys.readouterr().out, "session: ")
     dead = roster()[first]
@@ -529,7 +533,7 @@ def test_a_front_whose_supervisor_is_gone_can_be_summoned_again(
     except (ChildProcessError, OSError):
         pass
 
-    assert cli.main(["launch", "supervisor", "panel", "--repo",
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6", "--repo",
                      str(repo)]) == 0
     second = line(capsys.readouterr().out, "session: ")
     assert second != first
@@ -562,7 +566,7 @@ def test_a_window_that_is_already_gone_is_never_recorded_running(
     monkeypatch.setenv("FOREMAN_WINDOW_LAUNCHER", str(launcher))
     capsys.readouterr()
 
-    assert cli.main(["launch", "supervisor", "panel", "--repo",
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6", "--repo",
                      str(repo)]) != 0
     err = capsys.readouterr().err
     assert "failed to start the supervisor" in err
@@ -590,7 +594,7 @@ def test_a_failure_after_the_roster_write_closes_the_session(
 
     monkeypatch.setattr(launch_module._common, "write_worker_script",
                         refuse_to_write)
-    assert cli.main(["launch", "supervisor", "panel", "--repo",
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6", "--repo",
                      str(repo)]) != 0
     err = capsys.readouterr().err
     assert "failed to start the supervisor" in err
@@ -602,7 +606,7 @@ def test_a_failure_after_the_roster_write_closes_the_session(
 
 def test_launch_for_a_front_with_no_record_is_refused_by_name(env, capsys):
     make_repo(env / "repo")
-    assert cli.main(["launch", "supervisor", "nosuchfront", "--repo",
+    assert cli.main(["launch", "supervisor", "nosuchfront", "--workspace", "6", "--repo",
                      str(env / "repo"), "--dry-run"]) != 0
     err = capsys.readouterr().err
     assert "unknown front 'nosuchfront'" in err
@@ -649,7 +653,8 @@ def test_a_branch_other_than_the_checked_out_one_is_refused(env, capsys):
     repo = make_repo(env / "repo")
     add_panel_front()
     capsys.readouterr()
-    assert cli.main(["launch", "supervisor", "panel", "--repo", str(repo),
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6",
+                     "--repo", str(repo),
                      "--branch", "nonexistent-branch", "--dry-run"]) != 0
     err = capsys.readouterr().err
     assert "'nonexistent-branch' is not the branch checked out" in err
@@ -658,7 +663,8 @@ def test_a_branch_other_than_the_checked_out_one_is_refused(env, capsys):
 
     # The branch that is checked out is accepted, and it is what the prompt
     # and the printed launch both name.
-    assert cli.main(["launch", "supervisor", "panel", "--repo", str(repo),
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6",
+                     "--repo", str(repo),
                      "--branch", "main", "--dry-run"]) == 0
     out = capsys.readouterr().out
     assert line(out, "branch: ") == "main"

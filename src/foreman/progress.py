@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import argparse
 
-from . import caller, cli, entities, hooks, paths, store
+from . import caller, cli, entities, fronts, hooks, ids, paths, store
 from .caller import MERGE_DESK, OWNER, SUPERVISOR, Refusal
 
 CONFIRMED = "CONFIRMED"
@@ -622,8 +622,99 @@ def _job_entry(args: argparse.Namespace) -> int:
 _job_entry.add_arguments = add_job_arguments  # type: ignore[attr-defined]
 
 
+def task_add_main(front: str, title: str | None, scope: str | None,
+                  verify: str | None, size: str | int | None,
+                  after: list[str] | None) -> int:
+    """Append a commissioned task to a running front.
+
+    A supervisor asked to do something the brief did not name hangs it
+    under a task here instead of running it task-less: the entry is
+    validated exactly as a brief's task is (title, four-part scope,
+    verify command, size, after naming real tasks with no cycle) and the
+    screen marks it `added by supervisor`. Existing tasks are never
+    edited — this only appends.
+    """
+    verb = "task add"
+    me, violations = caller.resolve(verb)
+    key = (front or "").strip()
+    if not key:
+        violations.append("field 'front' is required")
+    record = fronts.read_front_record(key) if key else None
+    if key and record is None:
+        violations.append(f"unknown front '{key}'")
+    _check(me, key or None, verb, violations)
+    name = (title or "").strip()
+    if not name:
+        violations.append("field 'title' is required")
+    text = (scope or "").strip()
+    if not text:
+        violations.append("field 'scope' is required")
+    check = (verify or "").strip()
+    if not check:
+        violations.append("field 'verify' is required")
+    number: int | None = None
+    try:
+        number = int(str(size).strip())
+    except (TypeError, ValueError, AttributeError):
+        violations.append(
+            f"field 'size' must be a positive integer (got '{size}')")
+    else:
+        if number < 1:
+            violations.append(
+                f"field 'size' must be a positive integer (got '{size}')")
+            number = None
+    afters = [str(item) for item in (after or [])]
+    tasks: list[dict] = []
+    if record is not None:
+        tasks = _read_tasks(key)[0]
+        violations.extend(fronts.validate_commissioned_task(
+            {"title": name, "scope": text, "verify": check,
+             "size": number if number is not None else size,
+             "after": afters},
+            tasks))
+    if violations:
+        return _refuse(violations)
+    assert record is not None and number is not None
+    role = "owner" if (me is None or me.role == OWNER) else me.role
+    who = caller.by_line(me)
+    tid = ids.mint("task")
+    task = entities.Task(
+        id=tid,
+        front=key,
+        title=name,
+        scope=text,
+        verify=check,
+        size=number,
+        after=afters,
+        timeout="",
+        land_on=record.get("land_on") or "",
+        core=False,
+        state="ready" if not afters else "waiting",
+        units_done=0,
+        units_total=number,
+        added_by=role,
+    )
+    store.append_ledger(paths.front_tasks_path(key), task.to_dict(),
+                        session_id=who)
+    print(f"{tid} added to {key}")
+    return 0
+
+
 def add_task_arguments(sub: argparse.ArgumentParser) -> None:
     verbs = sub.add_subparsers(dest="task_verb", required=True)
+    add = verbs.add_parser(
+        "add", help="Commission a task onto a running front.")
+    add.add_argument("front", help="front to append the task to")
+    add.add_argument("--title", default=None, help="task title (required)")
+    add.add_argument("--scope", default=None,
+                     help="task scope carrying WHAT, INPUTS, OUTPUTS and "
+                          "OUT OF SCOPE (required)")
+    add.add_argument("--verify", default=None,
+                     help="verification command (required)")
+    add.add_argument("--size", default=None,
+                     help="positive integer (required)")
+    add.add_argument("--after", nargs="*", default=[],
+                     help="titles of tasks this one waits on")
     built = verbs.add_parser("built", help="Mark a task built.")
     built.add_argument("task", help="task id or title")
     built.add_argument("--did-myself", default=None,
@@ -640,8 +731,12 @@ def add_task_arguments(sub: argparse.ArgumentParser) -> None:
                        help="why it moved backwards (required)")
 
 
-@cli.subcommand("task", help="Mark a task built or landed, or reset it.")
+@cli.subcommand("task", help="Commission a task, or mark one built, "
+                 "landed or reset.")
 def _task_entry(args: argparse.Namespace) -> int:
+    if args.task_verb == "add":
+        return task_add_main(args.front, args.title, args.scope,
+                             args.verify, args.size, args.after)
     if args.task_verb == "built":
         return task_built_main(args.task, did_myself=args.did_myself)
     if args.task_verb == "landed":

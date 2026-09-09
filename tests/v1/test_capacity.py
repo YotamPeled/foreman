@@ -371,8 +371,8 @@ def _with_supervisor_cap(count: int) -> None:
 
 
 def summon(root: Path, front: str) -> int:
-    return cli.main(["launch", "supervisor", front, "--repo", str(root),
-                     "--dry-run"])
+    return cli.main(["launch", "supervisor", front, "--workspace", "6",
+                     "--repo", str(root), "--dry-run"])
 
 
 def test_the_supervisor_cap_refuses_a_summon_past_it(env, capsys):
@@ -848,8 +848,8 @@ def test_a_supervisor_launch_holds_no_job_slot(env, capsys):
     launched(env, capsys)
     assert "ceiling 2" in refused(env, capsys)
 
-    rc = cli.main(["launch", "supervisor", "alpha", "--repo", str(env),
-                   "--dry-run"])
+    rc = cli.main(["launch", "supervisor", "alpha", "--workspace", "6",
+                   "--repo", str(env), "--dry-run"])
     out, err = capsys.readouterr()
 
     assert rc == 0, err

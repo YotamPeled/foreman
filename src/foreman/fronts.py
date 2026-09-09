@@ -21,7 +21,7 @@ import subprocess
 import tomllib
 from pathlib import Path
 
-from . import caller, cli, config, entities, ids, paths, store
+from . import caller, cli, config, entities, ids, monitors, paths, store
 from .caller import Refusal
 from .entities import JOB_ROLES
 
@@ -129,6 +129,88 @@ def _branch_violation(directory: str, branch: str) -> str | None:
     return None
 
 
+def task_table_violations(task: dict, label: str, tag: str) -> list[str]:
+    """Field-level violations for one task table, brief or commissioned.
+
+    A commissioned task validates exactly as a brief's task does, so both
+    readers share this: a title, a scope carrying all four headings, a
+    verify command, a positive size, a well-shaped after list and
+    well-typed extras. Cross-task rules (unique titles, known afters, no
+    cycle) stay with the caller, which owns the whole list.
+    """
+    violations: list[str] = []
+    title = task.get("title")
+    if not (isinstance(title, str) and title):
+        violations.append(f"{tag}: field 'title' is required")
+    scope = task.get("scope")
+    if not (isinstance(scope, str) and scope):
+        violations.append(f"{label}: field 'scope' is required")
+    else:
+        missing = [part for part in _SCOPE_PARTS if part not in scope]
+        if missing:
+            violations.append(
+                f"{label}: field 'scope' must contain WHAT, INPUTS, OUTPUTS "
+                f"and OUT OF SCOPE (missing: {', '.join(missing)})")
+    verify = task.get("verify")
+    if not (isinstance(verify, str) and verify.strip()):
+        violations.append(f"{label}: field 'verify' is required")
+    size = task.get("size")
+    if not _is_int(size) or (isinstance(size, int) and size < 1):
+        violations.append(f"{label}: field 'size' must be a positive integer")
+    task_after = task.get("after", [])
+    if not isinstance(task_after, list):
+        violations.append(f"{label}: field 'after' must be a list of task titles")
+    else:
+        for entry in task_after:
+            if not (isinstance(entry, str) and entry):
+                violations.append(f"{label}: field 'after' must be a list "
+                                  f"of task titles")
+    for key in ("timeout", "land-on"):
+        if key in task and not isinstance(task[key], str):
+            violations.append(f"{label}: field '{key}' must be a string")
+    if "core" in task and not isinstance(task["core"], bool):
+        violations.append(f"{label}: field 'core' must be true or false")
+    return violations
+
+
+def validate_commissioned_task(entry: dict, existing: list[dict]) -> list[str]:
+    """Violations for one task commissioned onto a running front.
+
+    The same contract as a brief's task: the field-level checks above,
+    plus a title no task on the front already carries and an after list
+    naming real tasks with no cycle. ``existing`` is the front's folded
+    task ledger.
+    """
+    if not isinstance(entry, dict):
+        return ["task must be a table"]
+    title = entry.get("title")
+    label = f"task '{title}'" if isinstance(title, str) and title else "task"
+    violations = task_table_violations(entry, label, "task")
+    titles = [task.get("title") for task in existing
+              if isinstance(task, dict) and isinstance(task.get("title"), str)]
+    known = set(titles)
+    if isinstance(title, str) and title and title in known:
+        violations.append(f"task title '{title}' is already on the front "
+                          f"(task titles must be unique)")
+    after = entry.get("after", [])
+    if isinstance(after, list):
+        for item in after:
+            if isinstance(item, str) and item and item not in known:
+                violations.append(f"{label}: field 'after' names unknown task "
+                                  f"'{item}'")
+    graph = {name: [dep for dep in _task_after(existing, name)
+                    if isinstance(dep, str) and dep in known]
+             for name in titles}
+    if isinstance(title, str) and title and title not in known:
+        graph[title] = [dep for dep in (after if isinstance(after, list) else [])
+                        if isinstance(dep, str) and (dep in known or dep == title)]
+    cycle = _find_cycle(graph)
+    if cycle is not None:
+        violations.append("task 'after' graph has a cycle: "
+                          + " -> ".join(cycle))
+    return violations
+
+
 def _validate_identity(data: dict, existing: set[str]) -> list[str]:
     """The part of §4.3 a front that already ran must still satisfy.
 
@@ -224,38 +306,9 @@ def _validate(data: dict, existing: set[str],
             continue
         title = task.get("title")
         label = f"task '{title}'" if isinstance(title, str) and title else tag
-        if not (isinstance(title, str) and title):
-            violations.append(f"{tag}: field 'title' is required")
-        else:
+        violations.extend(task_table_violations(task, label, tag))
+        if isinstance(title, str) and title:
             titles.append(title)
-        scope = task.get("scope")
-        if not (isinstance(scope, str) and scope):
-            violations.append(f"{label}: field 'scope' is required")
-        else:
-            missing = [part for part in _SCOPE_PARTS if part not in scope]
-            if missing:
-                violations.append(
-                    f"{label}: field 'scope' must contain WHAT, INPUTS, OUTPUTS "
-                    f"and OUT OF SCOPE (missing: {', '.join(missing)})")
-        verify = task.get("verify")
-        if not (isinstance(verify, str) and verify.strip()):
-            violations.append(f"{label}: field 'verify' is required")
-        size = task.get("size")
-        if not _is_int(size) or (isinstance(size, int) and size < 1):
-            violations.append(f"{label}: field 'size' must be a positive integer")
-        task_after = task.get("after", [])
-        if not isinstance(task_after, list):
-            violations.append(f"{label}: field 'after' must be a list of task titles")
-        else:
-            for entry in task_after:
-                if not (isinstance(entry, str) and entry):
-                    violations.append(f"{label}: field 'after' must be a list "
-                                      f"of task titles")
-        for key in ("timeout", "land-on"):
-            if key in task and not isinstance(task[key], str):
-                violations.append(f"{label}: field '{key}' must be a string")
-        if "core" in task and not isinstance(task["core"], bool):
-            violations.append(f"{label}: field 'core' must be true or false")
     seen: set[str] = set()
     for title in titles:
         if title in seen:
@@ -596,6 +649,69 @@ def front_close_main(name: str) -> int:
     return 0
 
 
+def front_done_main(name: str) -> int:
+    """Mark a front done: every task landed, every monitor measured.
+
+    The supervisor's verb (DESIGN §3 step 8, §12): the owner's
+    `front close` stays for closing early. Refused — naming which tasks
+    are not landed and which monitors have no measurement — unless the
+    front is truly finished, and then it appends a revised copy of the
+    front line at state `done`, the way `front close` does.
+    """
+    verb = "front done"
+    me, violations = caller.resolve(verb)
+    record = _revised(name, violations)
+    key = (name or "").strip()
+    caller.check_front_supervisor(me, key or None, verb,
+                                  violations=violations)
+    tasks: list[dict] = []
+    if record is not None:
+        try:
+            tasks = store.fold_by_id(
+                store.read_ledger(paths.front_tasks_path(key)))
+        except OSError:
+            tasks = []
+        waiting = [(task.get("title") or "(untitled)",
+                    task.get("state") or "unknown")
+                   for task in tasks
+                   if task.get("state") != "landed"]
+        if waiting:
+            violations.append(
+                f"front '{key}' is not done: tasks not landed: "
+                + ", ".join(f"'{title}' ({state})"
+                            for title, state in waiting))
+        declared = record.get("monitors")
+        declared = declared if isinstance(declared, list) else []
+        try:
+            measured = store.read_ledger(paths.front_measurements_path(key))
+        except OSError:
+            measured = []
+        unmeasured = []
+        for decl in declared:
+            if not isinstance(decl, dict):
+                continue
+            if not monitors.matching_measurements(measured, decl):
+                label = (str(decl.get("question") or "").strip()
+                         or str(decl.get("measure") or "").strip()
+                         or "(unnamed monitor)")
+                unmeasured.append(label)
+        if unmeasured:
+            violations.append(
+                f"front '{key}' is not done: monitors with no measurement: "
+                + ", ".join(f"'{label}'" for label in unmeasured))
+    if violations:
+        return Refusal(violations).report()
+    assert record is not None
+    updated = dataclasses.replace(
+        entities.Front.from_dict(record), state="done").to_dict()
+    if "monitors" in record:
+        updated["monitors"] = record["monitors"]
+    store.append_ledger(paths.front_record_path(key), updated,
+                        session_id=caller.by_line(me))
+    print(f"{key} done")
+    return 0
+
+
 def front_take_main(name: str) -> int:
     """Move the calling supervisor's roster entry to another front.
 
@@ -684,9 +800,14 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     take = verbs.add_parser(
         "take", help="Move the calling supervisor to this front.")
     take.add_argument("name", help="front name")
+    done = verbs.add_parser(
+        "done", help="Mark a front done once every task landed and every "
+                     "monitor measured (the supervisor's verb).")
+    done.add_argument("name", help="front name")
 
 
-@cli.subcommand("front", help="Add, list, prefer, close or take a front.")
+@cli.subcommand("front", help="Add, list, prefer, allocate, close, take "
+                     "or mark a front done.")
 def _front_entry(args: argparse.Namespace) -> int:
     if args.front_verb == "add":
         return front_add_main(args.directory, dry_run=args.dry_run,
@@ -701,6 +822,8 @@ def _front_entry(args: argparse.Namespace) -> int:
         return front_close_main(args.name)
     if args.front_verb == "take":
         return front_take_main(args.name)
+    if args.front_verb == "done":
+        return front_done_main(args.name)
     raise AssertionError(f"unknown front verb {args.front_verb!r}")
 
 
