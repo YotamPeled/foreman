@@ -144,6 +144,17 @@ EXPECTED_LIVE = {
 #:                          collector clock: 15:00 + 1:30 = 16:30 UTC
 #:   quay.doingNow          no checkpoint and no observed.fronts: empty,
 #:                          not an error
+#:   harbor.headless        ses-hb0001 rosters headless with a wake, a turn
+#:                          and a fresh marker: the Working line's facts
+#:   harbor.wakeReason      the session's one event, "job returned"
+#:   harbor.wakeAgeS        that event's 14:40 stamp to the 15:00 collector
+#:                          clock: 1200 seconds
+#:   harbor.turnCount       the session's one turn record
+#:   harbor.lastTurnS       that turn's 14:41 stamp to the 15:00 clock: 1140
+#:   harbor.turnRunning     the turn.json marker at 14:59 is fresher than
+#:                          the 600-second staleness: a turn is running
+#:   quay.headless          no supervisor and no roster flag: no facts, and
+#:                          the supervisor line reads as it always has
 EXPECTED_LIVE_ROWS = {
     "front.harbor.doingNow": "Second soundings running, 8 of 12 read",
     "front.harbor.remaining": "second soundings|buoy labels|tide window",
@@ -161,6 +172,14 @@ EXPECTED_LIVE_ROWS = {
         "|Buy one more night of survey boat time?",
     "front.harbor.rateWindowH": "3",
     "front.harbor.projectedFinish": "2026-06-02T16:30:00.000Z",
+    "front.harbor.headless": "true",
+    "front.harbor.wakeReason": "job returned",
+    "front.harbor.wakeAgeS": "1200",
+    "front.harbor.turnCount": "1",
+    "front.harbor.lastTurnS": "1140",
+    "front.harbor.turnRunning": "true",
+    "front.quay.headless": "false",
+    "front.quay.turnCount": "0",
     "front.quay.doingNow": "",
 }
 #: The one row fact read back as a float rather than compared as text.
