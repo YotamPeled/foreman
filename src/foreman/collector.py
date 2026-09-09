@@ -712,6 +712,18 @@ def turn_carrier_argv(session_id: str) -> list[str]:
             "turn", session_id]
 
 
+def turn_carrier_outer_argv(session_id: str, attempt: int) -> list[str]:
+    """The detached spawn: the carrier under its per-attempt unit.
+
+    ``systemd-run`` without ``--wait`` returns once the unit is started,
+    so starting it is all the tick ever does with it. No working
+    directory: the carrier reads absolute state paths, never a worktree.
+    """
+    return ["systemd-run", "--user",
+            f"--unit={turn_carrier_unit(session_id, attempt)}",
+            *turn_carrier_argv(session_id)]
+
+
 def turn_carrier_env() -> dict[str, str]:
     """The world a turn carrier runs in: this process's, minus a session.
 
@@ -781,7 +793,7 @@ def _carry_wakes(sessions: dict, cstate: dict) -> int:
             attempt = 1
         attempts[sid] = attempt
         try:
-            _default_turn_spawn(turn_carrier_argv(sid),
+            _default_turn_spawn(turn_carrier_outer_argv(sid, attempt),
                                 env=turn_carrier_env())
         except Exception:  # noqa: BLE001 - a failed spawn never stops
             continue  # the clock; the wake stays queued for the next tick

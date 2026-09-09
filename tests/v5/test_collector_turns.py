@@ -79,7 +79,7 @@ def turn_spawn(env, monkeypatch):
     children: list[subprocess.Popen] = []
 
     def double(argv: list[str], *, env: dict[str, str]):
-        assert isinstance(argv, list) and len(argv) == 6, argv
+        assert isinstance(argv, list) and len(argv) == 8, argv
         assert argv[0] == "systemd-run", argv
         assert argv[1] == "--user", argv
         assert argv[2].startswith("--unit="), argv
