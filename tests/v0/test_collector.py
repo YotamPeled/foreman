@@ -220,6 +220,29 @@ def utime_tree(root, moment: float) -> None:
             os.utime(os.path.join(dirpath, name), (moment, moment))
 
 
+def git(cwd: Path, *args: str) -> str:
+    return subprocess.run(
+        ["git", *args], cwd=cwd, check=True,
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    ).stdout.strip()
+
+
+def make_job_repo(path: Path, branch: str = "job-branch") -> Path:
+    """A fixture repo whose job branch holds one commit past main."""
+    path.mkdir(parents=True, exist_ok=True)
+    git(path, "init", "-q", "-b", "main")
+    git(path, "config", "user.email", "test@example.invalid")
+    git(path, "config", "user.name", "test")
+    (path / "seed.txt").write_text("seed\n", encoding="utf-8")
+    git(path, "add", "seed.txt")
+    git(path, "commit", "-qm", "seed")
+    git(path, "checkout", "-qb", branch)
+    (path / "work.txt").write_text("work\n", encoding="utf-8")
+    git(path, "add", "work.txt")
+    git(path, "commit", "-qm", "the work")
+    return path
+
+
 def test_tick_records_roster_fields_and_derived_numbers(
         env, fake_pool, children):
     """A live session's cpu/observed-at land on the roster and every v0
@@ -1058,3 +1081,93 @@ def test_a_finished_job_is_returned_after_its_process_is_gone(
     latest = [job for job in jobs if job.get("id") == "job-done"][-1]
     assert latest["state"] == "returned"
     assert latest["returned_at"] == iso(NOW)
+
+
+def test_returned_job_records_the_branch_head(env, fake_pool, children):
+    """A tick that reads a clean finish marker writes the job branch's
+    head onto the returned line; the branch itself is unchanged."""
+    write_config(base_config())
+    proc = sleeper(children)
+    repo = make_job_repo(env / "wt-job")
+    expected = git(repo, "rev-parse", "job-branch")
+    sid = "ses-head0001"
+    FakeAdapter.script[sid] = {"transcript_mtime": NOW.timestamp(),
+                               "cpu_s": 1.0,
+                               "finish_present": True, "finish_rc": 0}
+    seed_roster({sid: worker_session(
+        sid, proc.pid, front="comp", job="job-head",
+        worktree=str(repo),
+        pid_starttime=procs.proc_starttime(proc.pid))})
+    store.append_ledger(paths.front_jobs_path("comp"), {
+        "id": "job-head", "state": "running", "started_at": at(30),
+        "branch": "job-branch", "worktree": str(repo)})
+    proc.kill()
+    proc.wait()
+
+    tick(now=NOW)
+
+    latest = [job for job in store.read_ledger(paths.front_jobs_path("comp"))
+              if job.get("id") == "job-head"][-1]
+    assert latest["state"] == "returned"
+    assert latest["head"] == expected
+    assert latest["branch"] == "job-branch"
+
+
+def test_overdue_kill_records_the_branch_head(env, fake_pool, children):
+    """The timeout path writes head too: the branch is the job's result
+    even when the process is killed for running too long."""
+    write_config(base_config())
+    proc = sleeper(children)
+    repo = make_job_repo(env / "wt-overdue")
+    expected = git(repo, "rev-parse", "job-branch")
+    sid = "ses-overhead"
+    FakeAdapter.script[sid] = {"transcript_mtime": NOW.timestamp(),
+                               "cpu_s": 0.0,
+                               "finish_present": True, "finish_rc": 0}
+    seed_roster({sid: worker_session(
+        sid, proc.pid, started_at=at(3600), timeout="30s",
+        front="comp", job="job-over", worktree=str(repo))})
+    store.append_ledger(paths.front_jobs_path("comp"), {
+        "id": "job-over", "state": "running", "started_at": at(3600),
+        "timeout": "30s", "branch": "job-branch", "worktree": str(repo)})
+
+    tick(now=NOW)
+
+    assert proc.poll() is not None
+    latest = [job for job in store.read_ledger(paths.front_jobs_path("comp"))
+              if job.get("id") == "job-over"][-1]
+    assert latest["state"] == "failed"
+    assert latest["outcome_reason"] == "job timed out"
+    assert latest["head"] == expected
+    assert latest["branch"] == "job-branch"
+
+
+def test_gone_worktree_records_empty_head_and_the_tick_completes(
+        env, fake_pool, children):
+    """A worktree removed before the tick leaves head empty; the tick
+    still marks the job returned."""
+    write_config(base_config())
+    proc = sleeper(children)
+    repo = make_job_repo(env / "wt-gone")
+    sid = "ses-gone0001"
+    FakeAdapter.script[sid] = {"transcript_mtime": NOW.timestamp(),
+                               "cpu_s": 1.0,
+                               "finish_present": True, "finish_rc": 0}
+    seed_roster({sid: worker_session(
+        sid, proc.pid, front="comp", job="job-gone",
+        worktree=str(repo),
+        pid_starttime=procs.proc_starttime(proc.pid))})
+    store.append_ledger(paths.front_jobs_path("comp"), {
+        "id": "job-gone", "state": "running", "started_at": at(30),
+        "branch": "job-branch", "worktree": str(repo)})
+    shutil.rmtree(repo)
+    proc.kill()
+    proc.wait()
+
+    tick(now=NOW)
+
+    latest = [job for job in store.read_ledger(paths.front_jobs_path("comp"))
+              if job.get("id") == "job-gone"][-1]
+    assert latest["state"] == "returned"
+    assert latest["head"] == ""
+    assert latest["branch"] == "job-branch"

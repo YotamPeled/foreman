@@ -502,6 +502,33 @@ def _exit_code_of(observed: dict | None, finish: bool) -> int | None:
     return code
 
 
+def _job_head(record: dict) -> str:
+    """The sha of the job line's branch in its worktree, or "".
+
+    ``git -C <worktree> rev-parse --verify <branch>`` is the answer.
+    Anything unreadable — no branch, a gone worktree, git failing —
+    answers empty, so a tick never blocks on a missing checkout.
+    """
+    branch = (record.get("branch") or "").strip() \
+        if isinstance(record.get("branch"), str) else ""
+    if not branch:
+        return ""
+    repo = record.get("worktree") \
+        if isinstance(record.get("worktree"), str) else ""
+    if not repo or not os.path.isdir(repo):
+        return ""
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo, "rev-parse", "--verify", branch],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            timeout=10)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return ""
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
 def _mark_job(front: str | None, job_id: str | None, to_state: str,
               stamp: str | None, by: str | None = None,
               reason: str | None = None,
@@ -534,6 +561,10 @@ def _mark_job(front: str | None, job_id: str | None, to_state: str,
     if latest.get("state") not in JOB_RUNNING_LIKE:
         return
     revised = dict(latest, state=to_state, exit_code=exit_code)
+    try:
+        revised["head"] = _job_head(latest)
+    except Exception:  # noqa: BLE001 - a head lookup never blocks a tick
+        revised["head"] = ""
     if reason:
         revised["outcome_reason"] = reason
     if stamp is not None and to_state in ("returned", "returned-with-work"):

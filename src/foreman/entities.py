@@ -107,6 +107,10 @@ class Job(Entity):
     session: str | None = None
     worktree: str = ""
     branch: str = ""
+    #: The sha of the job's branch when the collector moved the job to a
+    #: terminal state. Empty until then, and empty when the worktree is
+    #: gone, git fails, or the line names no branch.
+    head: str = ""
     log: str = ""
     timeout: str = ""
     #: How many units the job was launched to do. Records written before
