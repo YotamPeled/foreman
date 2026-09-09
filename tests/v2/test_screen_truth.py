@@ -491,3 +491,49 @@ def test_a_reload_never_leaves_an_isolated_world(monkeypatch):
     monkeypatch.delenv(paths.CONFIG_ENV, raising=False)
     collector_module.reload_after_config_change()
     assert calls == [True]
+
+
+def test_post_merge_hook_does_nothing_off_main(tmp_path):
+    """A front branch must never become the command the swarm runs.
+
+    The hook fast-forwards the main-only checkout to whatever HEAD just
+    merged. Installed in a repository that also carries front branches, a
+    merge on one of them would install a half-built branch as everyone's
+    `foreman` — the failure the layout exists to prevent, arrived at by
+    the hook meant to prevent it. It happened for real: a conflicted merge
+    in the primary checkout left the installed command raising
+    SyntaxError for the whole swarm.
+    """
+    primary, main = _primary_with_main_checkout(tmp_path)
+    bindir, calls, installed = _stub_bin(tmp_path)
+    before = _git(main, "rev-parse", "HEAD")
+    old = _git(primary, "rev-parse", "HEAD")
+    _git(primary, "checkout", "-q", "-b", "a-front-branch")
+    (primary / "src" / "app.py").write_text("V = half\n", encoding="utf-8")
+    _git(primary, "add", ".")
+    _git(primary, "commit", "-qm", "half-built")
+    _git(primary, "update-ref", "ORIG_HEAD", old)
+
+    proc = _run_hook(primary, main, bindir)
+    assert proc.returncode == 0
+    assert "not 'main'" in proc.stdout
+    assert _git(main, "rev-parse", "HEAD") == before
+    assert not installed.exists()
+    assert not calls.exists()
+
+
+def test_post_merge_hook_names_the_main_branch_it_was_given(tmp_path):
+    """A swarm whose trunk is not called main still gets its install."""
+    primary, main = _primary_with_main_checkout(tmp_path)
+    bindir, calls, installed = _stub_bin(tmp_path)
+    old = _git(primary, "rev-parse", "HEAD")
+    _git(primary, "checkout", "-q", "-b", "trunk")
+    (primary / "src" / "app.py").write_text("V = 2\n", encoding="utf-8")
+    _git(primary, "add", ".")
+    _git(primary, "commit", "-qm", "two")
+    _git(primary, "update-ref", "ORIG_HEAD", old)
+
+    proc = _run_hook(primary, main, bindir,
+                     extra={"FOREMAN_MAIN_BRANCH": "trunk"})
+    assert proc.returncode == 0
+    assert installed.read_text(encoding="utf-8").strip() == str(main)

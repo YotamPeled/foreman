@@ -185,13 +185,22 @@ Two checkouts, two jobs:
   command runs from. Install it non-editable from there, so the running code is a copy of `main`
   and not a live view of a half-built branch.
 
-A post-merge hook keeps the second true. Copy `packaging/foreman-post-merge` to the primary
-checkout's `.git/hooks/post-merge`, make it executable, and set `FOREMAN_MAIN_CHECKOUT` to the
-main-only checkout. On every merge or pull it fast-forwards the main-only checkout to the new
-head, reinstalls the package where the merge touched its sources, and runs
-`foreman collector restart`, so the collector re-records the new code and its stale line clears
-with no hand restart. `foreman cap` and `front allocate` push the same restart after their own
-write, for the same reason.
+The two checkouts get **two virtual environments**, and they are not the same one. The installed
+command's venv holds a non-editable copy of `main`; the development venv is where the test suite
+runs. Tests import the sources of the worktree they run in — `PYTHONPATH=$PWD/src` — never the
+installed copy, so a branch's tests test that branch and the swarm keeps running `main`.
+
+A post-merge hook keeps the second checkout true. Copy `packaging/foreman-post-merge` to the
+primary checkout's `.git/hooks/post-merge`, make it executable, and set `FOREMAN_MAIN_CHECKOUT`
+to the main-only checkout. It acts **only when the primary checkout is on `main`** (name another
+trunk with `FOREMAN_MAIN_BRANCH`): a hook that moved on every merge would push a half-built front
+branch into the main-only checkout and install it as the command the whole swarm runs, which is
+the failure this layout exists to prevent. On a merge or pull on `main` it fast-forwards the
+main-only checkout to the new head, reinstalls the package where the merge touched its sources,
+and runs `foreman collector restart`, so the collector re-records the new code and its stale line
+clears with no hand restart. `foreman cap` and `front allocate` push the same restart after their
+own write, for the same reason — never from an isolated state directory, which has no collector
+of its own.
 
 `foreman doctor` reports an installed command running off a branch as a divergence, with its
 fix: reinstall from the main-only checkout, then restart the collector.

@@ -6,7 +6,14 @@
 # executable. It never touches the repository it is public with: every
 # path comes from git or the environment, never from this file.
 #
-# What it does, every time the checkout merges or pulls:
+# It acts only when the checkout that fired it is on main. Installed in a
+# repository that also carries front branches, a hook that moved on every
+# merge would push a half-built front branch into the main-only checkout
+# and install it as the command the whole swarm runs: the failure this
+# layout exists to prevent, arrived at by the hook meant to prevent it.
+# On any other branch it says so and exits.
+#
+# What it does, every time the checkout merges or pulls while on main:
 #   1. fast-forwards the main-only checkout (FOREMAN_MAIN_CHECKOUT) to the
 #      just-merged HEAD, so the installed command's sources track main;
 #   2. reinstalls the package where the merge touched its sources, so the
@@ -36,6 +43,15 @@ PRIMARY="$(git rev-parse --show-toplevel 2>/dev/null)" || PRIMARY=""
 NEW="$(git rev-parse HEAD 2>/dev/null)" || NEW=""
 if [ -z "$PRIMARY" ] || [ -z "$NEW" ]; then
     warn "not inside a git checkout; nothing fast-forwarded"
+fi
+
+# Main, or nothing. The branch the merge landed on decides: what the
+# installed command runs is main's code, never a front branch's.
+MAIN_BRANCH="${FOREMAN_MAIN_BRANCH-main}"
+ON="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || ON=""
+if [ -n "$ON" ] && [ "$ON" != "$MAIN_BRANCH" ]; then
+    printf '%s\n' "foreman-post-merge: on '$ON', not '$MAIN_BRANCH'; the installed command tracks $MAIN_BRANCH only, so nothing was moved or reinstalled"
+    exit 0
 fi
 
 MAIN="${FOREMAN_MAIN_CHECKOUT-}"
