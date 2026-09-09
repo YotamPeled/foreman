@@ -16,8 +16,9 @@ One front is implemented, `panel`, and two of its checks:
                    of cards and the title text of each
 
 `--keys` drives every key against a throwaway copy of the fixture and
-asserts the ledger line; `--install-roundtrip` belongs to a job that has
-not run yet and exits 2.
+asserts the ledger line; `--install-roundtrip` runs the root `install`
+and `uninstall` against temporary homes and asserts the round trip is
+byte-exact.
 
 Standard library only, so this runs wherever the repository is checked out.
 """
@@ -1189,8 +1190,213 @@ def check_keys_once(tmp: Path, label: str, session: str | None) -> dict:
         raise Failure("keys [%s]: %s" % (label, failure))
 
 
-NOT_IMPLEMENTED = {
-    "--install-roundtrip": "the install/uninstall job has not run yet",
+#: The managed bindings block install writes, hand-derived from
+#: src/foreman/panel_binding.py (the source of truth), never imported from
+#: it: this check must fail aloud when the block text changes, the way the
+#: block-count literals fail when a fixture changes.
+EXPECTED_BINDING_BLOCK = """-- >>> foreman-panel
+-- Managed by the Foreman panel. Edits inside this block are lost on reinstall.
+-- Summon and dismiss the Foreman panel.
+o.bind("SUPER + M", "Foreman panel", "omarchy-shell shell toggle foreman")
+-- <<< foreman-panel"""
+
+#: The seeded shell.json: stock-shaped, deliberately not in the writer's
+#: own canonical form (four-space indent, an extra top-level key), so the
+#: round trip proves byte restoration rather than reformatting luck.
+SHELL_SEED = b"""{
+    "version": 1,
+    "idle": {"screensaver": 600},
+    "bar": {
+        "layout": {
+            "right": [
+                {"id": "omarchy.tray"}
+            ]
+        }
+    },
+    "plugins": []
+}
+"""
+
+#: The seeded bindings file ends in three newlines: the Astra-found case.
+BINDINGS_SEED = b'-- stock hyprland bindings\nbind = SUPER, Q, killactive\n\n\n'
+
+#: A bindings file that already binds Super+M outside any managed block.
+BINDINGS_TAKEN = b'o.bind("SUPER + M", "mine", "something else")\n'
+
+
+def _tree_snapshot(root: Path) -> dict:
+    """Every file and link under root: exact bytes or link target."""
+    out = {}
+    for path in sorted(root.rglob("*")):
+        rel = str(path.relative_to(root))
+        if path.is_symlink():
+            out[rel] = ("link", os.readlink(path))
+        elif path.is_file():
+            out[rel] = ("file", path.read_bytes())
+    return out
+
+
+def _install_env(home: Path) -> dict:
+    """The temporary home as the whole world: HOME points at it, the
+    shell is never reloaded, and no ambient Foreman identity leaks in."""
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["FOREMAN_NO_RELOAD"] = "1"
+    env.pop("FOREMAN_SESSION", None)
+    env.pop("FOREMAN_STATE", None)
+    env.pop("FOREMAN_CONFIG", None)
+    return env
+
+
+def _run_install_script(home: Path, verb: str) -> subprocess.CompletedProcess:
+    script = REPO / ("install" if verb == "install" else "uninstall")
+    if not script.is_file():
+        raise Failure("install-roundtrip: missing executable: %s" % script)
+    return subprocess.run([str(script)], capture_output=True, text=True,
+                          timeout=120, env=_install_env(home))
+
+
+def _assert_three_things(home: Path, label: str) -> None:
+    """The symlink, the registration, the binding block — each asserted
+    structurally, never via the installer's own helpers."""
+    link = (home / ".config" / "omarchy" / "plugins" / "foreman")
+    if not link.is_symlink():
+        raise Failure("install-roundtrip [%s]: no plugin symlink at %s"
+                      % (label, link))
+    if link.resolve() != (REPO / "plugin" / "foreman").resolve():
+        raise Failure("install-roundtrip [%s]: the symlink points at %s"
+                      % (label, link.resolve()))
+    shell_json = home / ".config" / "omarchy" / "shell.json"
+    try:
+        doc = json.loads(shell_json.read_text())
+    except (OSError, ValueError):
+        raise Failure("install-roundtrip [%s]: %s is missing or not JSON"
+                      % (label, shell_json))
+    try:
+        right = doc["bar"]["layout"]["right"]
+    except (KeyError, TypeError):
+        raise Failure("install-roundtrip [%s]: no bar.layout.right in %s"
+                      % (label, shell_json))
+    if {"id": "foreman"} not in right:
+        raise Failure("install-roundtrip [%s]: no foreman entry in "
+                      "bar.layout.right" % label)
+    if any((w.get("id") if isinstance(w, dict) else w) == "foreman"
+           for w in doc.get("plugins", [])):
+        raise Failure("install-roundtrip [%s]: foreman does not belong in "
+                      "plugins[]; the bar entry enables the panel too"
+                      % label)
+    bindings = home / ".config" / "hypr" / "bindings.lua"
+    try:
+        text = bindings.read_text()
+    except OSError:
+        raise Failure("install-roundtrip [%s]: no bindings file at %s"
+                      % (label, bindings))
+    if EXPECTED_BINDING_BLOCK not in text:
+        raise Failure("install-roundtrip [%s]: the managed block is not "
+                      "what panel_binding.py writes" % label)
+
+
+def _roundtrip_once(home: Path, label: str) -> None:
+    """Install, install again, uninstall: exact at every step."""
+    before = _tree_snapshot(home)
+    first = _run_install_script(home, "install")
+    if first.returncode != 0:
+        raise Failure("install-roundtrip [%s]: install exited %d:\n%s"
+                      % (label, first.returncode,
+                         first.stdout + first.stderr))
+    _assert_three_things(home, label)
+    print("install-roundtrip [%s]: symlink, registration and binding "
+          "block in place" % label)
+    installed = _tree_snapshot(home)
+    if installed == before:
+        raise Failure("install-roundtrip [%s]: install changed nothing"
+                      % label)
+    second = _run_install_script(home, "install")
+    if second.returncode != 0:
+        raise Failure("install-roundtrip [%s]: second install exited %d"
+                      % (label, second.returncode))
+    if _tree_snapshot(home) != installed:
+        raise Failure("install-roundtrip [%s]: the second install was "
+                      "not a no-op" % label)
+    print("install-roundtrip [%s]: second install changed nothing "
+          "further" % label)
+    third = _run_install_script(home, "uninstall")
+    if third.returncode != 0:
+        raise Failure("install-roundtrip [%s]: uninstall exited %d:\n%s"
+                      % (label, third.returncode,
+                         third.stdout + third.stderr))
+    after = _tree_snapshot(home)
+    if after != before:
+        missing = [k for k in before if k not in after]
+        extra = [k for k in after if k not in before]
+        changed = [k for k in before if k in after
+                   and before[k] != after[k]]
+        raise Failure("install-roundtrip [%s]: the tree did not come "
+                      "back: missing %r, added %r, changed %r"
+                      % (label, missing, extra, changed))
+    print("install-roundtrip [%s]: uninstall restored every byte" % label)
+
+
+def _refusal(home: Path) -> None:
+    """Super+M already taken: install refuses and the file is untouched."""
+    bindings = home / ".config" / "hypr" / "bindings.lua"
+    bindings.parent.mkdir(parents=True, exist_ok=True)
+    bindings.write_bytes(BINDINGS_TAKEN)
+    before = _tree_snapshot(home)
+    result = _run_install_script(home, "install")
+    if "refused" not in (result.stdout + result.stderr):
+        raise Failure("install-roundtrip [refused]: install did not say "
+                      "it refused the taken Super+M")
+    if bindings.read_bytes() != BINDINGS_TAKEN:
+        raise Failure("install-roundtrip [refused]: install rewrote the "
+                      "file it refused")
+    print("install-roundtrip [refused]: install refused, file untouched")
+    gone = _run_install_script(home, "uninstall")
+    if gone.returncode != 0:
+        raise Failure("install-roundtrip [refused]: uninstall exited %d"
+                      % gone.returncode)
+    if _tree_snapshot(home) != before:
+        raise Failure("install-roundtrip [refused]: uninstall did not "
+                      "restore the tree around the refused file")
+    print("install-roundtrip [refused]: uninstall restored the rest")
+
+
+def install_roundtrip(state_dir: Path) -> int:
+    """The whole plugin, installed and uninstalled inside temporary homes.
+
+    Two round trips (a seeded home and a bare one) plus the taken-key
+    refusal. --state does not apply: the homes are always thrown away.
+    """
+    del state_dir
+    for label, shell, binds in (("seeded", SHELL_SEED, BINDINGS_SEED),
+                                ("bare", None, None)):
+        home = Path(tempfile.mkdtemp(prefix="foreman-install-"))
+        try:
+            if shell is not None:
+                target = home / ".config" / "omarchy" / "shell.json"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(shell)
+            if binds is not None:
+                target = home / ".config" / "hypr" / "bindings.lua"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(binds)
+            _roundtrip_once(home, label)
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+    home = Path(tempfile.mkdtemp(prefix="foreman-install-"))
+    try:
+        target = home / ".config" / "omarchy" / "shell.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(SHELL_SEED)
+        _refusal(home)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    print("install-roundtrip: install, reinstall and uninstall reverse "
+          "exactly; a taken Super+M refuses with the file untouched")
+    return 0
+
+
+NOT_IMPLEMENTED: dict = {
 }
 
 
@@ -1206,7 +1412,7 @@ def main(argv: list[str]) -> int:
                         help="state directory to read (default: the fixture)")
 
     known = set(NOT_IMPLEMENTED) | {"--loads", "--blocks-count", "--blocks",
-                                         "--keys"}
+                                         "--keys", "--install-roundtrip"}
     rest, check = [], None
     for token in argv:
         if token in known and check is None:
@@ -1231,7 +1437,8 @@ def main(argv: list[str]) -> int:
         return 2
 
     checks = {"--loads": loads, "--blocks-count": blocks_count,
-              "--blocks": panel_blocks, "--keys": panel_keys}
+              "--blocks": panel_blocks, "--keys": panel_keys,
+              "--install-roundtrip": install_roundtrip}
     if args.check not in checks:
         print("foreman-verify: unknown check %r for front panel" % args.check,
               file=sys.stderr)
