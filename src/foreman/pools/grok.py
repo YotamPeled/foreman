@@ -5,7 +5,7 @@ Launch shape (exactly the proven one, file form of the prompt)::
     grok --prompt-file <FOREMAN-JOB.md> -m grok-4.6 --reasoning-effort <high|medium>
       --permission-mode bypassPermissions
       --deny 'MCPTool(foreman__*)' --deny 'MCPTool(boxes__*)'
-      --disable-web-search --output-format json --cwd <worktree>
+      --disable-web-search --output-format streaming-json --cwd <worktree>
 
 Two owner rulings, both enforced here and locked by test. Every launch,
 worker or reviewer, denies the swarm's own tools
@@ -26,10 +26,13 @@ inner command also exports :data:`CLAUDE_FAMILY_SWITCHES` as ``false``
 before the vendor starts, so a unit, a window and a dry run all carry
 them.
 
-``--output-format json`` prints one result object carrying ``usage`` and
-``total_cost_usd``; ``usage`` reads its input/output tokens from the log
-the wrapper tees — ``None`` where the log carries no usable counter, never
-an invented number.
+``--output-format streaming-json`` writes one JSON object per line
+(NDJSON), so the first line lands in the log within seconds of start;
+``json`` buffered until exit and a supervisor watching a long job saw
+nothing. ``usage`` reads the final result/usage object among those
+lines — and still reads the old single-object shape, so logs already on
+disk answer. ``None`` where the log carries no usable counter, never an
+invented number.
 """
 
 from __future__ import annotations
@@ -91,7 +94,7 @@ def grok_argv(ctx: LaunchContext, *, review: bool | None = None) -> list[str]:
     if review:
         for tool in REVIEWER_DENIES:
             argv += ["--deny", tool]
-    argv += ["--disable-web-search", "--output-format", "json",
+    argv += ["--disable-web-search", "--output-format", "streaming-json",
              "--cwd", str(ctx.worktree)]
     return argv
 
@@ -152,12 +155,14 @@ def _tokens(usage: object) -> dict | None:
 
 
 def read_usage(transcript: Path) -> dict | None:
-    """Input/output tokens from an ``--output-format json`` log, or nothing.
+    """Input/output tokens from a grok log, or nothing.
 
-    The log holds the one result object (plus the finish marker line the
-    wrapper appends). The whole text minus marker lines is parsed first —
-    the result object may span lines — then each single-line JSON object
-    is tried, last one wins. Returns ``None`` when the log is missing or
+    ``--output-format streaming-json`` writes one JSON object per line;
+    the last object carrying a usable ``usage`` mapping is the run's
+    totals. Logs already on disk from ``--output-format json`` are a
+    single result object, possibly spanning lines: the whole text minus
+    marker lines is parsed first, then each single-line JSON object is
+    tried, last one wins. Returns ``None`` when the log is missing or
     carries no usable ``usage`` object: no number is invented.
     """
     try:
@@ -213,7 +218,7 @@ class GrokAdapter(PoolAdapter):
         return _common.observe_session(session)
 
     def usage(self, session: Session) -> dict | None:
-        """Input/output tokens from the ``--output-format json`` log."""
+        """Input/output tokens from the session log."""
         return read_usage(transcript_path(session))
 
     def refusal(self, session: Session) -> dict | None:

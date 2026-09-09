@@ -96,9 +96,10 @@ def test_grok_argv_is_the_proven_shape(env, effort):
         "--deny", "MCPTool(foreman__*)",
         "--deny", "MCPTool(boxes__*)",
         "--disable-web-search",
-        "--output-format", "json",
+        "--output-format", "streaming-json",
         "--cwd", str(ctx.worktree),
     ]
+    assert "json" not in grok_pool.grok_argv(ctx)
 
 
 @pytest.mark.parametrize("kind", ["implement", "review"])
@@ -184,6 +185,29 @@ def test_grok_inner_exports_claude_family_switches(env, monkeypatch):
     lines = ctx.log_path.read_text(encoding="utf-8").splitlines()
     assert lines[:6] == ["false"] * 6
     assert lines[-1] == "### finished rc=0"
+
+
+def test_grok_streaming_log_writes_before_the_finish_marker(env, monkeypatch):
+    """`--output-format json` buffered until exit, so a supervisor watching
+    a long job saw an empty log. A stub that prints two NDJSON lines then
+    exits must leave those lines in the log before the finish marker."""
+    ctx = make_ctx(env)
+    ctx.log_path.parent.mkdir(parents=True, exist_ok=True)
+    write_stub(
+        env / "bin", "grok",
+        "printf '%s\\n' '{\"type\":\"update\"}' "
+        "'{\"type\":\"result\",\"usage\":"
+        "{\"input_tokens\":1,\"output_tokens\":2}}'\n"
+        "exit 0\n",
+        monkeypatch,
+    )
+    inner = grok_pool.inner_command(ctx)
+    subprocess.run(["bash", "-c", inner], check=True,
+                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    lines = ctx.log_path.read_text(encoding="utf-8").splitlines()
+    assert lines[0] == '{"type":"update"}'
+    assert lines[-1] == "### finished rc=0"
+    assert lines[0] != lines[-1]
 
 
 def test_grok_launch_returns_the_pid_file(env, monkeypatch):

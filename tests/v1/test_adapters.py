@@ -3,10 +3,11 @@
 Every test names the break it catches in its docstring. Expected command
 lines are hand-derived literals from the fixed shapes, never built with
 the adapters' own helpers. Fixture logs use the real vendor field shapes
-(Grok's ``--output-format json`` result, Muse's ``--json`` attribution
-events) observed on 2026-09-08. No test starts a vendor process, opens a
-window, or writes outside tmp dirs; where the wrapper itself is exercised
-a stub binary on PATH stands in for the vendor CLI.
+(Grok's ``--output-format json`` result and ``streaming-json`` NDJSON,
+Muse's ``--json`` attribution events) observed on 2026-09-08. No test
+starts a vendor process, opens a window, or writes outside tmp dirs;
+where the wrapper itself is exercised a stub binary on PATH stands in
+for the vendor CLI.
 """
 
 from __future__ import annotations
@@ -325,17 +326,59 @@ GROK_RESULT = """{
 }
 """
 
+GROK_STREAMING = (
+    json.dumps({"type": "update", "text": "working"}) + "\n"
+    + json.dumps({"type": "update", "text": "still working"}) + "\n"
+    + json.dumps({
+        "type": "result",
+        "text": "probe-ok",
+        "stopReason": "end_turn",
+        "usage": {
+            "input_tokens": 17568,
+            "cache_read_input_tokens": 128,
+            "cache_creation_input_tokens": 0,
+            "output_tokens": 40,
+            "reasoning_tokens": 33,
+            "total_tokens": 17736,
+        },
+        "num_turns": 1,
+        "total_cost_usd": 0.0060248,
+    }) + "\n"
+    + json.dumps({"type": "end"}) + "\n"
+)
+
+GROK_429 = (
+    "API error 429: Subscription quota exhausted. Your usage window resets "
+    "at 2026-09-14T00:00:00Z. (rate_limit_error)"
+)
+
+
+def test_grok_argv_streams_json(env):
+    """`--output-format json` buffers until exit; streaming-json writes a
+    line per update so the log shows life before the job ends."""
+    argv = grok_pool.grok_argv(make_ctx(env, "grok"))
+    assert argv[argv.index("--output-format") + 1] == "streaming-json"
+    assert "json" not in argv
+
 
 def test_grok_usage_reads_the_json_result(env):
-    """`--output-format json` must reach the command, and the usage it
-    prints must come back as numbers: the exact fixture below is the real
-    field shape, plus the finish marker the wrapper appends."""
-    ctx = make_ctx(env, "grok")
-    assert "--output-format" in grok_pool.grok_argv(ctx)
-    assert "json" in grok_pool.grok_argv(ctx)
-    log = Path(ctx.log_path)
+    """Logs already on disk from `--output-format json` must still answer:
+    the exact fixture below is the real field shape, plus the finish
+    marker the wrapper appends."""
+    log = Path(make_ctx(env, "grok").log_path)
     log.parent.mkdir(parents=True, exist_ok=True)
     log.write_text(GROK_RESULT + "### finished rc=0\n", encoding="utf-8")
+    assert grok_pool.read_usage(log) == {"input_tokens": 17568,
+                                         "output_tokens": 40}
+
+
+def test_grok_usage_reads_the_streaming_result(env):
+    """Update lines carry no totals; the final result/usage object does.
+    A reader that took the first usage, or that only parsed a single
+    JSON object, would miss the run."""
+    log = Path(make_ctx(env, "grok").log_path)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(GROK_STREAMING + "### finished rc=0\n", encoding="utf-8")
     assert grok_pool.read_usage(log) == {"input_tokens": 17568,
                                          "output_tokens": 40}
 
@@ -344,6 +387,7 @@ def test_grok_usage_reads_the_json_result(env):
     "plain prose, no JSON at all\n### finished rc=0\n",
     '{"text": "hi, no usage here"}\n',
     '{"usage": {"input_tokens": "many", "output_tokens": 3}}\n',
+    '{"type":"update"}\n{"type":"end"}\n### finished rc=0\n',
 ])
 def test_grok_usage_is_nothing_without_a_counter(env, log_text):
     """A counter that is genuinely absent stays None: an invented number
@@ -352,6 +396,40 @@ def test_grok_usage_is_nothing_without_a_counter(env, log_text):
     log.write_text(log_text, encoding="utf-8")
     assert grok_pool.read_usage(log) is None
     assert grok_pool.read_usage(env / "no-such-log") is None
+
+
+def test_grok_refusal_reads_streaming_and_json(env):
+    """A quota refusal in the streaming result, or in the old single
+    object, must still put the pool out; a clean stream must not."""
+    adapter = grok_pool.GrokAdapter()
+
+    def session_with(name: str, text: str) -> Session:
+        log = env / f"{name}.log"
+        log.write_text(text, encoding="utf-8")
+        return Session(id=name, role="grok", pool="grok",
+                       model=grok_pool.MODEL, state="exited", log=str(log))
+
+    blob = json.dumps({"error": GROK_429, "usage": {
+        "input_tokens": 1, "output_tokens": 0}}) + "\n"
+    found = adapter.refusal(session_with("ses-grok429-json", blob))
+    assert found is not None
+    assert found["kind"] == "quota"
+    assert found["reset"] == "2026-09-14T00:00:00Z"
+
+    stream = (
+        json.dumps({"type": "update", "text": "working"}) + "\n"
+        + json.dumps({"type": "result", "error": GROK_429}) + "\n"
+        + json.dumps({"type": "end"}) + "\n"
+        + "### finished rc=1\n"
+    )
+    found = adapter.refusal(session_with("ses-grok429-ndjson", stream))
+    assert found is not None
+    assert found["kind"] == "quota"
+    assert found["reset"] == "2026-09-14T00:00:00Z"
+
+    clean = adapter.refusal(session_with(
+        "ses-grokclean", GROK_STREAMING + "### finished rc=0\n"))
+    assert clean is None
 
 
 def _muse_event(kind: str, record: dict) -> str:
