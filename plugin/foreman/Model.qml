@@ -50,12 +50,24 @@ QtObject {
   // wall clock, refreshed on the same 2 second poll — so a row written
   // between ticks is not in the future, and a row's age advances between
   // ticks instead of freezing and then jumping.
+  //
+  // FOREMAN_NOW, when set to a parseable ISO instant, pins clockMs so a
+  // fixture can hold still. Unset, empty or unparseable is the wall clock,
+  // which is what the owner's panel always sees.
   readonly property string now: root.feed.now || ""
   property real clockMs: Date.now()
 
   signal changed()
 
   function tickClock() {
+    var override = Quickshell.env("FOREMAN_NOW")
+    if (override && override.length > 0) {
+      var pinned = Date.parse(override)
+      if (!isNaN(pinned)) {
+        root.clockMs = pinned
+        return
+      }
+    }
     root.clockMs = Date.now()
   }
 

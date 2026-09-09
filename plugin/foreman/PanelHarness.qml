@@ -91,6 +91,7 @@ ShellRoot {
         acc.titles.push(item.text)
         if (acc.current) acc.current.title = item.text
       } else if (item.objectName === "empty") acc.empty.push(item.text)
+      else if (item.objectName === "age") acc.ages.push(item.text)
       else if (item.objectName === "task") { if (acc.current) acc.current.tasks += 1 }
       else if (item.objectName === "monitors") { if (acc.current) acc.current.monitors = item.text }
     }
@@ -124,11 +125,12 @@ ShellRoot {
                  + " 0 " + JSON.stringify({ titles: [], empty: [] }))
         continue
       }
-      var acc = { cards: 0, titles: [], empty: [], details: [], current: null }
+      var acc = { cards: 0, titles: [], empty: [], details: [], current: null,
+                  ages: [] }
       harness.walk(holder.item, acc)
       out.push(harness.slots[i].block + " ready " + acc.cards + " "
                + JSON.stringify({ titles: acc.titles, empty: acc.empty,
-                                  details: acc.details }))
+                                  details: acc.details, ages: acc.ages }))
     }
     return out
   }

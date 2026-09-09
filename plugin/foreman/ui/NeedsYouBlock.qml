@@ -133,6 +133,7 @@ Item {
         }
 
         Text {
+          objectName: "age"
           width: parent.width
           text: (modelData.kind || "") + " · " + root.ageText(modelData.waitedS)
           color: Color.muted

@@ -86,6 +86,7 @@ Item {
         }
 
         Text {
+          objectName: "age"
           width: parent.width
           text: (modelData.kind || "") + " · " + (modelData.subject || "") + " · " + root.ageText(modelData.sinceS)
           color: Color.muted

@@ -207,16 +207,21 @@ AGE_KEY_SUFFIXES = (
 
 #: What `panel --blocks` must read off the headless render against the
 #: mock fixture in plugin/foreman/test/fixture. Hand-derived from the
-#: fixture bytes, never from a run of the panel under test:
+#: fixture bytes, never from a run of the panel under test.
+#:
+#: The render pins FOREMAN_NOW to the fixture's observed.at plus exactly
+#: 60 seconds (MOCK_CLOCK_PIN). An age the fixture holds as 14 min at the
+#: tick therefore reads 15 min: the offset is the point of the pin, not
+#: an accident, and a forgotten liveAge call would still show the tick's
+#: number and fail. Live checks (--loads, check_ages) keep the wall clock.
 #:
 #:   header      the header row left to right: the word foreman, the
 #:               collector clock in UTC (observed.json `at`
 #:               2026-05-11T14:07:00+00:00, a Monday), "10 sessions, all
 #:               registered" (10 registered and 10 observed), "not
 #:               frozen" (no `frozen` file), and the collector state.
-#:               The collector age is measured against the wall clock,
-#:               so the May fixture always reads stale, where the mock
-#:               shows alive.
+#:               The pin is 60 seconds after the tick, inside the 120
+#:               second alive window, so the header reads alive.
 #:   needsYou    inbox.jsonl sorted by asked_at, answered rows dropped:
 #:               inb-tokens01 then inb-reaper01 (inb-theme001 is answered
 #:               by the later line)
@@ -224,16 +229,25 @@ AGE_KEY_SUFFIXES = (
 #:               supervisor silent, intruder, defect repeated (the "job
 #:               stalled" pair is resolved by the later line); the title
 #:               on screen is each row's detail sentence
+MOCK_OBSERVED_AT = "2026-05-11T14:07:00+00:00"
+MOCK_CLOCK_PIN = "2026-05-11T14:08:00+00:00"
 EXPECTED_PANEL_HEADER = [
     "foreman",
     "Monday 14:07",
     "10 sessions, all registered",
     "not frozen",
-    "collector stale",
+    "collector alive",
 ]
 EXPECTED_PANEL_NEEDSYOU = [
     "Buy 2M extra Codex tokens so the review pool keeps two reviewers overnight?",
     "Ship the reaper without the dead-worktree sweep?",
+]
+#: Kind and wait, one minute older than the fixture's asked_at against
+#: observed.at: tokens 13:44 is 23 min at the tick / 24 with the pin;
+#: reaper 14:01 is 6 min / 7 with the pin.
+EXPECTED_PANEL_NEEDSYOU_AGES = [
+    "money · waited 24 min",
+    "scope · waited 7 min",
 ]
 EXPECTED_PANEL_PROBLEMS = [
     "Engine supervisor has been silent for 14 minutes with no jobs running,"
@@ -243,6 +257,14 @@ EXPECTED_PANEL_PROBLEMS = [
     "Ingestion is halted: the webhook destination defect came back a third"
     " time, the supervisor must write what changed before dispatching again",
 ]
+#: Kind, subject and wait, one minute older than the fixture's `since`
+#: against observed.at: silent 13:53 is 14 min at the tick / 15 with the
+#: pin; intruder 14:04 is 3 min / 4; defect 14:01 is 6 min / 7.
+EXPECTED_PANEL_PROBLEMS_AGES = [
+    "supervisor silent · ses-supeng01 · waited 15 min",
+    "intruder · pid-41180 · waited 4 min",
+    "defect repeated · ingestion · waited 7 min",
+]
 
 #: The queue blocks, hand-derived from the mock fixture the same way. Each
 #: queue row reads as a (left, body) pair off the render: the wait or state
@@ -250,21 +272,24 @@ EXPECTED_PANEL_PROBLEMS = [
 #: the model's oldest-first order; the merge queue reads merging, waiting,
 #: landed out of the model's own group arrays. Capacity reads per pool the
 #: name, the busy-of-total and the third line (average, supervisors-only,
-#: or the queued-only waiting count).
+#: or the queued-only waiting count). Wait columns and merge ages are the
+#: fixture's queued_at / requested_at against observed.at, plus the pin's
+#: one minute: 14/12/7/3 min become 15/13/8/4, started 1 min becomes 2,
+#: waited 4 min becomes 5. Landing clocks stay on the collector tick.
 EXPECTED_PANEL_JOBQUEUE = [
-    ("14 min", "frozen-state restart · engine · needs a muse slot"
+    ("15 min", "frozen-state restart · engine · needs a muse slot"
                " · blocked: supervisor silent"),
-    ("12 min", "sweep on collector clock · reaper · needs a muse slot"
+    ("13 min", "sweep on collector clock · reaper · needs a muse slot"
                " · blocked: Ship the reaper without the dead-worktree sweep?"),
-    ("7 min", "sampling plan · corpus · needs a grok slot (8 of 8 busy)"),
+    ("8 min", "sampling plan · corpus · needs a grok slot (8 of 8 busy)"),
     ("planned", "webhook destination fix · ingestion"
                 " · spec written, front halted"),
-    ("3 min", "freeze refuses launches · api · needs a muse slot"
+    ("4 min", "freeze refuses launches · api · needs a muse slot"
               " (3 of 3 busy)"),
     ("planned", "digest endpoint · api · spec written, not yet queued"),
 ]
 EXPECTED_PANEL_JOBQUEUE_SUMMARY = \
-    "6 waiting · oldest 14 min · muse is the bottleneck (3 waiting on it)"
+    "6 waiting · oldest 15 min · muse is the bottleneck (3 waiting on it)"
 EXPECTED_PANEL_FRONTQUEUE = [
     ("after api", "digest · One evening message that says what the swarm"
                   " did today and what it wants"),
@@ -273,9 +298,9 @@ EXPECTED_PANEL_FRONTQUEUE = [
 ]
 EXPECTED_PANEL_MERGEQUEUE = [
     ("merging", "session-registry-read · from api → dev · reviewed by codex"
-                " · started 1 min ago"),
+                " · started 2 min ago"),
     ("waiting", "dump-export-shape · from corpus → feat/corpus-export"
-                " · no review requested · waited 4 min"),
+                " · no review requested · waited 5 min"),
     ("landed", "label-index-rebuild · corpus → main · 14:03"
                " · reviewed by codex"),
     ("landed", "routes-from-ledger · api → dev · 13:58 · reviewed by grok"),
@@ -374,16 +399,18 @@ def find_quickshell() -> str:
 def headless_env(state_dir: Path) -> dict:
     """No Wayland display, no GPU, no theme plugin, and the fixture as the
     only state directory the model can see. Ambient FOREMAN_SESSION,
-    FOREMAN_STATE and FOREMAN_CONFIG are never inherited: the harness
-    names the world and the caller itself, rather than whoever holds
-    the terminal. FOREMAN_CONFIG points at a path the fixture does not
-    create, so a freeze during --keys cannot fire the owner's hooks."""
+    FOREMAN_STATE, FOREMAN_CONFIG and FOREMAN_NOW are never inherited:
+    the harness names the world, the caller and the clock, rather than
+    whoever holds the terminal. FOREMAN_CONFIG points at a path the
+    fixture does not create, so a freeze during --keys cannot fire the
+    owner's hooks."""
     env = dict(os.environ)
     env.pop("WAYLAND_DISPLAY", None)
     env.pop("DISPLAY", None)
     env.pop("FOREMAN_SESSION", None)
     env.pop("FOREMAN_STATE", None)
     env.pop("FOREMAN_CONFIG", None)
+    env.pop("FOREMAN_NOW", None)
     env["QT_QPA_PLATFORM"] = "offscreen"
     env["QT_QPA_PLATFORMTHEME"] = ""
     env["FOREMAN_STATE"] = str(state_dir)
@@ -742,14 +769,15 @@ def blocks_count(state_dir: Path) -> int:
     return 0
 
 
-def run_panel_harness(state_dir: Path) -> dict:
+def run_panel_harness(state_dir: Path, clock: str | None = None) -> dict:
     """The panel's header and blocks with a window on them, against
     `state_dir`.
 
     The panel binds qs.Commons, which only resolves inside the Omarchy
     shell's own config root, so the run gets a QML import path holding a
     `qs` entry that points at the shell — the same arrangement check_lint
-    uses. Pass or fail comes from the output, never from the status."""
+    uses. Pass or fail comes from the output, never from the status.
+    `clock`, when set, is FOREMAN_NOW for this run only."""
     quickshell = find_quickshell()
     if not PANEL_HARNESS.is_file():
         raise Failure("harness: missing " + str(PANEL_HARNESS))
@@ -767,6 +795,8 @@ def run_panel_harness(state_dir: Path) -> dict:
             link.symlink_to(shell)
 
         env = headless_env(state_dir)
+        if clock:
+            env["FOREMAN_NOW"] = clock
         existing = env.get("QML2_IMPORT_PATH", "")
         env["QML2_IMPORT_PATH"] = (str(imports) + (os.pathsep + existing
                                                    if existing else ""))
@@ -825,6 +855,7 @@ def run_panel_harness(state_dir: Path) -> dict:
                 "titles": titles,
                 "empty": empty,
                 "details": shown.get("details", []),
+                "ages": shown.get("ages", []),
             }
     if "HARNESS-DONE" not in output:
         raise Failure("panel harness: did not finish; output was:\n"
@@ -840,7 +871,8 @@ def panel_blocks(state_dir: Path) -> int:
     assertions hold the mock fixture; an explicit --state only reports
     what the render shows."""
     strict = state_dir.resolve() == FIXTURE.resolve()
-    result = run_panel_harness(fed(state_dir))
+    result = run_panel_harness(
+        fed(state_dir), clock=MOCK_CLOCK_PIN if strict else None)
     renders = result["renders"]
 
     missing = [name for name in ["header", *PANEL_SLOTS]
@@ -886,8 +918,9 @@ def check_panel_strict(renders: dict) -> None:
         raise Failure("blocks: header: got %r, the fixture holds %r"
                       % (header["titles"], EXPECTED_PANEL_HEADER))
 
-    for name, expected in (("needsYou", EXPECTED_PANEL_NEEDSYOU),
-                           ("problems", EXPECTED_PANEL_PROBLEMS)):
+    for name, expected, expected_ages in (
+            ("needsYou", EXPECTED_PANEL_NEEDSYOU, EXPECTED_PANEL_NEEDSYOU_AGES),
+            ("problems", EXPECTED_PANEL_PROBLEMS, EXPECTED_PANEL_PROBLEMS_AGES)):
         slot = renders[name]
         if slot["status"] != "ready":
             raise Failure("blocks: %s: not rendered (%s)"
@@ -897,6 +930,10 @@ def check_panel_strict(renders: dict) -> None:
                           " %d with %r"
                           % (name, slot["cards"], slot["titles"],
                              len(expected), expected))
+        if slot.get("ages") != expected_ages:
+            raise Failure("blocks: %s: ages got %r, a minute after the tick"
+                          " the fixture holds %r"
+                          % (name, slot.get("ages"), expected_ages))
         if slot["empty"]:
             raise Failure("blocks: %s: empty voice shows beside %d card(s)"
                           % (name, slot["cards"]))
