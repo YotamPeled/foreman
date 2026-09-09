@@ -188,6 +188,10 @@ def add_launch_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--no-headless", action="store_true",
                         help="summon with a window even when [launch] "
                              "headless is true.")
+    parser.add_argument("--model", default=None,
+                        help="model a supervisor, merge-desk or foreman "
+                             "launch runs (default: claude-opus-5); "
+                             "refused for a worker, whose model is its pool's")
     parser.add_argument("--dry-run", action="store_true",
                         help="do everything except start the process; print the command")
 
@@ -683,6 +687,10 @@ def cmd_launch(args: argparse.Namespace) -> int:
         return launch_foreman_main(
             args, frozen_problems + list(identity_violations))
     problems: list[str] = frozen_problems + list(identity_violations)
+    if getattr(args, "model", None):
+        problems.append(
+            f"--model {args.model!r} is refused: a worker's model is "
+            f"its pool's")
     if args.spec is None:
         problems.append(
             "spec is required: launch <role> <pool> <spec>, "
@@ -1025,6 +1033,19 @@ cmd_launch.add_arguments = add_launch_arguments  # type: ignore[attr-defined]
 SUPERVISOR_POOL = "opus"
 SUPERVISOR_MODEL = "claude-opus-5"
 ROLE_PROMPT_FILE = "role-prompt.md"
+
+
+def _resolve_summoned_model(args: argparse.Namespace) -> str:
+    """The model a supervisor, desk or foreman launch runs.
+
+    ``--model`` names it; without the flag the packaged supervisor model
+    is the default. A worker launch never reaches here: its model is
+    its pool's.
+    """
+    value = getattr(args, "model", None)
+    if isinstance(value, str) and value.strip():
+        return value.strip()
+    return SUPERVISOR_MODEL
 #: The vendor's own session id (a uuid) lives beside the session as well as
 #: on its roster record: Foreman mints the roster id and the vendor answers
 #: to this one. A relaunch mints a fresh vendor id under the same Foreman
@@ -1521,7 +1542,8 @@ def pre_answer_first_launch_dialogs(directory: str) -> None:
 
 def supervisor_inner_command(*, pid_path: Path, session_id: str, repo: str,
                              role_prompt: Path, vendor_id: str,
-                             mcp_config: Path | None = None) -> str:
+                             mcp_config: Path | None = None,
+                             model: str | None = None) -> str:
     """The shell the window runs: pid first, then the proven vendor line.
 
     The pid is written as the first act and read back by the launcher, so
@@ -1552,7 +1574,8 @@ def supervisor_inner_command(*, pid_path: Path, session_id: str, repo: str,
         mcp_flags = (f" --mcp-config {shlex.quote(str(mcp_config))}"
                      " --strict-mcp-config")
     vendor = (f"{AUTOCOMPACT} claude --session-id {shlex.quote(vendor_id)} "
-              f"--model {SUPERVISOR_MODEL} --dangerously-skip-permissions"
+              f"--model {shlex.quote(model or SUPERVISOR_MODEL)} "
+              f"--dangerously-skip-permissions"
               f"{mcp_flags} "
               f'"$(cat {shlex.quote(str(role_prompt))})"')
     return (
@@ -1860,12 +1883,13 @@ def read_vendor_session(session_id: str) -> str | None:
 def _supervisor_session(session_id: str, front: str | None, repo: str,
                         launched_by: str | None,
                         vendor_id: str | None = None,
-                        headless: bool = False) -> Session:
+                        headless: bool = False,
+                        model: str | None = None) -> Session:
     return Session(
         id=session_id,
         role=SUPERVISOR,
         pool=SUPERVISOR_POOL,
-        model=SUPERVISOR_MODEL,
+        model=model or SUPERVISOR_MODEL,
         front=front,
         job=None,
         worktree=repo,
@@ -1879,7 +1903,8 @@ def _supervisor_session(session_id: str, front: str | None, repo: str,
 
 
 def _start_supervisor(session_id: str, *, repo: str, role_prompt: Path,
-                      vendor_id: str, workspace: str | None
+                      vendor_id: str, workspace: str | None,
+                      model: str | None = None
                       ) -> tuple[list[str], str, int | None, str | None]:
     """Write the window's script, open it, read the pid back.
 
@@ -1910,7 +1935,7 @@ def _start_supervisor(session_id: str, *, repo: str, role_prompt: Path,
     inner = supervisor_inner_command(
         pid_path=pid_path, session_id=session_id, repo=repo,
         role_prompt=role_prompt, vendor_id=vendor_id,
-        mcp_config=mcp_config)
+        mcp_config=mcp_config, model=model)
     argv = supervisor_outer_argv(session_id, session_dir / RUN_SCRIPT_FILE,
                                  workspace)
     try:
@@ -2087,6 +2112,7 @@ def launch_supervisor_main(args: argparse.Namespace,
     """`foreman launch supervisor <front> [--workspace N] [--headless] [--dry-run]`."""
     from . import headless as headless_module
 
+    model = _resolve_summoned_model(args)
     front = args.pool
     headless = headless_module.resolve_launch_headless(args, problems)
     if headless and getattr(args, "workspace", None) is not None:
@@ -2167,7 +2193,7 @@ def launch_supervisor_main(args: argparse.Namespace,
         inner = supervisor_inner_command(
             pid_path=paths.session_pid_path(session_id),
             session_id=session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, mcp_config=mcp_config)
+            vendor_id=vendor_id, mcp_config=mcp_config, model=model)
         argv = supervisor_outer_argv(
             session_id, session_dir / RUN_SCRIPT_FILE, workspace)
         _print_supervisor(session_id, vendor_id, role_prompt, workspace,
@@ -2189,7 +2215,7 @@ def launch_supervisor_main(args: argparse.Namespace,
                 roster,
                 _supervisor_session(session_id, front, repo,
                                     os.environ.get(caller.SESSION_ENV),
-                                    vendor_id)),
+                                    vendor_id, model=model)),
             default={"sessions": {}},
         )
     except OSError as exc:
@@ -2208,7 +2234,7 @@ def launch_supervisor_main(args: argparse.Namespace,
         publish_front_prompt(front, text)
         argv, inner, pid, failure = _start_supervisor(
             session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, workspace=workspace)
+            vendor_id=vendor_id, workspace=workspace, model=model)
     except Exception as exc:  # noqa: BLE001 - anything here is a refusal
         failure = f"{type(exc).__name__}: {exc}"
     starttime, dead = _confirm_started(pid)
@@ -2256,6 +2282,7 @@ def launch_supervisor_headless(args: argparse.Namespace, *, front: str,
     from . import headless as headless_module
     from . import mcp as mcp_module
 
+    model = _resolve_summoned_model(args)
     session_id = ids.mint("session")
     session_dir = paths.session_dir(session_id)
     role_prompt = session_dir / ROLE_PROMPT_FILE
@@ -2273,7 +2300,7 @@ def launch_supervisor_headless(args: argparse.Namespace, *, front: str,
         return refuse(f"cannot write launch files: {exc.strerror or exc}")
 
     vendor_argv = headless_module.first_turn_vendor_argv(
-        prompt_text=text, mcp_config=mcp_config)
+        prompt_text=text, mcp_config=mcp_config, model=model)
     outer_argv = headless_module.turn_outer_argv(
         session_id, session_dir / RUN_SCRIPT_FILE, repo=repo)
     if args.dry_run:
@@ -2291,7 +2318,7 @@ def launch_supervisor_headless(args: argparse.Namespace, *, front: str,
                 roster,
                 _supervisor_session(session_id, front, repo,
                                     os.environ.get(caller.SESSION_ENV),
-                                    headless=True)),
+                                    headless=True, model=model)),
             default={"sessions": {}},
         )
     except OSError as exc:
@@ -2305,7 +2332,8 @@ def launch_supervisor_headless(args: argparse.Namespace, *, front: str,
         return refuse(f"cannot publish the front prompt: {exc}")
 
     first = headless_module.run_first_turn(
-        session_id, prompt_text=text, repo=repo, mcp_config=mcp_config)
+        session_id, prompt_text=text, repo=repo, mcp_config=mcp_config,
+        model=model)
     vendor_id = first["vendor_session"]
     if vendor_id is not None:
         try:
@@ -2506,12 +2534,13 @@ def live_merge_desk(ignore: str | None = None
 
 def _merge_desk_session(session_id: str, repo: str,
                         launched_by: str | None,
-                        headless: bool = False) -> Session:
+                        headless: bool = False,
+                        model: str | None = None) -> Session:
     return Session(
         id=session_id,
         role=MERGE_DESK,
         pool=SUPERVISOR_POOL,
-        model=SUPERVISOR_MODEL,
+        model=model or SUPERVISOR_MODEL,
         front=None,
         job=None,
         worktree=repo,
@@ -2528,6 +2557,7 @@ def launch_merge_desk_main(args: argparse.Namespace,
     """`foreman launch merge-desk [--workspace N] [--headless] [--dry-run]`."""
     from . import headless as headless_module
 
+    model = _resolve_summoned_model(args)
     if args.pool is not None:
         problems.append(
             f"a merge desk takes no pool (got {args.pool!r}): it is the "
@@ -2586,7 +2616,7 @@ def launch_merge_desk_main(args: argparse.Namespace,
         inner = supervisor_inner_command(
             pid_path=paths.session_pid_path(session_id),
             session_id=session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id)
+            vendor_id=vendor_id, model=model)
         argv = supervisor_outer_argv(
             session_id, session_dir / RUN_SCRIPT_FILE, workspace)
         _print_supervisor(session_id, vendor_id, role_prompt, workspace,
@@ -2601,7 +2631,8 @@ def launch_merge_desk_main(args: argparse.Namespace,
             lambda roster: _place_session(
                 roster,
                 _merge_desk_session(session_id, repo,
-                                    os.environ.get(caller.SESSION_ENV))),
+                                    os.environ.get(caller.SESSION_ENV),
+                                    model=model)),
             default={"sessions": {}},
         )
     except OSError as exc:
@@ -2615,7 +2646,7 @@ def launch_merge_desk_main(args: argparse.Namespace,
     try:
         argv_, inner, pid, failure = _start_supervisor(
             session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, workspace=workspace)
+            vendor_id=vendor_id, workspace=workspace, model=model)
     except Exception as exc:  # noqa: BLE001 - anything here is a refusal
         failure = f"{type(exc).__name__}: {exc}"
     starttime, dead = _confirm_started(pid)
@@ -2643,6 +2674,7 @@ def launch_merge_desk_headless(args: argparse.Namespace, *, repo: str,
     from . import headless as headless_module
     from . import mcp as mcp_module
 
+    model = _resolve_summoned_model(args)
     session_id = ids.mint("session")
     session_dir = paths.session_dir(session_id)
     role_prompt = session_dir / ROLE_PROMPT_FILE
@@ -2659,7 +2691,7 @@ def launch_merge_desk_headless(args: argparse.Namespace, *, repo: str,
         return refuse(f"cannot write launch files: {exc.strerror or exc}")
 
     vendor_argv = headless_module.first_turn_vendor_argv(
-        prompt_text=text, mcp_config=mcp_config)
+        prompt_text=text, mcp_config=mcp_config, model=model)
     outer_argv = headless_module.turn_outer_argv(
         session_id, session_dir / RUN_SCRIPT_FILE, repo=repo)
     if args.dry_run:
@@ -2676,7 +2708,7 @@ def launch_merge_desk_headless(args: argparse.Namespace, *, repo: str,
                 roster,
                 _merge_desk_session(session_id, repo,
                                     os.environ.get(caller.SESSION_ENV),
-                                    headless=True)),
+                                    headless=True, model=model)),
             default={"sessions": {}},
         )
     except OSError as exc:
@@ -2684,7 +2716,8 @@ def launch_merge_desk_headless(args: argparse.Namespace, *, repo: str,
                       f"{exc.strerror or exc}")
 
     first = headless_module.run_first_turn(
-        session_id, prompt_text=text, repo=repo, mcp_config=mcp_config)
+        session_id, prompt_text=text, repo=repo, mcp_config=mcp_config,
+        model=model)
     vendor_id = first["vendor_session"]
     if vendor_id is not None:
         try:
@@ -2852,12 +2885,13 @@ def live_foreman(ignore: str | None = None
 
 
 def _foreman_session(session_id: str, repo: str,
-                     launched_by: str | None) -> Session:
+                     launched_by: str | None,
+                     model: str | None = None) -> Session:
     return Session(
         id=session_id,
         role=FOREMAN,
         pool=SUPERVISOR_POOL,
-        model=SUPERVISOR_MODEL,
+        model=model or SUPERVISOR_MODEL,
         front=None,
         job=None,
         worktree=repo,
@@ -2871,6 +2905,7 @@ def _foreman_session(session_id: str, repo: str,
 def launch_foreman_main(args: argparse.Namespace,
                         problems: list[str]) -> int:
     """`foreman launch foreman [--workspace N] [--dry-run]`."""
+    model = _resolve_summoned_model(args)
     if getattr(args, "headless", False):
         problems.append(
             "the foreman stays interactive: `foreman launch foreman "
@@ -2924,7 +2959,7 @@ def launch_foreman_main(args: argparse.Namespace,
         inner = supervisor_inner_command(
             pid_path=paths.session_pid_path(session_id),
             session_id=session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id)
+            vendor_id=vendor_id, model=model)
         argv = supervisor_outer_argv(
             session_id, session_dir / RUN_SCRIPT_FILE, workspace)
         _print_supervisor(session_id, vendor_id, role_prompt, workspace,
@@ -2942,7 +2977,8 @@ def launch_foreman_main(args: argparse.Namespace,
             lambda roster: _place_session(
                 roster,
                 _foreman_session(session_id, repo,
-                                 os.environ.get(caller.SESSION_ENV))),
+                                 os.environ.get(caller.SESSION_ENV),
+                                 model=model)),
             default={"sessions": {}},
         )
     except OSError as exc:
@@ -2956,7 +2992,7 @@ def launch_foreman_main(args: argparse.Namespace,
     try:
         argv_, inner, pid, failure = _start_supervisor(
             session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, workspace=workspace)
+            vendor_id=vendor_id, workspace=workspace, model=model)
     except Exception as exc:  # noqa: BLE001 - anything here is a refusal
         failure = f"{type(exc).__name__}: {exc}"
     starttime, dead = _confirm_started(pid)
@@ -3218,6 +3254,9 @@ def relaunch_main(session_id: str, *, workspace: str | None = None,
     if problems:
         return refuse(*problems)
     assert record is not None and on_branch is not None
+    recorded_model = old.get("model")
+    model = recorded_model if isinstance(recorded_model, str) and recorded_model \
+        else SUPERVISOR_MODEL
 
     # A fresh conversation, so a fresh vendor id: the old one is the
     # transcript of a session that is being stopped, and nothing resumes it.
@@ -3248,7 +3287,7 @@ def relaunch_main(session_id: str, *, workspace: str | None = None,
         inner = supervisor_inner_command(
             pid_path=paths.session_pid_path(session_id),
             session_id=session_id, repo=where, role_prompt=role_prompt,
-            vendor_id=vendor_id, mcp_config=mcp_config)
+            vendor_id=vendor_id, mcp_config=mcp_config, model=model)
         argv = supervisor_outer_argv(
             session_id, session_dir / RUN_SCRIPT_FILE, workspace)
         say(f"relaunches: {session_id}")
@@ -3318,7 +3357,7 @@ def relaunch_main(session_id: str, *, workspace: str | None = None,
         publish_front_prompt(front, text)
         argv, inner, pid, failure = _start_supervisor(
             session_id, repo=where, role_prompt=role_prompt,
-            vendor_id=vendor_id, workspace=workspace)
+            vendor_id=vendor_id, workspace=workspace, model=model)
     except Exception as exc:  # noqa: BLE001 - anything here is a refusal
         failure = f"{type(exc).__name__}: {exc}"
     starttime, dead = _confirm_started(pid)

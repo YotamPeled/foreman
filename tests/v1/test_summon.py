@@ -354,6 +354,49 @@ def _trial_verb(args) -> int:
     return 0
 
 
+def test_windowed_supervisor_dry_run_prints_the_named_model(env, capsys):
+    """``launch supervisor --model`` interpolates that model in the
+    windowed command. Without the flag the packaged supervisor model
+    stays."""
+    repo = make_repo(env / "repo")
+    add_panel_front()
+    capsys.readouterr()
+    rc = cli.main(["launch", "supervisor", "panel", "--workspace", "6",
+                   "--repo", str(repo), "--model", "claude-fable-5-1",
+                   "--dry-run"])
+    assert rc == 0, capsys.readouterr().err
+    named = capsys.readouterr().out
+    assert "--model claude-fable-5-1" in named
+    assert "--model claude-opus-5" not in named
+
+    rc = cli.main(["launch", "supervisor", "panel", "--workspace", "6",
+                   "--repo", str(repo), "--dry-run"])
+    assert rc == 0, capsys.readouterr().err
+    defaulted = capsys.readouterr().out
+    assert "--model claude-opus-5" in defaulted
+    assert "--model claude-fable-5-1" not in defaulted
+
+
+def test_windowed_merge_desk_dry_run_prints_the_named_model(env, capsys):
+    """The desk takes ``--model`` the same way the supervisor does."""
+    repo = make_repo(env / "repo")
+    capsys.readouterr()
+    rc = cli.main(["launch", "merge-desk", "--workspace", "6",
+                   "--repo", str(repo), "--model", "claude-fable-5-1",
+                   "--dry-run"])
+    assert rc == 0, capsys.readouterr().err
+    named = capsys.readouterr().out
+    assert "--model claude-fable-5-1" in named
+    assert "--model claude-opus-5" not in named
+
+    rc = cli.main(["launch", "merge-desk", "--workspace", "6",
+                   "--repo", str(repo), "--dry-run"])
+    assert rc == 0, capsys.readouterr().err
+    defaulted = capsys.readouterr().out
+    assert "--model claude-opus-5" in defaulted
+    assert "--model claude-fable-5-1" not in defaulted
+
+
 def test_dry_run_records_nothing_and_starts_nothing(env, capsys):
     make_repo(env / "repo")
     add_panel_front()

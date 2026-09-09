@@ -917,3 +917,70 @@ def test_a_spawn_double_never_reaches_systemd(env, fake_claude, fake_spawn,
     monkeypatch.setattr(headless_module, "free_unit_name", freed.append)
     launch_headless_supervisor(env, capsys, monkeypatch, fake_spawn)
     assert freed == []
+
+
+# --------------------------------------------------------------------------
+# The model a headless session was launched with is the one every turn runs.
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("launch_argv,role", [
+    (["launch", "supervisor", "panel"], "supervisor"),
+    (["launch", "merge-desk"], "merge-desk"),
+])
+def test_headless_launch_runs_the_named_model(
+        env, fake_claude, fake_spawn, capsys, monkeypatch,
+        launch_argv, role):
+    """``--model`` is the model on the roster, the first turn and every
+    later wake. SUPERVISOR_MODEL is the default, not a pin the flag
+    cannot move."""
+    repo = make_repo(env / "repo")
+    add_panel_front()
+    capsys.readouterr()
+    monkeypatch.setattr(headless_module, "_default_spawn", fake_spawn)
+    rc = cli.main([*launch_argv, "--headless", "--repo", str(repo),
+                   "--model", "claude-fable-5-1"])
+    assert rc == 0, capsys.readouterr().err
+    sid = line(capsys.readouterr().out, "session: ")
+    record = roster()[sid]
+    assert record["role"] == role
+    assert record["model"] == "claude-fable-5-1"
+    first = argv_blocks(fake_claude)[0]
+    assert "--model\nclaude-fable-5-1\n" in first
+    assert "--model\nclaude-opus-5\n" not in first
+
+    wake_module.append_event(sid, "told", text="read your checkpoint")
+    result = headless_module.run_wake(sid, spawn=fake_spawn)
+    assert result["status"] == "ok"
+    resumed = argv_blocks(fake_claude)[1]
+    assert "--model\nclaude-fable-5-1\n" in resumed
+    assert "--resume\n" in resumed
+
+
+@pytest.mark.parametrize("launch_argv,role", [
+    (["launch", "supervisor", "panel"], "supervisor"),
+    (["launch", "merge-desk"], "merge-desk"),
+])
+def test_headless_launch_defaults_to_the_supervisor_model(
+        env, fake_claude, fake_spawn, capsys, monkeypatch,
+        launch_argv, role):
+    """Without ``--model``, a summoned session still names the packaged
+    supervisor model rather than inheriting the machine default."""
+    repo = make_repo(env / "repo")
+    add_panel_front()
+    capsys.readouterr()
+    monkeypatch.setattr(headless_module, "_default_spawn", fake_spawn)
+    rc = cli.main([*launch_argv, "--headless", "--repo", str(repo)])
+    assert rc == 0, capsys.readouterr().err
+    sid = line(capsys.readouterr().out, "session: ")
+    record = roster()[sid]
+    assert record["role"] == role
+    assert record["model"] == "claude-opus-5"
+    first = argv_blocks(fake_claude)[0]
+    assert "--model\nclaude-opus-5\n" in first
+
+    wake_module.append_event(sid, "told", text="read your checkpoint")
+    result = headless_module.run_wake(sid, spawn=fake_spawn)
+    assert result["status"] == "ok"
+    resumed = argv_blocks(fake_claude)[1]
+    assert "--model\nclaude-opus-5\n" in resumed

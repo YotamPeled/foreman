@@ -655,6 +655,9 @@ def run_wake(session_id: str, *, spawn: Any = None,
     record = sessions.get(session_id) if isinstance(sessions, dict) else None
     if not isinstance(record, dict):
         return {"status": "unknown-session", "attempts": []}
+    recorded_model = record.get("model")
+    if isinstance(recorded_model, str) and recorded_model:
+        model = recorded_model
     if (record.get("state") or "") not in ("starting", "running", "stalled"):
         return {"status": "not-running", "attempts": []}
     if not record.get("headless"):

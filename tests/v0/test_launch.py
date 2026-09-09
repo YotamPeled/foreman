@@ -1057,3 +1057,16 @@ def test_launch_help_names_task_and_on(env, capsys):
     out = capsys.readouterr().out
     assert "--task" in out
     assert "--on" in out
+    assert "--model" in out
+
+
+def test_worker_launch_refuses_model_by_name(env, capsys):
+    """A worker's model is its pool's: ``--model`` is the summoned-session
+    flag, refused by name on a worker role."""
+    repo = make_repo(env / "repo")
+    spec = write_spec(env, "spec.md", SPEC_OK)
+    rc = launch(["grok", "grok", spec, "--repo", str(repo), "--model", "x"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "--model 'x' is refused" in err
+    assert "worker's model is its pool's" in err
