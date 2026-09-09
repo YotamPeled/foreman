@@ -753,12 +753,17 @@ def turn_carrier_unit(session_id: str, attempt: int) -> str:
 def turn_carrier_argv(session_id: str) -> list[str]:
     """``foreman turn <session>`` as this checkout's interpreter runs it.
 
-    The absolute interpreter, never a bare ``foreman`` off PATH: a
-    collector running from a branch checkout carries the wake with that
-    branch's verbs.
+    The interpreter path this process was started with, never a bare
+    ``foreman`` off PATH: a collector running from a branch checkout
+    carries the wake with that branch's verbs.
+
+    Do not resolve the path. A virtual environment is the path, not the
+    binary behind it: ``<venv>/bin/python3`` is usually a symlink to the
+    system interpreter, and resolving it lands on an interpreter that
+    cannot import this checkout's packages. ``sys.executable`` is
+    already absolute; use it as it stands.
     """
-    return [str(Path(sys.executable).resolve()), "-m", "foreman",
-            "turn", session_id]
+    return [sys.executable, "-m", "foreman", "turn", session_id]
 
 
 def turn_carrier_outer_argv(session_id: str, attempt: int) -> list[str]:

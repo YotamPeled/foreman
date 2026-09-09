@@ -107,8 +107,7 @@ def turn_spawn(env, monkeypatch):
         assert SESSION_ENV not in setenvs, argv
         tail = [part for part in argv[3:]
                 if not part.startswith("--setenv=")]
-        assert tail == [str(Path(sys.executable).resolve()),
-                        "-m", "foreman", "turn", sid], argv
+        assert tail == [sys.executable, "-m", "foreman", "turn", sid], argv
         assert isinstance(env, dict) and env, argv
         assert SESSION_ENV not in env, argv
         roster = store.read_snapshot(paths.roster_path(),

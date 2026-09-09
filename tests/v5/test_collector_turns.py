@@ -15,8 +15,9 @@ proves the tick never waited on it.
 The break each test catches: a queued wake no carrier carries, a second
 carrier beside a running turn, a carrier for an empty queue, two unit
 names alike (a corpse blocking the clock), a tick that waits, a held
-wake stamped or reordered by a skip, a carrier born as its spawner, and
-a ``foreman turn`` that does not really run the wake.
+wake stamped or reordered by a skip, a carrier born as its spawner, a
+venv interpreter resolved out of its environment, and a ``foreman turn``
+that does not really run the wake.
 """
 
 from __future__ import annotations
@@ -100,8 +101,7 @@ def turn_spawn(env, monkeypatch):
         assert SESSION_ENV not in setenvs, argv
         tail = [part for part in argv[3:]
                 if not part.startswith("--setenv=")]
-        assert tail == [str(Path(sys.executable).resolve()),
-                        "-m", "foreman", "turn", sid], argv
+        assert tail == [sys.executable, "-m", "foreman", "turn", sid], argv
         assert isinstance(env, dict) and env, argv
         assert SESSION_ENV not in env, argv
         roster = store.read_snapshot(paths.roster_path(),
@@ -220,8 +220,29 @@ def test_tick_spawns_one_carrier_for_a_queued_wake(env, turn_spawn):
     assert any(part.startswith("--setenv=PYTHONPATH=")
                for part in setenvs), call["argv"]
     assert call["argv"][3 + len(setenvs):] == [
-        str(Path(sys.executable).resolve()), "-m", "foreman", "turn", SUP]
+        sys.executable, "-m", "foreman", "turn", SUP]
     assert [event["text"] for event in pending(SUP)] == ["worker returned"]
+
+
+def test_carrier_argv_keeps_a_venv_interpreter_path(tmp_path, monkeypatch):
+    """A venv is its interpreter's path, not the binary the symlink
+    points at: resolving ``<venv>/bin/python3`` lands on an interpreter
+    that cannot import this checkout's packages, and the carrier dies
+    on ``No module named foreman``."""
+    target = tmp_path / "usr" / "bin" / "python3.14"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"")
+    venv_python = tmp_path / "venv" / "bin" / "python3"
+    venv_python.parent.mkdir(parents=True)
+    venv_python.symlink_to(target)
+    monkeypatch.setattr(collector_module.sys, "executable", str(venv_python))
+
+    argv = collector_module.turn_carrier_argv(SUP)
+
+    assert argv == [str(venv_python), "-m", "foreman", "turn", SUP]
+    assert Path(argv[0]).is_absolute()
+    assert argv[0] != str(target)
+    assert argv[0] != str(venv_python.resolve())
 
 
 def test_tick_skips_a_session_already_running_a_turn(env, turn_spawn):
