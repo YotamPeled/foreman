@@ -60,6 +60,17 @@ DEFAULT_TEXT = """\
 # `supervisor_cap` is how many supervisors the pool may carry; a supervisor
 # holds no job slot, so it is counted separately from `cap`.
 
+# A windowed session — a supervisor, the merge desk, the foreman — opens on
+# a workspace, and the shipped window helper takes it from the environment.
+# A launch that names none used to wait thirty seconds for a window that
+# could never appear and then blame the vendor, so a workspace is required
+# configuration: `--workspace` names one per launch, and this is the one
+# every launch that does not falls back to. The collector's automatic
+# relaunch of a dead supervisor has no way to name one, so this is the
+# value flow 4 runs on.
+[launch]
+default_workspace = 6
+
 [pool.muse]
 cap = 5
 roles = ["muse"]
@@ -487,4 +498,18 @@ def cap_main(pool: str, count: str | int) -> int:
         print(f"{target}: cap {number} (the pool role '{name}' runs on)")
     else:
         print(f"{target}: cap {number}")
+    _reload_collector()
     return 0
+
+
+def _reload_collector() -> None:
+    """Push a collector reload now the ceiling it observes has changed.
+
+    Best effort: a cap change must never fail on its reload.
+    """
+    from . import collector as _collector
+
+    try:
+        _collector.reload_after_config_change()
+    except Exception:  # noqa: BLE001 - the reload is never the verb's work
+        pass

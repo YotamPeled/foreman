@@ -1,0 +1,97 @@
+#!/bin/sh
+# foreman-post-merge: keep the installed command on main.
+#
+# Install as the post-merge hook of the checkout where merges land:
+# copy this file to that checkout's .git/hooks/post-merge and make it
+# executable. It never touches the repository it is public with: every
+# path comes from git or the environment, never from this file.
+#
+# It acts only when the checkout that fired it is on main. Installed in a
+# repository that also carries front branches, a hook that moved on every
+# merge would push a half-built front branch into the main-only checkout
+# and install it as the command the whole swarm runs: the failure this
+# layout exists to prevent, arrived at by the hook meant to prevent it.
+# On any other branch it says so and exits.
+#
+# What it does, every time the checkout merges or pulls while on main:
+#   1. fast-forwards the main-only checkout (FOREMAN_MAIN_CHECKOUT) to the
+#      just-merged HEAD, so the installed command's sources track main;
+#   2. reinstalls the package where the merge touched its sources, so the
+#      installed command is the merged code and not the code from before;
+#   3. runs `foreman collector restart`, so the collector re-records the
+#      new code and its stale line clears with no hand restart.
+#
+# Environment, all optional except FOREMAN_MAIN_CHECKOUT:
+#   FOREMAN_MAIN_CHECKOUT  path to the main-only checkout (required).
+#   FOREMAN_BIN            the installed command (default: foreman).
+#   FOREMAN_INSTALL_CMD    how to reinstall, naming the checkout at its
+#                          end (default: python3 -m pip install --quiet
+#                          --force-reinstall --no-deps).
+#
+# A hook never breaks the merge that fired it: every step that fails
+# warns on stderr and the run continues, exiting 0.
+set -u
+
+warn() {
+    printf '%s\n' "foreman-post-merge: $*" >&2
+}
+
+FOREMAN_BIN="${FOREMAN_BIN-foreman}"
+INSTALL_CMD="${FOREMAN_INSTALL_CMD-python3 -m pip install --quiet --force-reinstall --no-deps}"
+
+PRIMARY="$(git rev-parse --show-toplevel 2>/dev/null)" || PRIMARY=""
+NEW="$(git rev-parse HEAD 2>/dev/null)" || NEW=""
+if [ -z "$PRIMARY" ] || [ -z "$NEW" ]; then
+    warn "not inside a git checkout; nothing fast-forwarded"
+fi
+
+# Main, or nothing. The branch the merge landed on decides: what the
+# installed command runs is main's code, never a front branch's.
+MAIN_BRANCH="${FOREMAN_MAIN_BRANCH-main}"
+ON="$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" || ON=""
+if [ -n "$ON" ] && [ "$ON" != "$MAIN_BRANCH" ]; then
+    printf '%s\n' "foreman-post-merge: on '$ON', not '$MAIN_BRANCH'; the installed command tracks $MAIN_BRANCH only, so nothing was moved or reinstalled"
+    exit 0
+fi
+
+MAIN="${FOREMAN_MAIN_CHECKOUT-}"
+if [ -z "$MAIN" ]; then
+    warn "FOREMAN_MAIN_CHECKOUT is not set; the main-only checkout was not fast-forwarded"
+elif [ ! -d "$MAIN" ]; then
+    warn "main-only checkout $MAIN is not a directory; nothing fast-forwarded"
+elif [ -n "$PRIMARY" ] && [ -n "$NEW" ]; then
+    if git -C "$MAIN" fetch --quiet "$PRIMARY" HEAD 2>/dev/null \
+        && git -C "$MAIN" merge --ff-only --quiet FETCH_HEAD 2>/dev/null; then
+        printf '%s\n' "foreman-post-merge: $MAIN fast-forwarded to $NEW"
+    else
+        warn "$MAIN would not fast-forward to $NEW; move it by hand, then reinstall"
+    fi
+fi
+
+OLD="$(git rev-parse ORIG_HEAD 2>/dev/null)" || OLD=""
+CHANGED=""
+if [ -n "$PRIMARY" ] && [ -n "$NEW" ]; then
+    if [ -n "$OLD" ]; then
+        CHANGED="$(git -C "$PRIMARY" diff --name-only "$OLD" "$NEW" -- \
+            src packaging pyproject.toml MANIFEST.in 2>/dev/null)" || CHANGED=""
+    else
+        # No ORIG_HEAD (a manual run, not a real merge): the range is
+        # unknown, so reinstall rather than assume nothing changed.
+        CHANGED="unknown range"
+    fi
+fi
+if [ -n "$CHANGED" ] && [ -n "$MAIN" ] && [ -d "$MAIN" ]; then
+    # shellcheck disable=SC2086
+    if $INSTALL_CMD "$MAIN" 2>/dev/null; then
+        printf '%s\n' "foreman-post-merge: reinstalled from $MAIN"
+    else
+        warn "reinstall from $MAIN failed; install it by hand"
+    fi
+fi
+
+if "$FOREMAN_BIN" collector restart >/dev/null 2>&1; then
+    printf '%s\n' "foreman-post-merge: collector restarted"
+else
+    warn "'$FOREMAN_BIN collector restart' failed; run it by hand"
+fi
+exit 0

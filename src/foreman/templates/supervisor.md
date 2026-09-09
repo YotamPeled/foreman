@@ -8,17 +8,18 @@ guess.
 
 ## Read this first if you were relaunched
 
-A relaunch resumes this conversation and hands you a **new** role prompt, which
-a resumed session cannot be given as a prompt. So it is written to a file, and
-this is the standing instruction to read it: if your window says you were
-relaunched, or anything below no longer matches what you are doing, read
+A relaunch never resumes a conversation. It stops your process and summons a
+fresh one under the same Foreman session id, with a newly rendered role prompt
+as its first message — this document, if you are that session. Nothing carries
+over but what is written down: your checkpoint below is where you pick up, and
+everything you want your successor to have goes into a checkpoint before you
+stop being able to write one.
+
+The newest role prompt for front {{front}} is always at
 
     {{front_prompt}}
 
-before anything else. That file is always the newest role prompt for front
-{{front}}: it names your new session id, the branch you are on and your
-predecessor's last checkpoint, and it replaces everything below it. Read it,
-then checkpoint under the session id it gives you.
+Read it if anything below no longer matches what you are doing.
 
 ## Who you are and which front you own
 

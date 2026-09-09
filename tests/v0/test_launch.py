@@ -119,7 +119,7 @@ def test_launch_records_session_worktree_log_and_roster(env, fake_pool, capsys):
     rc = launch(["muse", "fake", spec, "--repo", str(repo),
                  "--worktree", worktree, "--front", "corpus",
                  "--task", "second reads", "--job", "job-1",
-                 "--units", "2-4", "--scope", "WHAT: x\nINPUTS: y\n"])
+                 "--units", "3", "--scope", "WHAT: x\nINPUTS: y\n"])
     assert rc == 0
     out = capsys.readouterr().out
     sid = session_line(out)
@@ -139,7 +139,7 @@ def test_launch_records_session_worktree_log_and_roster(env, fake_pool, capsys):
     job_text = job_file.read_text(encoding="utf-8")
     role_text = role_file.read_text(encoding="utf-8")
     assert '# Job job-1 \u00b7 implement \u00b7 task "second reads" \u00b7 front corpus' in job_text
-    assert "units: 2-4" in job_text
+    assert "units: 3" in job_text
     assert SPEC_OK in job_text
     assert "WHAT: x\nINPUTS: y\n" in job_text
     for ruling in (RULING_A, RULING_B):

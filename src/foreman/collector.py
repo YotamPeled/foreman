@@ -6,13 +6,13 @@ worktree mtime, write the observed fields back onto the roster snapshot,
 and recompute ``observed.json`` (docs/DESIGN.md section 7, only the
 numbers v0 has a source for). Then the seven anomalies of this version
 (section 10): supervisor silent, job stalled, job timeout (kill),
-job tail, intruder, unregistered writer, collector stale. Dead
-supervisors are flagged
-for a person to relaunch from the checkpoint; the collector never
-relaunches by itself.
+job tail, intruder, unregistered writer, collector stale. A dead
+supervisor is summoned anew through the same ``relaunch`` verb the owner
+calls, up to the configured limit inside the window; past that it is
+flagged for a person.
 
 The collector refuses nothing and grants nothing: it observes,
-records and kills on timeout.
+records, kills on timeout and summons a dead supervisor anew.
 
 Every threshold comes from ``foreman.toml``; ``DEFAULTS`` below holds
 the design's values and is the only place they appear. Clocks are
@@ -52,7 +52,8 @@ DEFAULTS = {
 WORKER_EXEMPT_ROLES = ("supervisor", "foreman", "owner")
 RUNNING_LIKE = ("running", "starting", "stalled")
 JOB_RUNNING_LIKE = ("planned", "queued", "running")
-TERMINAL_JOB_STATES = ("returned", "verified", "failed", "killed")
+TERMINAL_JOB_STATES = ("returned", "returned-with-work", "verified",
+                        "failed", "killed")
 TERMINAL_SESSION_STATES = ("exited", "killed")
 REASSERT_KINDS = (
     "supervisor silent",
@@ -368,6 +369,48 @@ def _relaunch_count(session_id: str, state: dict, now: datetime,
     return count
 
 
+def _relaunch_dead_supervisor(sid: str, record: dict, cstate: dict,
+                              moment: datetime, now_iso: str,
+                              config: CollectorConfig) -> str | None:
+    """Summon a dead supervisor anew. None when it worked, else why not.
+
+    The daemon calls the same ``relaunch`` the owner calls: one path
+    summons a supervisor, so the prompt an automatic relaunch delivers is
+    the prompt a hand-typed one delivers, and a defect in either is a
+    defect in both. What is the collector's own is the judgement of when:
+    a front to belong to, no freeze, and no more than ``relaunch_limit``
+    relaunches of this session inside the window. Past that the anomaly
+    says so and a person decides — a supervisor that dies on every summon
+    would otherwise be summoned forever.
+    """
+    front = record.get("front")
+    if not front:
+        return (f"supervisor {sid} dead and belongs to no front; a person "
+                f"must relaunch it from its checkpoint")
+    if paths.frozen_path().exists():
+        return (f"supervisor {sid} dead while the swarm is frozen; nothing "
+                f"is summoned until the freeze is lifted")
+    count = _relaunch_count(sid, cstate, moment,
+                            config.relaunch_window_seconds)
+    if count >= config.relaunch_limit:
+        return (f"supervisor {sid} dead after {count} automatic relaunch(es) "
+                f"in the last {config.relaunch_window_seconds / 60:.0f} "
+                f"minutes; a person must relaunch it from its checkpoint")
+    from . import launch as launch_module
+
+    try:
+        code = launch_module.relaunch_main(sid, by=COLLECTOR_SUBJECT,
+                                           quiet=True)
+        detail = "the launcher refused it"
+    except Exception as exc:  # noqa: BLE001 - a failed relaunch is a line,
+        code, detail = 1, f"{type(exc).__name__}: {exc}"  # never a dead daemon
+    if code != 0:
+        return (f"supervisor {sid} dead and the automatic relaunch failed "
+                f"({detail}); a person must relaunch it from its checkpoint")
+    cstate["relaunches"].append({"from": sid, "at": now_iso})
+    return None
+
+
 def _release_slots(session_id: str, now_iso: str, because: str) -> None:
     """Release every still-open slot grant for ``session_id``.
 
@@ -396,9 +439,10 @@ def _stopped_by(record: dict) -> str | None:
 def _mark_job(front: str | None, job_id: str | None, to_state: str,
               stamp: str | None, by: str | None = None) -> None:
     """Move a job to ``to_state``. A terminal state is terminal: when the
-    latest record for the job is already returned, verified, failed or
-    killed, nothing is appended, so a returned event is never duplicated
-    and a verification or failure is never overwritten by a later tick."""
+    latest record for the job is already returned, returned-with-work,
+    verified, failed or killed, nothing is appended, so a returned event
+    is never duplicated and a verification or failure is never overwritten
+    by a later tick."""
     if not front or not job_id:
         return
     try:
@@ -415,7 +459,7 @@ def _mark_job(front: str | None, job_id: str | None, to_state: str,
     if latest.get("state") not in JOB_RUNNING_LIKE:
         return
     revised = dict(latest, state=to_state)
-    if stamp is not None and to_state == "returned":
+    if stamp is not None and to_state in ("returned", "returned-with-work"):
         revised["returned_at"] = stamp
     if to_state == "killed":
         # A killed line is authored by whoever stopped the job, and by
@@ -423,6 +467,57 @@ def _mark_job(front: str | None, job_id: str | None, to_state: str,
         # the line it revises would name the launcher as the killer.
         revised.pop("by", None)
     store.append_ledger(paths.front_jobs_path(front), revised, session_id=by)
+
+
+def _latest_job_record(front: str | None,
+                        job_id: str | None) -> dict | None:
+    """The latest ledger line for a job, or None where there is none."""
+    if not front or not job_id:
+        return None
+    try:
+        records = store.read_ledger(paths.front_jobs_path(front))
+    except OSError:
+        return None
+    latest: dict | None = None
+    for record in records:
+        if record.get("id") == job_id:
+            latest = record
+    return latest
+
+
+def _job_branch_moved(front: str | None, job_id: str | None) -> bool:
+    """True when the job's branch holds commits past its base.
+
+    The branch-moved check lives in :mod:`foreman.progress` beside the
+    verify that relies on it; it is imported here lazily so the two
+    modules stay import-independent. Anything unreadable answers False.
+    """
+    try:
+        from .progress import job_branch_moved
+    except ImportError:  # pragma: no cover - the module is always present
+        return False
+    record = _latest_job_record(front, job_id)
+    if record is None:
+        return False
+    try:
+        return bool(job_branch_moved(record))
+    except Exception:  # noqa: BLE001 - a branch check never blocks a tick
+        return False
+
+
+def _finish_rc_clean(observed: dict | None) -> bool:
+    """True when the worker exited clean: a marker with rc 0, or a marker
+    whose code the adapter did not report.
+
+    A marker with a non-zero code is a crash that happened to write one,
+    and reads as failed, never returned.
+    """
+    if not observed:
+        return True
+    code = observed.get("finish_rc")
+    if code is None:
+        return True
+    return code == 0
 
 
 def _tick_lock_path() -> Path:
@@ -697,16 +792,24 @@ def _tick_inner(moment: datetime, now_iso: str,
                         moment - _parse_time(active_at)).total_seconds()
                 session_view[sid] = entry
                 continue
-            # Dead supervisor: no auto-relaunch (see _live_supervisor_for).
-            # A relaunch needs a fresh role prompt, the predecessor's
-            # checkpoint replayed, and supervisor tool grants; a headless
-            # worker spawn provides none of those, so the anomaly stays
-            # open saying a person must relaunch.
+            # Dead supervisor: summoned anew through the same `relaunch`
+            # the owner calls, which is design flow 4 (section 14) working
+            # unattended. Only a session the roster still calls live is
+            # relaunched; a terminal record stays terminal.
             _release_slots(sid, now_iso, "failed")
             if state in RUNNING_LIKE:
-                note_open("supervisor dead", sid,
-                          f"supervisor {sid} dead; a person must relaunch it "
-                          f"from its checkpoint", asserted)
+                why = _relaunch_dead_supervisor(
+                    sid, record, cstate, moment, now_iso, config)
+                if why is None:
+                    # The roster record is now the fresh process's own. Its
+                    # state must not be written back to `exited` by this
+                    # tick, and nothing observed of the dead process
+                    # belongs on it, so this session leaves the tick here.
+                    roster_updates.pop(sid, None)
+                    session_view[sid] = {"state": "starting", "alive": True,
+                                         "relaunched_at": now_iso}
+                    continue
+                note_open("supervisor dead", sid, why, asserted)
                 update["state"] = "exited"
             elif not _live_supervisor_for(
                     record.get("front"), sessions, table, trees):
@@ -750,9 +853,24 @@ def _tick_inner(moment: datetime, now_iso: str,
                 _mark_job(record.get("front"), record.get("job"),
                           "failed", None)
                 _release_slots(sid, now_iso, "failed")
-            elif finish:
+            elif finish and _finish_rc_clean(observed):
                 _mark_job(record.get("front"), record.get("job"),
                           "returned", now_iso)
+                _release_slots(sid, now_iso, "returned")
+            elif finish:
+                # A finish marker with a non-zero code is a crash that
+                # wrote a marker on its way down: failed, never returned.
+                _mark_job(record.get("front"), record.get("job"),
+                          "failed", None)
+                _release_slots(sid, now_iso, "failed")
+            elif _job_branch_moved(record.get("front"), record.get("job")):
+                # The process is gone and the log carries no finish
+                # marker, but the branch moved past its base: the work
+                # exists, so the job returned with work of its own. A
+                # state apart from failed, which a supervisor verifies
+                # like any other return.
+                _mark_job(record.get("front"), record.get("job"),
+                          "returned-with-work", now_iso)
                 _release_slots(sid, now_iso, "returned")
             else:
                 # The process is gone and the log carries no finish
@@ -808,9 +926,14 @@ def _tick_inner(moment: datetime, now_iso: str,
                               f"process(es) still alive", asserted)
                 elif state in RUNNING_LIKE:
                     update["state"] = "exited"
-                    _mark_job(record.get("front"), record.get("job"),
-                              "returned", now_iso)
-                    _release_slots(sid, now_iso, "returned")
+                    if _finish_rc_clean(observed):
+                        _mark_job(record.get("front"), record.get("job"),
+                                  "returned", now_iso)
+                        _release_slots(sid, now_iso, "returned")
+                    else:
+                        _mark_job(record.get("front"), record.get("job"),
+                                  "failed", None)
+                        _release_slots(sid, now_iso, "failed")
             elif active_at is not None and (
                     moment - _parse_time(active_at)).total_seconds() > \
                     config.job_stalled_seconds:
@@ -1284,21 +1407,46 @@ def _service_restart() -> int:
     return 0
 
 
-def restart_collector() -> int:
+def restart_collector(quiet: bool = False) -> int:
     """Restart the collector where it runs as a user service.
 
     Where it does not, say plainly what to run instead: the person reading
-    the stale screen is whoever must run it.
+    the stale screen is whoever must run it. When quiet, a machine with no
+    service to restart is silence rather than guidance: the verbs that
+    changed a ceiling call this after every change, and their own line is
+    the whole of what they owe the owner.
     """
     if _service_active():
         if _service_restart() == 0:
             print(f"collector service {COLLECTOR_UNIT} restarting")
             return 0
         return 1
+    if quiet:
+        return 0
     print(f"collector is not running as a user service; start it with "
           f"`systemctl --user start {COLLECTOR_UNIT}`, or run "
           f"`foreman collector run` in the foreground")
     return 0
+
+
+def reload_after_config_change() -> None:
+    """Push a collector reload after a verb changed what it observes.
+
+    `foreman cap` and `front allocate` call this once their own write is
+    durable, so the `collector stale` line clears with no hand restart.
+
+    Only on the default world. A process running against an isolated
+    ``FOREMAN_STATE`` or ``FOREMAN_CONFIG`` — every test, and every proof
+    run — has no service of its own, and the one service on the machine
+    observes somebody else's state: restarting it there is a verb in a
+    sandbox reaching out and bouncing the owner's live collector. Found
+    by a test that flaked because a ceiling change in it restarted the
+    real one.
+    """
+    if any(os.environ.get(name) for name in (paths.STATE_ENV,
+                                             paths.CONFIG_ENV)):
+        return
+    restart_collector(quiet=True)
 
 
 def collector_main(action: str) -> int:

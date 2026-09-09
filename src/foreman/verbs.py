@@ -109,7 +109,17 @@ def rule_main(scope: str, parts: list[str]) -> int:
         )
         print(f"{rid} acked by {who}")
         return 0
-    caller.check_role(me, "rule", FOREMAN, violations=violations)
+    if scope == "swarm":
+        caller.check_role(me, "rule", FOREMAN, violations=violations)
+    elif me is not None and me.role == SUPERVISOR:
+        # A supervisor writes on its own front only: swarm rulings stay
+        # foreman-only, and another front's rulings are none of its
+        # business. A ruling written this way is injected into later
+        # launches on that front like any other.
+        caller.check_front_supervisor(me, scope, "rule",
+                                      violations=violations)
+    else:
+        caller.check_role(me, "rule", FOREMAN, violations=violations)
     if scope != "swarm" and not _FRONT_RE.fullmatch(scope):
         violations.append(
             f"field 'scope' must be 'swarm' or a front name (got '{scope}')"
@@ -121,7 +131,12 @@ def rule_main(scope: str, parts: list[str]) -> int:
     caller.check_self_contained(text, "ruling text")
     who = caller.by_line(me)
     rid = ids.mint("ruling")
-    source = "owner" if (me is None or me.role == OWNER) else "foreman"
+    if me is None or me.role == OWNER:
+        source = "owner"
+    elif me.role == SUPERVISOR:
+        source = "supervisor"
+    else:
+        source = "foreman"
     store.append_ledger(
         paths.rulings_path(),
         entities.Ruling(id=rid, scope=scope, text=text,

@@ -52,8 +52,7 @@ def test_a_supervisor_script_carries_the_world(tmp_path, monkeypatch):
     monkeypatch.setenv(paths.CONFIG_ENV, str(tmp_path / "config"))
     inner = launch.supervisor_inner_command(
         pid_path=tmp_path / "pid", session_id="ses-test", repo=str(tmp_path),
-        role_prompt=tmp_path / "role-prompt.md", vendor_id="vendor-uuid",
-        resume=False)
+        role_prompt=tmp_path / "role-prompt.md", vendor_id="vendor-uuid")
     script = _common.write_worker_script(tmp_path / "run.sh", inner)
     text = script.read_text(encoding="utf-8")
     assert f"export {paths.STATE_ENV}={str(tmp_path / 'state')}" in text

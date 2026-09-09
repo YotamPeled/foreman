@@ -1,8 +1,8 @@
 """`foreman status`: the one screen, as plain text.
 
 The same text the panel will render later, in the docs/DESIGN.md section 13
-order and no other: header, Needs you, Problems, Working, the job queue,
-the merge queue, Capacity, and the Overall line last. Status reads; it
+order and no other: header, Needs you, Problems, Working, Done, the job
+queue, the merge queue, Capacity, and the Overall line last. Status reads; it
 never writes, and it never
 recomputes a number the collector already derived: per-job elapsed/timeout/
 write-idle, per-session seconds since declared write/activity, pool
@@ -35,12 +35,12 @@ from .verbs import read_inbox
 
 #: Queued work, in the supervisor's order: ledger order, first appearance.
 QUEUE_STATES = ("planned", "queued")
-TERMINAL = ("returned", "verified", "failed", "killed")
+TERMINAL = ("returned", "returned-with-work", "verified", "failed", "killed")
 
 #: Job states that finished work, the pace behind a front's ESTIMATE.
 #: Failed and killed jobs ended work without moving it, so they carry no
-#: rate.
-COMPLETED_JOB_STATES = ("returned", "verified")
+#: rate. A job that returned with work moved its branch, so it counts.
+COMPLETED_JOB_STATES = ("returned", "returned-with-work", "verified")
 
 #: Hours of job completions behind every ESTIMATE rate (DESIGN section 7:
 #: landed units per hour over the last N hours).
@@ -240,6 +240,22 @@ def _doing_line(sid: str, record: dict, sessions_view: dict,
 
 
 def _supervisor_for(front: str, roster: dict) -> tuple[str, dict] | None:
+    """The front's live supervisor: the front record names it first.
+
+    `launch supervisor` and `front take` write the session onto the front
+    record; a session it names that is still starting or running wins over
+    roster order, so a replaced predecessor never shadows the live
+    successor that is actually checkpointing. Anything else falls back to
+    the roster scan below.
+    """
+    record = _front_record(front)
+    named = record.get("supervisor") if isinstance(record, dict) else None
+    if isinstance(named, str) and named:
+        entry = roster.get(named)
+        if isinstance(entry, dict) and entry.get("role") == "supervisor" \
+                and entry.get("front") == front \
+                and entry.get("state") in ("starting", "running"):
+            return named, entry
     running = backup = None
     for sid, record in roster.items():
         if not isinstance(record, dict):
@@ -410,7 +426,11 @@ def _job_detail(job: dict, observed_jobs: dict, roster: dict,
         return f"{role} job queued (waiting {_since(stamp, now)})"
     if state in TERMINAL:
         stamp = job.get("verified_at") or job.get("returned_at")
-        return f"{role} job {state} {_since(stamp, now)} ago"
+        detail = f"{role} job {state} {_since(stamp, now)} ago"
+        because = job.get("verify_because")
+        if isinstance(because, str) and because.strip():
+            detail += f" \u2014 {' '.join(because.split())}"
+        return detail
     elapsed = _age(seen.get("elapsed_s"))
     timeout = _age(seen.get("timeout_s"))
     idle = seen.get("minutes_since_write")
@@ -428,6 +448,8 @@ def _task_line(task: dict, titles: dict[str, str]) -> str:
         head += f" \u00b7 after: {', '.join(after)}"
     if task.get("head"):
         head += f" \u00b7 head {task.get('head')}"
+    if task.get("added_by"):
+        head += f" \u00b7 added by {task.get('added_by')}"
     # A task that was moved backwards says so until it moves again: the
     # reset is the owner's business, not a quiet correction.
     if task.get("built_by_hand"):
@@ -629,9 +651,62 @@ def _front_tail_lines(name: str, front_record: dict | None,
     return lines
 
 
+def _merge_head(tasks: list[dict]) -> str | None:
+    """The head the front merged at: its latest landing's head.
+
+    A front closed with `--merged` lands every built task at one sha, so
+    this is that sha; a front landed task by task reports its last landing.
+    None where no landed task recorded a head.
+    """
+    best: dict | None = None
+    for task in tasks:
+        if task.get("state") != "landed" or not task.get("head"):
+            continue
+        if best is None or (task.get("landed_at") or "") >= \
+                (best.get("landed_at") or ""):
+            best = task
+    head = (best or {}).get("head")
+    return head if isinstance(head, str) and head else None
+
+
+def _is_done(name: str) -> bool:
+    """True when the front's folded record says it ran to completion."""
+    return (_front_record(name) or {}).get("state") == "done"
+
+
+def _done_block(loaded: list[tuple[str, list[dict], list[dict]]],
+                now: datetime) -> list[str]:
+    """Finished fronts, one line each, and nothing else about them.
+
+    A front at state `done` prints once — name, landed n/n, merge sha,
+    when — and appears in no other block. With no done front there is no
+    block at all, so the empty screen reads exactly as it always has.
+    """
+    rows = [(name, tasks) for name, tasks, _jobs in loaded
+            if _is_done(name)]
+    if not rows:
+        return []
+    lines = ["Done:"]
+    for name, tasks in rows:
+        record = _front_record(name) or {}
+        landed = sum(1 for task in tasks if task.get("state") == "landed")
+        head = _merge_head(tasks) or "(no head recorded)"
+        when = _since(record.get("at"), now)
+        closed = f"done {when} ago" if when != "?" \
+            else "done (not recorded)"
+        label = name
+        if record.get("fixture"):
+            label = f"{name} (fixture)"
+        lines.append(_fit(f"  {label} \u2014 {landed}/{len(tasks)} landed "
+                          f"\u00b7 merge {head} \u00b7 {closed}"))
+    return lines
+
+
 def _working(roster: dict, observed: dict | None, now: datetime,
              loaded: list[tuple[str, list[dict], list[dict]]],
              inbox: list[dict]) -> list[str]:
+    loaded = [(name, tasks, jobs) for name, tasks, jobs in loaded
+              if not _is_done(name)]
     if not loaded:
         return ["Working: nothing running."]
     sessions_view = (observed or {}).get("sessions") or {}
@@ -757,6 +832,8 @@ def _overall(loaded: list[tuple[str, list[dict], list[dict]]],
 def _job_queue(now: datetime) -> list[str]:
     waiting: list[str] = []
     for name in _fronts():
+        if _is_done(name):
+            continue
         tasks = {task.get("id"): task.get("title") for task in _tasks(name)}
         for job in _jobs(name):
             if job.get("state") not in QUEUE_STATES:
@@ -837,6 +914,7 @@ def render(now: datetime | None = None) -> str:
               *_needs_you(moment),
               *_problems(roster, jobs_by_session, moment),
               *_working(roster, observed, moment, loaded, inbox),
+              *_done_block(loaded, moment),
               *_job_queue(moment),
               *_merge_queue(titles, moment),
               *_capacity(observed),

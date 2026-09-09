@@ -671,8 +671,8 @@ def test_dry_run_prompt_carries_the_queue_not_front_tasks(
                "main", cwd=repo)
     before = roster()
 
-    rc = run(monkeypatch, ["launch", "merge-desk", "--repo", str(repo),
-                           "--dry-run"])
+    rc = run(monkeypatch, ["launch", "merge-desk", "--workspace", "6",
+                           "--repo", str(repo), "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
     sid = line(out, "session: ")

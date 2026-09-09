@@ -39,15 +39,15 @@ PANEL_BRIEF = ROOT / "briefs" / "panel"
 #: here, not derived: the drift being caught is exactly the server
 #: disagreeing with the table.
 SUPERVISOR_TOOLS = frozenset({
-    "ask", "checkpoint", "doctor", "evidence", "finding", "front_take",
-    "job_fail", "job_verify", "launch", "measure", "merge_request",
-    "register", "relaunch", "rule", "status", "task_built", "task_landed",
-    "task_reset", "version",
+    "ask", "checkpoint", "doctor", "evidence", "finding", "front_done",
+    "front_take", "job_fail", "job_verify", "kill", "launch", "measure",
+    "merge_request", "register", "relaunch", "rule", "status", "task_add",
+    "task_built", "task_landed", "task_reset", "version",
 })
 #: The foreman role's own row: answers and rules, never front or job verbs.
 FOREMAN_TOOLS = frozenset({
-    "answer", "checkpoint", "doctor", "front_allocate", "inbox", "launch",
-    "register", "relaunch", "rule", "status", "version",
+    "answer", "checkpoint", "doctor", "front_allocate", "inbox", "kill",
+    "launch", "register", "relaunch", "rule", "status", "version",
 })
 #: A worker holds no verb, so only the gateless one survives.
 WORKER_TOOLS = frozenset({"version"})
@@ -149,9 +149,11 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     assert SUPERVISOR_TOOLS | FOREMAN_TOOLS | {"front_add", "cap",
                                               "collector"} <= names
     # 34 before the doctor/hooks/migrations job: doctor, freeze, thaw,
-    # hook_install, hook_list, migrate. Counted, not derived, so a verb
+    # hook_install, hook_list, migrate; plus task add and front done from
+    # the launches job, and kill, the verb the design gave the owner and
+    # this runtime had never shipped. Counted, not derived, so a verb
     # added without intent fails here.
-    assert len(names) == 40
+    assert len(names) == 43
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):
@@ -512,8 +514,8 @@ def test_supervisor_dry_run_prints_the_mcp_wiring(env, capsys):
     repo = make_repo(env / "repo")
     assert cli.main(["front", "add", str(PANEL_BRIEF)]) == 0
     capsys.readouterr()
-    assert cli.main(["launch", "supervisor", "panel", "--repo", str(repo),
-                     "--dry-run"]) == 0
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6",
+                     "--repo", str(repo), "--dry-run"]) == 0
     out = capsys.readouterr().out
     sid = line(out, "session: ")
     config_path = Path(line(out, "mcp config: "))
@@ -528,10 +530,12 @@ def test_supervisor_dry_run_prints_the_mcp_wiring(env, capsys):
 
 
 def test_relaunch_dry_run_rewrites_the_mcp_wiring(env, capsys):
-    """A successor answers to its own session, so its config must too.
+    """A relaunched supervisor answers to its own session, config included.
 
-    Fails on a relaunch that keeps pointing Claude at the predecessor's
-    ``mcp.json``: the new session would call with the old session's row.
+    The relaunch keeps the Foreman session id and starts a fresh vendor
+    conversation, so the wiring must name that same session — and the
+    vendor line must carry the role prompt, not a `--resume` the session
+    could never be handed a prompt through.
     """
     repo = make_repo(env / "repo")
     assert cli.main(["front", "add", str(PANEL_BRIEF)]) == 0
@@ -540,12 +544,14 @@ def test_relaunch_dry_run_rewrites_the_mcp_wiring(env, capsys):
                      "--pid", str(os.getpid()),
                      "--session", "a-vendor-uuid"]) == 0
     old = line(capsys.readouterr().out, "session: ")
-    assert cli.main(["relaunch", old, "--repo", str(repo),
-                     "--dry-run"]) == 0
+    assert cli.main(["relaunch", old, "--workspace", "6",
+                     "--repo", str(repo), "--dry-run"]) == 0
     out = capsys.readouterr().out
     sid = line(out, "session: ")
-    assert sid != old
-    assert "--resume" in out
+    assert sid == old
+    assert "--resume" not in out
+    # A fresh conversation, so a vendor id that is not the one registered.
+    assert line(out, "vendor session: ") != "a-vendor-uuid"
     config_path = Path(line(out, "mcp config: "))
     assert f"--mcp-config {config_path} --strict-mcp-config" in out
     config = json.loads(config_path.read_text(encoding="utf-8"))

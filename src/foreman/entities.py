@@ -12,7 +12,8 @@ from typing import Any, ClassVar
 
 FRONT_STATES = ("queued", "active", "done", "halted", "frozen")
 TASK_STATES = ("waiting", "ready", "active", "built", "landed")
-JOB_STATES = ("planned", "queued", "running", "returned", "verified", "failed", "killed")
+JOB_STATES = ("planned", "queued", "running", "returned", "returned-with-work",
+              "verified", "failed", "killed")
 JOB_KINDS = ("implement", "review", "merge", "research", "verify")
 JOB_ROLES = ("opus", "muse", "astra", "grok")
 #: Roles a roster session may carry: every worker role, plus the two
@@ -89,6 +90,10 @@ class Task(Entity):
     state: str = "waiting"
     units_done: int = 0
     units_total: int = 0
+    #: Who commissioned this task onto a running front: "" for a brief's
+    #: own tasks, otherwise the role that added it ("supervisor", "owner").
+    #: The screen marks such a task "added by <role>".
+    added_by: str = ""
 
 
 @dataclass(frozen=True)
@@ -104,7 +109,18 @@ class Job(Entity):
     branch: str = ""
     log: str = ""
     timeout: str = ""
-    units: list[int] = field(default_factory=list)
+    #: How many units the job was launched to do. Records written before
+    #: the count change carry a list of unit ids; :func:`foreman.progress.
+    #: job_units_count` folds both shapes, so the old lists keep crediting
+    #: their length.
+    units: int = 0
+    #: The base ref the job's branch was cut from. Records written before
+    #: this field existed carry none, so a branch-moved check on them
+    #: answers False and a failure stays a failure.
+    base: str = ""
+    #: The `--because` sentence a failed or killed job was verified with.
+    #: Empty on every other job; the screen renders it beside the job.
+    verify_because: str = ""
     attempt: int = 1
     state: str = "planned"
     planned_at: str | None = None
@@ -152,6 +168,11 @@ class Session(Entity):
     log: str = ""
     timeout: str = ""
     launched_by: str | None = None
+    #: The vendor's own session id, so the roster names the conversation
+    #: this session is. A relaunch starts a fresh one and records it here
+    #: under the same Foreman session id, which is how the roster tells a
+    #: relaunched supervisor from the one it replaced.
+    vendor_session: str | None = None
     started_at: str | None = None
     last_declared_at: str | None = None
     last_observed_at: str | None = None
