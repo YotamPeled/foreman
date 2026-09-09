@@ -47,6 +47,8 @@ DEFAULTS = {
     "relaunch_limit": 2,
     "relaunch_window_seconds": 60 * 60,
     "vendor_markers": ("muse", "grok", "claude"),
+    "heartbeat_minutes": 20,
+    "turn_stale_seconds": 10 * 60,
 }
 
 WORKER_EXEMPT_ROLES = ("supervisor", "foreman", "owner")
@@ -90,6 +92,8 @@ class CollectorConfig:
     relaunch_window_seconds: float = DEFAULTS["relaunch_window_seconds"]
     vendor_markers: tuple = field(
         default_factory=lambda: DEFAULTS["vendor_markers"])
+    heartbeat_minutes: float = DEFAULTS["heartbeat_minutes"]
+    turn_stale_seconds: float = DEFAULTS["turn_stale_seconds"]
     pools_total: dict = field(default_factory=dict)
 
 
@@ -110,7 +114,8 @@ def load_config(path: str | Path | None = None) -> CollectorConfig:
     table = raw.get("collector")
     if isinstance(table, dict):
         for key in ("tick_seconds", "supervisor_silent_seconds",
-                    "job_stalled_seconds", "relaunch_window_seconds"):
+                    "job_stalled_seconds", "relaunch_window_seconds",
+                    "heartbeat_minutes", "turn_stale_seconds"):
             value = table.get(key)
             if isinstance(value, (int, float)) and value > 0:
                 setattr(cfg, key, value)
@@ -437,12 +442,17 @@ def _stopped_by(record: dict) -> str | None:
 
 
 def _mark_job(front: str | None, job_id: str | None, to_state: str,
-              stamp: str | None, by: str | None = None) -> None:
+              stamp: str | None, by: str | None = None,
+              reason: str | None = None) -> None:
     """Move a job to ``to_state``. A terminal state is terminal: when the
     latest record for the job is already returned, returned-with-work,
     verified, failed or killed, nothing is appended, so a returned event
     is never duplicated and a verification or failure is never overwritten
-    by a later tick."""
+    by a later tick. The one append carries the one wake event for the
+    job's launcher: the transition is computed here, so the event is
+    emitted here rather than recomputed anywhere else. ``reason``
+    overrides the event's reason where the cause differs from the state
+    (a timeout kill marks the job failed but wakes ``job timed out``)."""
     if not front or not job_id:
         return
     try:
@@ -467,6 +477,10 @@ def _mark_job(front: str | None, job_id: str | None, to_state: str,
         # the line it revises would name the launcher as the killer.
         revised.pop("by", None)
     store.append_ledger(paths.front_jobs_path(front), revised, session_id=by)
+    from . import wake as _wake
+
+    _wake.emit_job_event(front, job_id, revised,
+                         reason or f"job {to_state}", stamp)
 
 
 def _latest_job_record(front: str | None,
@@ -906,7 +920,7 @@ def _tick_inner(moment: datetime, now_iso: str,
                 if not remaining:
                     update["state"] = "killed"
                     _mark_job(record.get("front"), record.get("job"),
-                              "failed", None)
+                              "failed", None, reason="job timed out")
                     _release_slots(sid, now_iso, "killed")
                     note_open("job timeout", sid,
                               f"elapsed {elapsed:.0f}s past timeout "
@@ -1011,6 +1025,13 @@ def _tick_inner(moment: datetime, now_iso: str,
                           f"session '{by}'", asserted)
 
     monitors_view = _monitors_tick(moment, now_iso, note_open, asserted)
+
+    # The clock this task builds: idle turn-contract sessions that heard
+    # nothing since their last wake get a heartbeat. It only appends to
+    # per-session event ledgers, so it cannot move a roster or job state.
+    from . import wake as _wake
+
+    _wake.heartbeat_tick(moment, config)
 
     # Resolve what this tick no longer asserts. Unregistered-writer lines
     # clear only when the roster learns the id: the ledger line itself is

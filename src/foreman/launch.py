@@ -3071,6 +3071,11 @@ def cmd_kill(args: argparse.Namespace) -> int:
                 dict(job, state="killed", killed_by=who,
                      killed_reason=reason, killed_at=now),
                 session_id=who)
+            from . import wake as _wake
+
+            _wake.emit_job_event(
+                front, job.get("id"),
+                dict(job, state="killed"), "job killed", now)
             job_note = f"{job.get('id')} killed"
         else:
             job_note = (f"{job.get('id')} left {state}: a job that already "
