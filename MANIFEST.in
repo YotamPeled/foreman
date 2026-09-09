@@ -1,5 +1,10 @@
 # Pool plugin directories travel with the source: each packaged pool's
 # manifest and skill live beside its adapter module.
-recursive-include src/foreman/pools *.toml *.md
+recursive-include src/foreman/pools *.toml *.md *.json
 # Migrations travel the same way: standalone scripts, never imports.
 recursive-include src/foreman/migrations *.py
+# Role prompt templates travel with the source: the launcher renders
+# them out of the installed package.
+recursive-include src/foreman/templates *.md
+# The packaged default config; `foreman doctor` reads it.
+include src/foreman/foreman.default.toml

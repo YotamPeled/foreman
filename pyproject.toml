@@ -20,8 +20,12 @@ where = ["src"]
 # Pool plugin directories ship as data: each packaged pool's manifest
 # and skill live beside its adapter module, not in a Python package.
 # Migrations ship the same way: standalone scripts, never imports.
+# Role prompt templates too: the launcher reads them from the installed
+# package, so a build that leaves them out refuses every launch by role
+# with "roles with a template: (none)" and the whole swarm stops.
 [tool.setuptools.package-data]
-foreman = ["pools/*/manifest.toml", "pools/*/SKILL.md", "migrations/*.py"]
+foreman = ["pools/*/manifest.toml", "pools/*/SKILL.md", "pools/*.json",
+           "migrations/*.py", "templates/*.md", "foreman.default.toml"]
 
 [tool.pytest.ini_options]
 markers = ["smoke: runs the real vendor binary; needs credentials on PATH"]
