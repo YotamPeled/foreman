@@ -627,6 +627,13 @@ def run_wake(session_id: str, *, spawn: Any = None,
         return {"status": "unknown-session", "attempts": []}
     if (record.get("state") or "") not in ("starting", "running", "stalled"):
         return {"status": "not-running", "attempts": []}
+    if not record.get("headless"):
+        # The same refusal the clock makes, made again at the door: a
+        # turn resumes the session's vendor conversation, and an
+        # interactive session is already having that conversation with a
+        # person. Whoever calls this -- the clock, a verb, a test -- a
+        # windowed session is never turned.
+        return {"status": "not-headless", "attempts": []}
     if wake.turn_running(session_id):
         return {"status": "deferred", "attempts": []}
     pending = wake.pending_events(session_id)

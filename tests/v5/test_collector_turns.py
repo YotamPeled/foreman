@@ -190,7 +190,7 @@ def test_tick_spawns_one_carrier_for_a_queued_wake(env, turn_spawn):
     carrier, with the argv and per-attempt unit name the design says;
     the stand-in is still alive when the tick returns, so the tick
     never waited on it; and the spawn stamps nothing."""
-    seat({SUP: session(SUP, "supervisor")})
+    seat({SUP: session(SUP, "supervisor", headless=True)})
     queue(SUP, "worker returned")
     tick(now=now())
     assert [(call["sid"], call["attempt"]) for call in turn_spawn] == \
@@ -207,7 +207,7 @@ def test_tick_spawns_one_carrier_for_a_queued_wake(env, turn_spawn):
 def test_tick_skips_a_session_already_running_a_turn(env, turn_spawn):
     """A fresh turn marker holds the carrier back, and the skip leaves
     the queued events unstamped and in order."""
-    seat({SUP: session(SUP, "supervisor")})
+    seat({SUP: session(SUP, "supervisor", headless=True)})
     queue(SUP, "first", "second")
     wake_module.turn_started(SUP)
     tick(now=now())
@@ -217,8 +217,8 @@ def test_tick_skips_a_session_already_running_a_turn(env, turn_spawn):
 
 def test_tick_skips_an_empty_queue(env, turn_spawn):
     """No queued wake, no carrier — even with no turn running."""
-    seat({SUP: session(SUP, "supervisor"),
-          SUP_OTHER: session(SUP_OTHER, "supervisor")})
+    seat({SUP: session(SUP, "supervisor", headless=True),
+          SUP_OTHER: session(SUP_OTHER, "supervisor", headless=True)})
     queue(SUP, "worker returned")
     tick(now=now())
     assert [call["sid"] for call in turn_spawn] == [SUP]
@@ -227,7 +227,7 @@ def test_tick_skips_an_empty_queue(env, turn_spawn):
 def test_two_ticks_while_the_turn_runs_carry_once(env, turn_spawn):
     """The first tick carries; the second, with the turn marker fresh
     as the running carrier left it, carries nothing further."""
-    seat({SUP: session(SUP, "supervisor")})
+    seat({SUP: session(SUP, "supervisor", headless=True)})
     queue(SUP, "worker returned")
     tick(now=now())
     assert len(turn_spawn) == 1
@@ -240,7 +240,7 @@ def test_second_carrier_uses_the_next_unit_name(env, turn_spawn):
     """Attempts never reuse a unit name: without a turn marker (the
     carrier died before its first turn) the next tick goes out as
     attempt two, so a failed carrier never blocks the next wake."""
-    seat({SUP: session(SUP, "supervisor")})
+    seat({SUP: session(SUP, "supervisor", headless=True)})
     queue(SUP, "worker returned")
     tick(now=now())
     tick(now=now())
@@ -255,7 +255,7 @@ def test_held_wake_goes_out_on_the_tick_after_the_turn(env, turn_spawn):
     """A wake queued mid-turn waits out the first tick untouched and
     goes out on the second, when the marker reads stale — still
     unstamped and in its original order at send time."""
-    seat({SUP: session(SUP, "supervisor")})
+    seat({SUP: session(SUP, "supervisor", headless=True)})
     queue(SUP, "first", "second")
     wake_module.turn_started(SUP)
     tick(now=now())
@@ -272,8 +272,8 @@ def test_carrier_env_leaves_the_calling_session_behind(env, turn_spawn,
                                                        monkeypatch):
     """The carrier arrives as the owner whatever the tick ran as: no
     calling session travels, while the state directory does."""
-    seat({SUP: session(SUP, "supervisor"),
-          FOREMAN_SES: session(FOREMAN_SES, "foreman")})
+    seat({SUP: session(SUP, "supervisor", headless=True),
+          FOREMAN_SES: session(FOREMAN_SES, "foreman", headless=True)})
     queue(SUP, "worker returned")
     run_as(monkeypatch, FOREMAN_SES)
     tick(now=now())
@@ -288,7 +288,7 @@ def test_turn_verb_carries_the_wake_for_real(env, fake_turn_spawn,
     """`foreman turn <session>` runs the queued wake as a real turn:
     the vendor conversation resumes, the events stamp delivered, and
     one wake turn lands on the ledger."""
-    seat({SUP: session(SUP, "supervisor")})
+    seat({SUP: session(SUP, "supervisor", headless=True)})
     queue(SUP, "worker returned")
     (paths.session_dir(SUP) / "vendor-session").parent.mkdir(
         parents=True, exist_ok=True)
@@ -307,8 +307,8 @@ def test_turn_verb_carries_the_wake_for_real(env, fake_turn_spawn,
 def test_turn_verb_refusals(env, monkeypatch, capsys):
     """No session, an unknown session and another session's queue are
     refused; an empty queue is a printed status, not a refusal."""
-    seat({SUP: session(SUP, "supervisor"),
-          SUP_OTHER: session(SUP_OTHER, "supervisor")})
+    seat({SUP: session(SUP, "supervisor", headless=True),
+          SUP_OTHER: session(SUP_OTHER, "supervisor", headless=True)})
     run_as(monkeypatch, None)
     assert headless_module.turn_main(None) == 1
     assert headless_module.turn_main("ses-nobody") == 1
@@ -317,3 +317,39 @@ def test_turn_verb_refusals(env, monkeypatch, capsys):
     run_as(monkeypatch, SUP)
     assert headless_module.turn_main(SUP) == 0
     assert f"turn {SUP}: no-wake" in capsys.readouterr().out
+
+
+def test_an_interactive_supervisor_is_never_carried(env, turn_spawn):
+    """The clock carries headless sessions and no others.
+
+    A windowed supervisor is a conversation with a keyboard in front of
+    it, and it receives wake events like any other launcher: a rule lands
+    on its front, a job it launched returns. Carrying one would run
+    `claude -p --resume` inside that live conversation. Measured on the
+    real machine before this guard existed: every interactive supervisor
+    on the swarm had queued events waiting.
+    """
+    seat({SUP: session(SUP, "supervisor", headless=False),
+          SUP_OTHER: session(SUP_OTHER, "supervisor", headless=True)})
+    queue(SUP, "a rule landed on your front")
+    queue(SUP_OTHER, "the same, for you")
+
+    tick(now=now())
+
+    assert [call["sid"] for call in turn_spawn] == [SUP_OTHER]
+    assert len(pending(SUP)) == 1
+    assert pending(SUP)[0]["delivered_at"] is None
+
+
+def test_run_wake_refuses_an_interactive_session_at_its_own_door(env):
+    """The guard is at the door too, not only in the clock.
+
+    run_wake is callable by a verb and by a test, not only by the tick,
+    and every caller must get the same refusal.
+    """
+    seat({SUP: session(SUP, "supervisor", headless=False)})
+    queue(SUP, "a sentence")
+    result = headless_module.run_wake(SUP, spawn=lambda *a, **k: None)
+    assert result["status"] == "not-headless"
+    assert result["attempts"] == []
+    assert len(pending(SUP)) == 1

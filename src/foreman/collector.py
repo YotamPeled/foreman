@@ -781,7 +781,15 @@ def _carry_wakes(sessions: dict, cstate: dict) -> int:
     for sid in sorted(sessions):
         if not isinstance(sid, str) or not sid:
             continue
-        if not isinstance(sessions.get(sid), dict):
+        record = sessions.get(sid)
+        if not isinstance(record, dict):
+            continue
+        if not record.get("headless"):
+            # An interactive session is a conversation with a keyboard in
+            # front of it. Carrying its wake would run `claude -p --resume`
+            # inside that live conversation: two processes, one thread of
+            # talk. A windowed session reads its own screen; only a
+            # headless one has no other way to hear.
             continue
         if not _wake.pending_events(sid):
             continue
