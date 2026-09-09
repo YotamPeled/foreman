@@ -136,15 +136,16 @@ def add_launch_arguments(parser: argparse.ArgumentParser) -> None:
         "role",
         help="worker role (one of: " + ", ".join(JOB_ROLES)
         + "), 'supervisor' for the second shape: launch supervisor <front>, "
-        "or 'merge-desk' for the third: launch merge-desk")
+        "'merge-desk' for the third: launch merge-desk, "
+        "or 'foreman' for the fourth: launch foreman")
     parser.add_argument(
         "pool", nargs="?", default=None,
         help="pool to start the worker through; the front name when "
              "the role is 'supervisor'; nothing when the role is "
-             "'merge-desk'")
+             "'merge-desk' or 'foreman'")
     parser.add_argument("spec", nargs="?", default=None,
                         help="absolute path to the supervisor's spec file "
-                             "(a supervisor launch takes none)")
+                             "(a supervisor or foreman launch takes none)")
     parser.add_argument("--workspace", default=None,
                         help="workspace to open a supervisor's window on")
     parser.add_argument("--front", default=None, help="front name")
@@ -334,37 +335,42 @@ def build_job_file(job: str, kind: str, task: str, front: str, env: str,
                    rulings: str, scope: str, spec: str,
                    units_label: str | None = None,
                    *, role_text: str) -> str:
+    """Assemble ``FOREMAN-JOB.md`` through the ``job`` template.
+
+    The sections and their order are docs/DESIGN.md section 5.2; only
+    where the text lives changed, from the f-string below to
+    ``templates/job.md``.
+    """
     this_job = f"units: {units_label}\n\n{spec}" if units_label else spec
-    return (
-        f"# Job {job} \u00b7 {kind} \u00b7 task \"{task}\" \u00b7 front {front}\n"
-        "\n"
-        "## Role prompt (from FOREMAN-ROLE.md, verbatim: no session starts\n"
-        "without its role prompt, and the worker is given this file)\n"
-        "\n"
-        f"{role_text}\n"
-        "\n"
-        "## Environment (injected)\n"
-        "\n"
-        f"{env}\n"
-        "\n"
-        "## Rules (injected: swarm + front rulings, verbatim)\n"
-        "\n"
-        f"{rulings}\n"
-        "\n"
-        "## Task scope (verbatim from the brief)\n"
-        "\n"
-        f"{scope}\n"
-        "\n"
-        "## This job (written by the supervisor)\n"
-        "\n"
-        f"{this_job}\n"
-    )
+    return render_role_template("job", {
+        "job": job,
+        "kind": kind,
+        "task": task,
+        "front": front,
+        "role_text": role_text,
+        "env": env,
+        "rulings": rulings,
+        "scope": scope,
+        "this_job": this_job,
+    })
 
 
 TEMPLATE_DIR = Path(__file__).with_name("templates")
 
 
+#: A `{{field}}` in a role template: the whole field contract.
+FIELD_RE = re.compile(r"\{\{([A-Za-z0-9_]+)\}\}")
+
+
 def render_role_template(role: str, mapping: dict[str, str]) -> str:
+    """Render ``templates/<role>.md`` with ``mapping``, or refuse.
+
+    Both directions are checked at once: a ``{{field}}`` the template
+    names and the mapping does not supply would ship to a session
+    verbatim, and a mapping key no template names is dead code that
+    reads like a promise. A prompt with a hole in it never reaches a
+    session.
+    """
     path = TEMPLATE_DIR / f"{role}.md"
     try:
         text = path.read_text(encoding="utf-8")
@@ -374,9 +380,45 @@ def render_role_template(role: str, mapping: dict[str, str]) -> str:
             f"unknown role {role!r}; roles with a template: "
             + (", ".join(known) or "(none)")
         ) from None
+    named = set(FIELD_RE.findall(text))
+    extra = sorted(set(mapping) - named)
+    if extra:
+        raise Refused(
+            f"template {role!r} names no field "
+            + ", ".join(f"{{{{{key}}}}}" for key in extra)
+            + "; remove the mapping key"
+        )
     for key, value in mapping.items():
         text = text.replace("{{" + key + "}}", value)
+    holes = sorted(set(FIELD_RE.findall(text)))
+    if holes:
+        raise Refused(
+            f"template {role!r} leaves unsubstituted "
+            + ", ".join(f"{{{{{key}}}}}" for key in holes)
+            + "; supply every named field"
+        )
     return text
+
+
+def render_worker_prompt(*, role: str, front: str, supervisor: str,
+                         session_id: str, verdict_path: str, rulings: str,
+                         environment: str) -> str:
+    """The worker's role prompt, through the field contract.
+
+    The only mapping a worker template takes: every key here is a
+    ``{{field}}`` one of the worker templates names, and every field
+    those templates name is here. The worker path in ``launch_main``
+    renders through this, never a hand-built mapping.
+    """
+    return render_role_template(role, {
+        "role": role,
+        "front": front,
+        "supervisor": supervisor,
+        "session_id": session_id,
+        "verdict_path": verdict_path,
+        "rulings": rulings,
+        "environment": environment,
+    })
 
 
 def refuse(*problems: str) -> int:
@@ -487,6 +529,9 @@ def cmd_launch(args: argparse.Namespace) -> int:
             args, frozen_problems + list(identity_violations))
     if args.role == MERGE_DESK:
         return launch_merge_desk_main(
+            args, frozen_problems + list(identity_violations))
+    if args.role == FOREMAN:
+        return launch_foreman_main(
             args, frozen_problems + list(identity_violations))
     problems: list[str] = frozen_problems + list(identity_violations)
     if args.spec is None:
@@ -609,22 +654,15 @@ def cmd_launch(args: argparse.Namespace) -> int:
         role_path = os.path.join(worktree, ROLE_FILE)
         # The role prompt is rendered first: no session starts without one,
         # and the worker is given the job file, so it is embedded there.
-        role_text = render_role_template(args.role, {
-            "role": args.role,
-            "front": front_label,
-            "supervisor": args.front or "(none)",
-            "session_id": session_id,
-            "pool": args.pool,
-            "model": adapter.model,
-            "worktree": worktree,
-            "branch": branch,
-            "timeout": timeout,
-            "log_path": log_path,
-            "verdict_path": verdict_path,
-            "goal": scope,
-            "rulings": rulings_block,
-            "environment": env,
-        })
+        role_text = render_worker_prompt(
+            role=args.role,
+            front=front_label,
+            supervisor=args.front or "(none)",
+            session_id=session_id,
+            verdict_path=verdict_path,
+            rulings=rulings_block,
+            environment=env,
+        )
         write_no_symlink(
             job_path,
             build_job_file(job_label, args.kind, task_label, front_label,
@@ -782,6 +820,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
     print(f"log: {log_path}")
     print(f"pid: {pid if pid is not None else '(not started --dry-run)'}")
     print(f"command: {command}")
+    print_world()
     if not args.dry_run:
         # After the roster write is durable: hooks observe, never gate.
         hooks.fire("on-launch", {
@@ -1452,7 +1491,6 @@ def render_supervisor_prompt(*, front: str, record: dict, session_id: str,
     return render_role_template(SUPERVISOR, {
         "front": front,
         "session_id": session_id,
-        "branch": branch,
         "want": (record.get("want") or "(the brief records no want)").strip(),
         "done_when": (record.get("done_when")
                       or "(the brief records no done-when)").strip(),
@@ -1594,6 +1632,21 @@ def live_front_supervisor(front: str | None,
     return found[0] if found else None
 
 
+def print_world() -> None:
+    """Name the state directory the summoned session will read.
+
+    Silent when the launcher is on the default world. When it is not, the
+    session's world is the launcher's — carried into its script — and
+    saying so is the difference between an isolated proof run and a
+    session quietly born in the owner's real state directory.
+    """
+    for name in (paths.STATE_ENV, paths.CONFIG_ENV):
+        value = os.environ.get(name)
+        if value:
+            print(f"{name}: {value} (the session reads this world, not "
+                  f"the default one)")
+
+
 def _print_supervisor(session_id: str, vendor_id: str, role_prompt: Path,
                       workspace: str | None, pid: int | None,
                       argv: list[str], inner: str,
@@ -1614,6 +1667,7 @@ def _print_supervisor(session_id: str, vendor_id: str, role_prompt: Path,
     print(f"window: {window_name(session_id)} {where}")
     print(f"pid: {pid if pid is not None else '(not started --dry-run)'}")
     print(f"command: {_common.printable_command(argv, inner)}")
+    print_world()
 
 
 def _confirm_started(pid: int | None) -> tuple[int | None, str | None]:
@@ -2073,6 +2127,262 @@ def launch_merge_desk_main(args: argparse.Namespace,
     _print_supervisor(session_id, vendor_id, role_prompt, workspace, pid,
                       argv_, inner, branch=branch)
     hooks.fire("on-launch", {"session": session_id, "role": "merge-desk"})
+    return 0
+
+
+# --------------------------------------------------------------------------
+# The fourth shape: summoning the foreman.
+#
+# A foreman is summoned the way a supervisor is: an interactive Claude
+# session whose identity is minted before its process exists, on the roster
+# from the moment it starts. It owns no front, so its prompt carries the
+# fronts instead of one front's tasks, and one foreman at a time holds the
+# swarm — a second summon is refused by name, the way a second desk is.
+# --------------------------------------------------------------------------
+
+#: The file the foreman's role prompt is written to, beside its session.
+FOREMAN_ROLE_FILE = "FOREMAN-ROLE.md"
+
+#: The design's foreman row (docs/DESIGN.md section 12), verbatim. What
+#: this checkout has not shipped is this row minus what the CLI registers
+#: for the role, computed at render time like the supervisor's.
+DESIGN_FOREMAN_ROW = ("admit", "answer", "rule front", "digest", "route")
+
+
+def foreman_verbs() -> list[tuple[str, str]]:
+    """(verb, rendered line) for every verb the foreman may call.
+
+    Built the way :func:`supervisor_verbs` is: from the registered parser
+    and the gates in the code behind it, never from a hand-written list.
+    """
+    gates, required = _gate_tables()
+    lines: list[tuple[str, str]] = []
+    for path, parser, help_text in registered_verbs():
+        forms = sorted(verb for verb in gates
+                       if verb == path or verb.startswith(path + " "))
+        allowed = ([verb for verb in forms if FOREMAN in gates[verb]]
+                   if forms else [path])
+        for verb in allowed:
+            lines.append((verb, _verb_line(path, parser, help_text, verb,
+                                           required.get(verb, set()))))
+    return lines
+
+
+def foreman_verbs_block() -> str:
+    verbs = foreman_verbs()
+    lines = [line for _verb, line in verbs]
+    shipped = {verb for verb, _line in verbs}
+    missing = [verb for verb in DESIGN_FOREMAN_ROW if verb not in shipped]
+    if missing:
+        lines.append(
+            "- The design gives your role "
+            + ", ".join(f"`{verb}`" for verb in missing)
+            + " as well; this version does not ship them, so do not call them "
+              "and do not invent a substitute.")
+    return "\n".join(lines)
+
+
+def foreman_fronts_block() -> str:
+    """Every front, as the foreman finds it: state, supervisor, landing."""
+    try:
+        names = sorted(entry.name for entry in paths.fronts_dir().iterdir()
+                       if entry.is_dir())
+    except OSError:
+        names = []
+    rows = []
+    for name in names:
+        record = fronts.read_front_record(name)
+        if record is None:
+            rows.append(f"- {name} — no record on the ledger")
+            continue
+        try:
+            tasks = store.fold_by_id(
+                store.read_ledger(paths.front_tasks_path(name)))
+        except OSError:
+            tasks = []
+        landed = sum(1 for task in tasks
+                     if task.get("state") == "landed")
+        rows.append(
+            f"- {name} — {record.get('state') or 'unknown'} · "
+            f"supervisor {record.get('supervisor') or '(none)'} · "
+            f"tasks {landed}/{len(tasks)} landed")
+    if not rows:
+        return ("(no fronts on the ledger: admit nothing until "
+                "`front add` puts one there)")
+    return "\n".join(rows)
+
+
+def foreman_environment_block(*, repo: str, branch: str, session_id: str,
+                              role_prompt: str) -> str:
+    """Every path the foreman needs, absolute, with none to reconstruct."""
+    return (
+        f"- repository: {repo} — you work in this checkout; the fronts' "
+        f"branches live here\n"
+        f"- branch: {branch} — the branch this checkout is on. The launcher "
+        f"refuses to summon you onto any other, and you never switch it "
+        f"underneath its owner.\n"
+        f"- state directory: {paths.state_dir()}\n"
+        f"- your session id: {session_id}\n"
+        f"- {caller.SESSION_ENV}: must be set to {session_id} on every "
+        f"`foreman` call. Your window exports it; a shell you open yourself "
+        f"must set it, or the CLI refuses you as an unregistered writer.\n"
+        f"- your role prompt: {role_prompt}\n"
+        f"- the roster: {paths.roster_path()}\n"
+        f"- the rulings ledger: {paths.rulings_path()}\n"
+        f"- the inbox: {paths.inbox_path()}\n"
+        f"- the fronts: {paths.fronts_dir()}\n"
+        f"- the configuration: {paths.config_file()}"
+    )
+
+
+def render_foreman_prompt(*, session_id: str, repo: str, branch: str,
+                          role_prompt: Path) -> str:
+    return render_role_template(FOREMAN, {
+        "session_id": session_id,
+        "fronts": foreman_fronts_block(),
+        "verbs": foreman_verbs_block(),
+        "rulings": format_rulings(read_rulings(None)),
+        "environment": foreman_environment_block(
+            repo=repo, branch=branch, session_id=session_id,
+            role_prompt=str(role_prompt)),
+    })
+
+
+def live_foreman(ignore: str | None = None
+                 ) -> list[tuple[str, dict]]:
+    """Every live foreman: rostered as starting or running *and* still
+    that process. One foreman at a time holds the swarm."""
+    live: list[tuple[str, dict]] = []
+    sessions = caller.read_roster().get("sessions", {})
+    for session_id, entry in sessions.items():
+        if not isinstance(entry, dict) or session_id == ignore:
+            continue
+        if entry.get("role") != FOREMAN:
+            continue
+        if entry.get("state") not in ("starting", "running"):
+            continue
+        pid = entry.get("pid")
+        if pid is None or procs.same_process(pid, entry.get("pid_starttime")):
+            live.append((session_id, entry))
+    return live
+
+
+def _foreman_session(session_id: str, repo: str,
+                     launched_by: str | None) -> Session:
+    return Session(
+        id=session_id,
+        role=FOREMAN,
+        pool=SUPERVISOR_POOL,
+        model=SUPERVISOR_MODEL,
+        front=None,
+        job=None,
+        worktree=repo,
+        log=str(paths.session_log_path(session_id)),
+        launched_by=launched_by,
+        started_at=store.utcnow_iso(),
+        state="starting",
+    )
+
+
+def launch_foreman_main(args: argparse.Namespace,
+                        problems: list[str]) -> int:
+    """`foreman launch foreman [--workspace N] [--dry-run]`."""
+    if args.pool is not None:
+        problems.append(
+            f"a foreman takes no pool (got {args.pool!r}): it holds the "
+            f"swarm, not work on one (`foreman launch foreman`)")
+    if args.spec is not None:
+        problems.append(
+            "a foreman takes no spec file: it works the front queue in "
+            "the repository")
+    workspace = args.workspace
+    if workspace is not None and not WORKSPACE_RE.fullmatch(str(workspace)):
+        problems.append(
+            f"bad workspace {workspace!r}; a workspace is digits, e.g. 6")
+    repo = os.path.abspath(args.repo or os.getcwd())
+    if not os.path.isdir(repo):
+        problems.append(f"repo {repo!r} is not a directory")
+    branch = _branch_of_checkout(repo, args.branch, problems)
+    # One foreman at a time. A second live one is refused by name here,
+    # before anything is minted: two foremen, both authorised to admit
+    # and route, is the double-swarm this runtime exists to prevent.
+    live = live_foreman()
+    if live:
+        held, entry = live[0]
+        problems.append(
+            f"a foreman is already live as '{held}' "
+            f"({entry.get('state')}, pid {entry.get('pid')}); one foreman at "
+            f"a time holds the swarm, so reuse it instead of summoning "
+            f"a second")
+    if problems:
+        return refuse(*problems)
+    assert branch is not None
+
+    session_id = ids.mint("session")
+    vendor_id = str(uuid.uuid4())
+    session_dir = paths.session_dir(session_id)
+    role_prompt = session_dir / FOREMAN_ROLE_FILE
+    try:
+        session_dir.mkdir(parents=True, exist_ok=True)
+        text = render_foreman_prompt(
+            session_id=session_id, repo=repo, branch=branch,
+            role_prompt=role_prompt)
+        write_no_symlink(str(role_prompt), text)
+        _write_vendor_session(session_id, vendor_id)
+    except Refused as exc:
+        return refuse(str(exc))
+    except OSError as exc:
+        return refuse(f"cannot write launch files: {exc.strerror or exc}")
+
+    if args.dry_run:
+        inner = supervisor_inner_command(
+            pid_path=paths.session_pid_path(session_id),
+            session_id=session_id, repo=repo, role_prompt=role_prompt,
+            vendor_id=vendor_id, resume=False)
+        argv = supervisor_outer_argv(
+            session_id, session_dir / RUN_SCRIPT_FILE, workspace)
+        _print_supervisor(session_id, vendor_id, role_prompt, workspace,
+                          None, argv, inner, branch=branch)
+        print()
+        print(text)
+        # A dry run starts nothing, so it keeps nothing: the session
+        # directory it minted goes back, blocking no later summon.
+        shutil.rmtree(session_dir, ignore_errors=True)
+        return 0
+
+    try:
+        store.update_snapshot(
+            paths.roster_path(),
+            lambda roster: _place_session(
+                roster,
+                _foreman_session(session_id, repo,
+                                 os.environ.get(caller.SESSION_ENV))),
+            default={"sessions": {}},
+        )
+    except OSError as exc:
+        return refuse(f"cannot record the session on the roster: "
+                      f"{exc.strerror or exc}")
+
+    argv_: list[str] = []
+    inner = ""
+    pid: int | None = None
+    failure: str | None = None
+    try:
+        argv_, inner, pid, failure = _start_supervisor(
+            session_id, repo=repo, role_prompt=role_prompt,
+            vendor_id=vendor_id, workspace=workspace, resume=False)
+    except Exception as exc:  # noqa: BLE001 - anything here is a refusal
+        failure = f"{type(exc).__name__}: {exc}"
+    starttime, dead = _confirm_started(pid)
+    if starttime is None:
+        _record_failed(session_id)
+        return refuse(f"the window launcher failed to start the foreman: "
+                      f"{failure or dead}")
+    assert pid is not None
+    _record_running(session_id, pid, starttime)
+    _print_supervisor(session_id, vendor_id, role_prompt, workspace, pid,
+                      argv_, inner, branch=branch)
+    hooks.fire("on-launch", {"session": session_id, "role": "foreman"})
     return 0
 
 
