@@ -1,0 +1,2 @@
+{"monitor":"routes served from the ledger","value":11.0,"of":14.0,"status":"CONFIRMED","trend":"up","command":"make count-routes","output_ref":"evidence/api-routes-1400","at":"2026-05-11T14:00:00+00:00"}
+{"monitor":"schema drift","value":0.0,"of":0.0,"status":"CONFIRMED","trend":"flat","command":"make check api-drift","output_ref":"evidence/api-drift-1400","at":"2026-05-11T14:00:00+00:00"}

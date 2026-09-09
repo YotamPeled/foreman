@@ -1,0 +1,4 @@
+{"monitor":"apps collected","value":198.0,"of":600.0,"status":"CONFIRMED","trend":"up","command":"make count-apps","output_ref":"evidence/corpus-apps-1300","at":"2026-05-11T13:00:00+00:00"}
+{"monitor":"labels double-read","value":184.0,"of":600.0,"status":"CONFIRMED","trend":"up","command":"make count-double-read","output_ref":"evidence/corpus-double-1400","at":"2026-05-11T14:00:00+00:00"}
+{"monitor":"label agreement","value":0.91,"of":1.0,"status":"CONFIRMED","trend":"flat","command":"make agreement","output_ref":"evidence/corpus-agree-1400","at":"2026-05-11T14:00:00+00:00"}
+{"monitor":"apps collected","value":412.0,"of":600.0,"status":"CONFIRMED","trend":"up","command":"make count-apps","output_ref":"evidence/corpus-apps-1400","at":"2026-05-11T14:00:00+00:00"}

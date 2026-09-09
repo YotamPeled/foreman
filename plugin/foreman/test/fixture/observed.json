@@ -1,0 +1,49 @@
+{
+  "at": "2026-05-11T14:07:00+00:00",
+  "swarm": {
+    "sessions_registered": 10,
+    "sessions_observed": 10,
+    "inbox_depth": 2,
+    "inbox_oldest_s": 1380.0,
+    "open_anomalies": 3
+  },
+  "pools": {
+    "opus": {"held": 4, "total": 4, "meter": 0.41, "resets_at": "2026-05-11T17:00:00+00:00", "avg_s": null, "p90_s": null},
+    "codex": {"held": 1, "total": 2, "meter": 0.62, "resets_at": "2026-05-11T19:00:00+00:00", "avg_s": 360.0, "p90_s": 780.0},
+    "grok": {"held": 8, "total": 8, "meter": null, "resets_at": "", "avg_s": 1020.0, "p90_s": 1980.0},
+    "muse": {"held": 3, "total": 3, "meter": null, "resets_at": "", "avg_s": 840.0, "p90_s": 1620.0}
+  },
+  "fronts": {
+    "corpus": {"doing_now": "second reads running, 412 of 600 collected", "doing_age_s": 180.0, "rate_per_hour": 3.0, "projected_finish": "2026-05-11T17:05:00+00:00", "state": "active"},
+    "api": {"doing_now": "inbox resolve endpoint out to a worker", "doing_age_s": 300.0, "rate_per_hour": 2.1, "projected_finish": "2026-05-11T18:20:00+00:00", "state": "active"},
+    "engine": {"doing_now": "", "doing_age_s": 840.0, "rate_per_hour": 0.0, "projected_finish": "", "state": "stalled"},
+    "ingestion": {"doing_now": "halted on a repeated defect", "doing_age_s": 360.0, "rate_per_hour": 0.0, "projected_finish": "", "state": "halted"},
+    "reaper": {"doing_now": "waiting on the owner's scope answer", "doing_age_s": 360.0, "rate_per_hour": 0.0, "projected_finish": "", "state": "active"}
+  },
+  "sessions": {
+    "ses-fore0001": {"alive": true, "state": "running", "cpu_s": 91.4, "seconds_since_activity": 30.0, "seconds_since_declared": 120.0},
+    "ses-supcorp1": {"alive": true, "state": "running", "cpu_s": 62.0, "seconds_since_activity": 60.0, "seconds_since_declared": 180.0},
+    "ses-supapi01": {"alive": true, "state": "running", "cpu_s": 48.7, "seconds_since_activity": 90.0, "seconds_since_declared": 300.0},
+    "ses-supeng01": {"alive": true, "state": "stalled", "cpu_s": 30.1, "seconds_since_activity": 840.0, "seconds_since_declared": 840.0},
+    "ses-supingn1": {"alive": true, "state": "running", "cpu_s": 22.9, "seconds_since_activity": 120.0, "seconds_since_declared": 360.0},
+    "ses-supreap1": {"alive": true, "state": "running", "cpu_s": 4.2, "seconds_since_activity": 150.0, "seconds_since_declared": 420.0},
+    "ses-wcorp001": {"alive": true, "state": "running", "cpu_s": 210.5, "seconds_since_activity": 20.0},
+    "ses-wcorp002": {"alive": true, "state": "running", "cpu_s": 88.3, "seconds_since_activity": 45.0},
+    "ses-wapi0001": {"alive": true, "state": "running", "cpu_s": 31.0, "seconds_since_activity": 15.0},
+    "ses-wapi0002": {"alive": true, "state": "running", "cpu_s": 9.6, "seconds_since_activity": 10.0}
+  },
+  "jobs": {
+    "job-cor-1": {"front": "corpus", "state": "verified"},
+    "job-cor-2": {"front": "corpus", "state": "running", "elapsed_s": 1080.0, "timeout_s": 1500.0, "minutes_since_write": 1.0},
+    "job-cor-3": {"front": "corpus", "state": "running", "elapsed_s": 720.0, "timeout_s": 1500.0, "minutes_since_write": 2.0},
+    "job-cor-4": {"front": "corpus", "state": "queued"},
+    "job-api-1": {"front": "api", "state": "verified"},
+    "job-api-2": {"front": "api", "state": "running", "elapsed_s": 360.0, "timeout_s": 1500.0, "minutes_since_write": 1.0},
+    "job-api-3": {"front": "api", "state": "running", "elapsed_s": 120.0, "timeout_s": 1200.0, "minutes_since_write": 0.5},
+    "job-api-4": {"front": "api", "state": "queued"},
+    "job-api-5": {"front": "api", "state": "planned"},
+    "job-eng-1": {"front": "engine", "state": "queued"},
+    "job-ing-1": {"front": "ingestion", "state": "planned"},
+    "job-rea-1": {"front": "reaper", "state": "queued"}
+  }
+}
