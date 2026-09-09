@@ -21,8 +21,10 @@ from __future__ import annotations
 
 import argparse
 import os
+import shutil
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
 
 from . import caller, cli, entities, fronts, hooks, ids, paths, store
 from .caller import MERGE_DESK, OWNER, SUPERVISOR, Refusal
@@ -315,11 +317,46 @@ def _unverifiable_state_violation(key: str, state: object,
             f"collector last tick {ticked}; worker last write {wrote})")
 
 
+def _unreadable_output_file(path: str) -> str | None:
+    """A refusal naming ``path`` when it cannot be read, else None."""
+    try:
+        with open(path, "rb"):
+            pass
+    except OSError:
+        return f"cannot read --output-file {path!r}"
+    return None
+
+
+def _next_copy_n(directory: Path) -> int:
+    """The next 1-based index in ``directory``, so a later copy never
+    overwrites an earlier one. A missing directory is empty: the first
+    copy is 1."""
+    try:
+        names = [entry.name for entry in directory.iterdir()]
+    except OSError:
+        return 1
+    highest = 0
+    for name in names:
+        prefix, sep, _rest = name.partition("-")
+        if sep and prefix.isdigit():
+            highest = max(highest, int(prefix))
+    return highest + 1
+
+
+def _store_output_file(src: str, dest: Path) -> str:
+    """Byte-copy ``src`` to ``dest``, creating the parent. Returns the
+    copy's absolute path; the ledger stores that path, never the bytes."""
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(src, dest)
+    return str(dest.resolve())
+
+
 def job_verify_main(job_id: str, confirmed: bool,
                     command: str | None = None,
                     output: str | None = None,
                     units: str | None = None,
-                    because: str | None = None) -> int:
+                    because: str | None = None,
+                    output_file: str | None = None) -> int:
     verb = "job verify"
     me, violations = caller.resolve(verb)
     key = (job_id or "").strip()
@@ -334,9 +371,17 @@ def job_verify_main(job_id: str, confirmed: bool,
     if not (command or "").strip():
         violations.append("field '--command' is required with '--confirmed' "
                           "(a claim with no command behind it is not evidence)")
-    if not (output or "").strip():
+    output_text = (output or "").strip()
+    file_text = (output_file or "").strip()
+    if output_text and file_text:
+        violations.append("give --output or --output-file, not both")
+    elif not output_text and not file_text:
         violations.append("field '--output' is required with '--confirmed' "
                           "(a claim with no output behind it is not evidence)")
+    if file_text:
+        unreadable = _unreadable_output_file(file_text)
+        if unreadable:
+            violations.append(unreadable)
     override: int | None = None
     if units is not None:
         text = units.strip()
@@ -390,6 +435,10 @@ def job_verify_main(job_id: str, confirmed: bool,
             task, task_violation = _task_of_job(front or "", record)
             if task is None:
                 violations.append(task_violation)
+        if file_text:
+            sid = record.get("session")
+            if not (isinstance(sid, str) and sid.strip()):
+                violations.append(f"job '{key}' names no session")
     if violations:
         return _refuse(violations)
     assert front is not None and record is not None
@@ -398,11 +447,21 @@ def job_verify_main(job_id: str, confirmed: bool,
     total = (task.get("units_total") or 0) if task is not None else 0
     who = caller.by_line(me)
     now = store.utcnow_iso()
+    copied = ""
+    if file_text:
+        sid = str(record.get("session") or "").strip()
+        dest_dir = paths.session_dir(sid) / "verify"
+        basename = Path(file_text).name or "output"
+        copied = _store_output_file(
+            file_text, dest_dir / f"{_next_copy_n(dest_dir)}-{basename}")
+        output_ref = copied
+    else:
+        output_ref = output_text
     store.append_ledger(
         paths.front_evidence_path(front),
         entities.Evidence(on=key, claim=f"job '{key}' verified",
                           status=CONFIRMED, command=(command or "").strip(),
-                          output_ref=(output or "").strip(),
+                          output_ref=output_ref,
                           spec_path=str(record.get("spec_path") or "")
                           ).to_dict(),
         session_id=who,
@@ -418,11 +477,13 @@ def job_verify_main(job_id: str, confirmed: bool,
         store.append_ledger(paths.front_tasks_path(front),
                             _moved(task, units_done=done), session_id=who)
     spec = str(record.get("spec_path") or "")
+    extra = f" output: {copied}" if copied else ""
     if task is not None:
         print(f"{key} verified "
-              f"({add} units on task '{task.get('title')}': {done}/{total})")
+              f"({add} units on task '{task.get('title')}': {done}/{total})"
+              f"{extra}")
     else:
-        print(f"{key} verified (on front '{front}', no task)")
+        print(f"{key} verified (on front '{front}', no task){extra}")
     if because_text:
         print(f"because: {because_text}")
     if spec:
@@ -811,7 +872,10 @@ def add_job_arguments(sub: argparse.ArgumentParser) -> None:
     verify.add_argument("--command", default=None,
                         help="verification command that was re-run (required)")
     verify.add_argument("--output", default=None,
-                        help="command output, or a path to it (required)")
+                        help="command output (required unless --output-file)")
+    verify.add_argument("--output-file", dest="output_file", default=None,
+                        help="path to command output, copied under the "
+                             "job's session")
     verify.add_argument("--units", default=None,
                         help="unit count to credit (default: the job's "
                              "launch count)")
@@ -832,7 +896,8 @@ def _job_entry(args: argparse.Namespace) -> int:
     if args.job_verb == "verify":
         return job_verify_main(args.job, args.confirmed,
                                command=args.command, output=args.output,
-                               units=args.units, because=args.because)
+                               units=args.units, because=args.because,
+                               output_file=args.output_file)
     if args.job_verb == "fail":
         return job_fail_main(args.job, finding=args.finding,
                              closed=args.closed)

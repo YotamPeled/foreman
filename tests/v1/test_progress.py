@@ -1001,3 +1001,117 @@ def test_units_still_have_to_be_accounted_for_without_the_flag(
     first = tasks_by_title("flow")["first"]["id"]
     assert run(monkeypatch, ["task", "built", first], SUP) == 1
     assert "every unit must be accounted for" in capsys.readouterr().err
+
+
+def _returned_job(front, jid, task_id, units=1, session=WRK):
+    store.append_ledger(paths.front_jobs_path(front), {
+        "id": jid, "task": task_id, "kind": "implement", "role": "muse",
+        "priority": 1, "spec_path": "/tmp/specs/job.md", "session": session,
+        "worktree": "", "branch": "", "log": "", "timeout": "20m",
+        "units": units, "attempt": 1, "state": "returned",
+        "planned_at": iso(NOW - timedelta(minutes=10)),
+        "queued_at": iso(NOW - timedelta(minutes=9)),
+        "started_at": iso(NOW - timedelta(minutes=8)),
+        "returned_at": iso(NOW - timedelta(minutes=2)),
+        "verified_at": None, "artifact": "", "verdict_path": "",
+    })
+
+
+def test_verify_output_file_copies_under_the_job_session(
+        env, monkeypatch, capsys):
+    """`--output-file` keeps the command's output as a file Foreman owns.
+
+    A one-line `--output` cannot hold a suite's log. The copy lives under
+    the job's session so it outlives the worktree, numbered so a second
+    verify of another job on the same session never overwrites the first.
+    """
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    _returned_job("flow", "job-out1", first, units=1)
+    _returned_job("flow", "job-out2", first, units=1)
+    src = env / "suite.out"
+    content = b"line one\nline two\nline three\n"
+    src.write_bytes(content)
+
+    assert run(monkeypatch, ["job", "verify", "job-out1",
+                             "--confirmed",
+                             "--command", "make check first",
+                             "--output-file", str(src)], SUP) == 0
+    out = capsys.readouterr().out
+    dest_dir = paths.session_dir(WRK) / "verify"
+    first_copy = dest_dir / f"1-{src.name}"
+    assert first_copy.is_file()
+    assert first_copy.read_bytes() == content
+    evidence = store.read_ledger(paths.front_evidence_path("flow"))
+    assert evidence[-1]["output_ref"] == str(first_copy.resolve())
+    assert folded_job("flow", "job-out1")["state"] == "verified"
+    assert f"output: {first_copy.resolve()}" in out
+
+    other = env / "other.out"
+    other.write_bytes(b"second job\n")
+    assert run(monkeypatch, ["job", "verify", "job-out2",
+                             "--confirmed",
+                             "--command", "make check first",
+                             "--output-file", str(other)], SUP) == 0
+    capsys.readouterr()
+    second_copy = dest_dir / f"2-{other.name}"
+    assert first_copy.read_bytes() == content
+    assert second_copy.is_file()
+    assert second_copy.read_bytes() == b"second job\n"
+    evidence = store.read_ledger(paths.front_evidence_path("flow"))
+    assert evidence[-1]["output_ref"] == str(second_copy.resolve())
+
+
+def test_verify_refuses_output_and_output_file_together(
+        env, monkeypatch, capsys):
+    """Both flags is a refusal: one line or a file, not both, and nothing
+    is written."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    _returned_job("flow", "job-both1", first)
+    src = env / "suite.out"
+    src.write_bytes(b"line one\nline two\nline three\n")
+    jobs_before = len(store.read_ledger(paths.front_jobs_path("flow")))
+    assert run(monkeypatch, ["job", "verify", "job-both1",
+                             "--confirmed",
+                             "--command", "make check first",
+                             "--output", "ok",
+                             "--output-file", str(src)], SUP) == 1
+    _, err = capsys.readouterr()
+    assert "give --output or --output-file, not both" in err
+    assert len(store.read_ledger(paths.front_jobs_path("flow"))) == jobs_before
+    assert store.read_ledger(paths.front_evidence_path("flow")) == []
+    assert not (paths.session_dir(WRK) / "verify").exists()
+    assert folded_job("flow", "job-both1")["state"] == "returned"
+
+
+def test_verify_refuses_an_unreadable_output_file_by_name(
+        env, monkeypatch, capsys):
+    """A path that cannot be read is refused by name, before any write."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    _returned_job("flow", "job-miss1", first)
+    missing = env / "no-such-suite.out"
+    jobs_before = len(store.read_ledger(paths.front_jobs_path("flow")))
+    assert run(monkeypatch, ["job", "verify", "job-miss1",
+                             "--confirmed",
+                             "--command", "make check first",
+                             "--output-file", str(missing)], SUP) == 1
+    _, err = capsys.readouterr()
+    assert "cannot read --output-file" in err
+    assert str(missing) in err
+    assert len(store.read_ledger(paths.front_jobs_path("flow"))) == jobs_before
+    assert store.read_ledger(paths.front_evidence_path("flow")) == []
+    assert not (paths.session_dir(WRK) / "verify").exists()
+    assert folded_job("flow", "job-miss1")["state"] == "returned"
+
+
+def test_job_verify_help_names_output_file(env, capsys):
+    """`job verify --help` names the option."""
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["job", "verify", "--help"])
+    assert caught.value.code == 0
+    assert "--output-file" in capsys.readouterr().out
