@@ -280,3 +280,21 @@ def test_restart_open_to_role_callers_but_not_strangers(
     monkeypatch.setenv(SESSION_ENV, "ses-nobody00")
     assert cli.main(["collector", "restart"]) == 1
     assert "unregistered writer" in capsys.readouterr().err
+
+
+def test_startup_record_carries_started_at_and_tick_leaves_it(
+        env, code_checkout):
+    """The collector's startup record names when it started, and a tick
+    leaves that stamp as it was."""
+    record_startup_version()
+    first = collector_record()
+    assert isinstance(first.get("started_at"), str)
+    datetime.fromisoformat(first["started_at"])
+
+    tick(now=NOW)
+    second = collector_record()
+    assert second["started_at"] == first["started_at"]
+
+    tick(now=later(60))
+    third = collector_record()
+    assert third["started_at"] == first["started_at"]

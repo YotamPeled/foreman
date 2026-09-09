@@ -12,12 +12,13 @@ from __future__ import annotations
 
 import os
 import subprocess
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from foreman import cli, paths, store
+from foreman import cli, config as config_module, paths, store
+from foreman.caller import SESSION_ENV
 from foreman.collector import tick
 from foreman.entities import Session
 from foreman.pool import (
@@ -533,3 +534,126 @@ def test_unknown_pool_hints_the_matching_manifest(env, capsys):
     assert rc == 1
     err = capsys.readouterr().err
     assert "unknown pool 'astra'; did you mean codex (gpt-6-astra)?" in err
+
+
+def set_mtime(path: Path, moment: datetime) -> None:
+    stamp = moment.timestamp()
+    os.utime(path, (stamp, stamp))
+
+
+def write_collector(*, started_at: str | None = None) -> None:
+    payload: dict = {"sessions": {}, "relaunches": [], "parents": {},
+                     "turn_attempts": {}}
+    if started_at is not None:
+        payload["started_at"] = started_at
+    store.write_snapshot(paths.collector_path(), payload)
+
+
+def test_pool_list_prints_reload_notice_when_config_is_newer(env, capsys):
+    """A collector that started before foreman.toml changed is told to
+    restart; the list still prints and the exit code stays 0."""
+    started = datetime.now(timezone.utc) - timedelta(hours=1)
+    config_module.ensure_user_config(create_dir=True)
+    os.utime(paths.config_file(), None)
+    write_collector(started_at=started.isoformat())
+
+    assert pool_list_main() == 0
+    captured = capsys.readouterr()
+    assert "codex" in captured.out
+    assert "gpt-6-astra" in captured.out
+    assert "run foreman collector restart" in captured.err
+    assert "pool config changed at" in captured.err
+    assert f"collector started {started.isoformat()}" in captured.err
+
+
+def test_pool_list_prints_no_notice_when_collector_is_fresh(env, capsys):
+    """A stamp later than every config mtime is silence: the collector
+    already sees this file."""
+    config_module.ensure_user_config(create_dir=True)
+    past = datetime.now(timezone.utc) - timedelta(hours=2)
+    set_mtime(paths.config_file(), past)
+    future = datetime.now(timezone.utc) + timedelta(hours=1)
+    write_collector(started_at=future.isoformat())
+
+    assert pool_list_main() == 0
+    captured = capsys.readouterr()
+    assert "codex" in captured.out
+    assert "run foreman collector restart" not in captured.err
+
+
+def test_pool_list_prints_no_notice_without_collector_json(env, capsys):
+    """No collector.json, or an older record with no started_at, prints
+    nothing: there is no stamp to compare."""
+    config_module.ensure_user_config(create_dir=True)
+    os.utime(paths.config_file(), None)
+    assert not paths.collector_path().exists()
+    assert pool_list_main() == 0
+    assert "run foreman collector restart" not in capsys.readouterr().err
+
+    write_collector()
+    assert pool_list_main() == 0
+    assert "run foreman collector restart" not in capsys.readouterr().err
+
+
+def test_user_pool_directory_newer_than_collector_prints_reload_notice(
+        env, capsys):
+    """A user pool directory touched after the stamp triggers the notice
+    even when foreman.toml is older."""
+    started = datetime.now(timezone.utc) - timedelta(minutes=5)
+    config_module.ensure_user_config(create_dir=True)
+    set_mtime(paths.config_file(), started - timedelta(hours=1))
+    write_collector(started_at=started.isoformat())
+    assert pool_list_main() == 0
+    assert "run foreman collector restart" not in capsys.readouterr().err
+
+    dest = write_user_pool(env, "extra",
+                           'name = "extra"\n'
+                           'model = "extra-model"\n'
+                           'timeout_default = "5m"\n'
+                           'interactive = false\n'
+                           'adapter = "muse"\n')
+    later = datetime.now(timezone.utc) + timedelta(minutes=1)
+    set_mtime(dest, later)
+    set_mtime(dest / "manifest.toml", later)
+    pools_root = Path(paths.config_dir()) / "pools"
+    set_mtime(pools_root, later)
+
+    assert pool_list_main() == 0
+    captured = capsys.readouterr()
+    assert "extra extra-model [user]" in captured.out
+    assert "run foreman collector restart" in captured.err
+
+
+def test_cap_prints_reload_notice_after_its_own_output(env, capsys):
+    """cap keeps its exit code and prints the notice on stderr after the
+    line it already printed."""
+    started = datetime.now(timezone.utc) - timedelta(hours=1)
+    config_module.ensure_user_config(create_dir=True)
+    os.utime(paths.config_file(), None)
+    write_collector(started_at=started.isoformat())
+
+    assert cli.main(["cap", "muse", "3"]) == 0
+    captured = capsys.readouterr()
+    assert "muse: cap 3" in captured.out
+    assert "run foreman collector restart" in captured.err
+
+
+def test_pool_list_is_readable_by_a_supervisor_not_a_worker(
+        env, capsys, monkeypatch):
+    """pool list mutates nothing: a supervisor on the roster may read
+    it, a worker role may not. The other pool verbs keep their gates."""
+    store.write_snapshot(paths.roster_path(), {"sessions": {
+        "ses-sup00001": {"id": "ses-sup00001", "role": "supervisor",
+                         "front": "comp", "state": "running"},
+        "ses-wrk00001": {"id": "ses-wrk00001", "role": "muse",
+                         "front": "comp", "state": "running"},
+    }})
+    monkeypatch.setenv(SESSION_ENV, "ses-sup00001")
+    assert pool_list_main() == 0
+    assert "codex" in capsys.readouterr().out
+
+    monkeypatch.setenv(SESSION_ENV, "ses-wrk00001")
+    assert pool_list_main() == 1
+    assert "role 'muse' may not call 'pool list'" in capsys.readouterr().err
+    assert pool_add_main("newpool") == 1
+    assert "role 'muse' may not call 'pool add'" in capsys.readouterr().err

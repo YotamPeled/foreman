@@ -330,10 +330,15 @@ def record_startup_version() -> None:
     pass closes the old ``collector stale`` line with nothing to close by
     hand. Reading the head costs about a millisecond and the source scan
     far less, so neither needs a cache.
+
+    ``started_at`` is the stamp pool verbs compare against config mtimes.
+    A tick never rewrites it: an older collector.json without one stays
+    without one, and a running collector keeps the instant it started.
     """
     state = _load_state()
     state["code_head"] = _git_head()
     state["code_mtime"] = _source_mtime()
+    state["started_at"] = store.utcnow_iso()
     store.write_snapshot(paths.collector_path(), state)
 
 

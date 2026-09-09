@@ -41,15 +41,15 @@ PANEL_BRIEF = ROOT / "briefs" / "panel"
 SUPERVISOR_TOOLS = frozenset({
     "ask", "attach", "checkpoint", "doctor", "evidence", "finding",
     "front_done", "front_take", "job_fail", "job_verify", "kill", "launch",
-    "measure", "merge_request", "register", "relaunch", "rule", "status",
-    "task_add", "task_built", "task_landed", "task_reset", "turn",
+    "measure", "merge_request", "pool_list", "register", "relaunch", "rule",
+    "status", "task_add", "task_built", "task_landed", "task_reset", "turn",
     "version", "wait", "wake",
 })
 #: The foreman role's own row: answers and rules, never front or job verbs.
 FOREMAN_TOOLS = frozenset({
     "answer", "attach", "checkpoint", "doctor", "front_allocate", "inbox",
-    "kill", "launch", "register", "relaunch", "rule", "status", "tell",
-    "turn", "version", "wait", "wake",
+    "kill", "launch", "pool_list", "register", "relaunch", "rule", "status",
+    "tell", "turn", "version", "wait", "wake",
 })
 #: A worker holds no verb, so only the gateless one survives.
 WORKER_TOOLS = frozenset({"version"})

@@ -57,8 +57,15 @@ size, effort, timeout, what it cannot take, how to read its output.
 """
 
 
+def _done(rc: int) -> int:
+    from . import config as _config
+
+    _config.emit_reload_notice()
+    return rc
+
+
 def _refuse(violations: list[str]) -> int:
-    return Refusal(violations).report()
+    return _done(Refusal(violations).report())
 
 
 def _check_name(name: str | None, violations: list[str]) -> str | None:
@@ -76,7 +83,10 @@ def _check_name(name: str | None, violations: list[str]) -> str | None:
 
 def pool_list_main() -> int:
     me, violations = caller.resolve("pool list")
-    caller.check_role(me, "pool list", violations=violations)
+    # List mutates nothing: any roster role that is not a worker may
+    # read it. Workers keep the gate the other pool verbs use.
+    caller.check_role(me, "pool list", caller.FOREMAN, caller.SUPERVISOR,
+                      caller.MERGE_DESK, violations=violations)
     if violations:
         return _refuse(violations)
     for name in pool_names():
@@ -87,7 +97,7 @@ def pool_list_main() -> int:
                   f"roles: {roles} timeout: {manifest.timeout_default}")
         else:
             print(f"{name} [{source}]")
-    return 0
+    return _done(0)
 
 
 def pool_clone_main(name: str | None) -> int:
@@ -122,7 +132,7 @@ def pool_clone_main(name: str | None) -> int:
         return _refuse(
             [f"cannot clone pool '{name}' to {dest}: {exc.strerror or exc}"])
     print(f"{name} cloned to {dest}")
-    return 0
+    return _done(0)
 
 
 def pool_remove_main(name: str | None) -> int:
@@ -146,7 +156,7 @@ def pool_remove_main(name: str | None) -> int:
         print(f"removed user pool '{name}'; packaged '{name}' answers again")
     else:
         print(f"removed user pool '{name}'")
-    return 0
+    return _done(0)
 
 
 def pool_add_main(name: str | None, from_dir: str | None = None) -> int:
@@ -199,7 +209,7 @@ def pool_add_main(name: str | None, from_dir: str | None = None) -> int:
         return _refuse(
             [f"cannot add pool '{name}' at {dest}: {exc.strerror or exc}"])
     print(f"{name} added at {dest}")
-    return 0
+    return _done(0)
 
 
 def add_pool_arguments(sub: argparse.ArgumentParser) -> None:

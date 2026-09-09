@@ -32,6 +32,7 @@ import re
 import sys
 import tomllib
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import caller, cli, paths
@@ -511,17 +512,22 @@ def cap_main(pool: str, count: str | int) -> int:
         violations.append(
             f"field 'count' must not be negative (got {number})")
     if violations:
-        return Refusal(violations).report()
+        rc = Refusal(violations).report()
+        emit_reload_notice()
+        return rc
     assert number is not None and target is not None
     try:
         set_cap(target, number)
     except CapRefused as exc:
-        return Refusal([str(exc)]).report()
+        rc = Refusal([str(exc)]).report()
+        emit_reload_notice()
+        return rc
     if target != name:
         print(f"{target}: cap {number} (the pool role '{name}' runs on)")
     else:
         print(f"{target}: cap {number}")
     _reload_collector()
+    emit_reload_notice()
     return 0
 
 
@@ -536,3 +542,84 @@ def _reload_collector() -> None:
         _collector.reload_after_config_change()
     except Exception:  # noqa: BLE001 - the reload is never the verb's work
         pass
+
+
+def _mtime(path: Path) -> float | None:
+    try:
+        return path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def _parse_started_at(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    text = value.strip()
+    if text.endswith("Z"):
+        text = text[:-1] + "+00:00"
+    try:
+        moment = datetime.fromisoformat(text)
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment.astimezone(timezone.utc)
+
+
+def _newest_pool_config_mtime() -> float | None:
+    """Newest mtime among the files a hand edit of pool config touches.
+
+    ``foreman.toml``, the user pools directory, each user pool
+    directory, and each of those directories' ``manifest.toml``. A
+    packaged pool is not in this set: editing the checkout is the
+    collector-stale check, not this one.
+    """
+    newest: float | None = None
+    candidates = [paths.config_file(), paths.config_dir() / "pools"]
+    root = paths.config_dir() / "pools"
+    try:
+        entries = list(root.iterdir())
+    except OSError:
+        entries = []
+    for entry in entries:
+        if entry.is_dir():
+            candidates.append(entry)
+            candidates.append(entry / "manifest.toml")
+    for path in candidates:
+        moment = _mtime(path)
+        if moment is not None and (newest is None or moment > newest):
+            newest = moment
+    return newest
+
+
+def reload_needed() -> str | None:
+    """One-line notice when on-disk pool config is newer than the collector.
+
+    ``None`` when there is no collector.json, no ``started_at`` (an
+    older collector), or nothing on disk is newer than that stamp.
+    """
+    from . import store
+
+    state = store.read_snapshot(paths.collector_path(), default=None)
+    if not isinstance(state, dict):
+        return None
+    started = _parse_started_at(state.get("started_at"))
+    if started is None:
+        return None
+    newest = _newest_pool_config_mtime()
+    if newest is None or newest <= started.timestamp():
+        return None
+    changed = datetime.fromtimestamp(newest, tz=timezone.utc).isoformat()
+    return (f"pool config changed at {changed}, collector started "
+            f"{state['started_at']}: run foreman collector restart")
+
+
+def emit_reload_notice() -> None:
+    """Print :func:`reload_needed` on stderr, or nothing.
+
+    Pool verbs and ``cap`` call this after their own output; the exit
+    code is the verb's, unchanged.
+    """
+    notice = reload_needed()
+    if notice:
+        print(notice, file=sys.stderr)
