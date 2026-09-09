@@ -27,6 +27,7 @@ import shlex
 import subprocess
 import time
 import tomllib
+from datetime import datetime
 from pathlib import Path
 from subprocess import DEVNULL
 from typing import Any
@@ -43,6 +44,56 @@ PID_WAIT_SECONDS = 30.0
 #: pool understands. Each adapter documents its own subset and passes
 #: ``ctx.effort`` straight to its vendor flag.
 LAUNCH_EFFORTS = ("high", "medium", "xhigh")
+
+#: A vendor quota/rate refusal names when the window resets. Captured as
+#: an ISO instant; anything we cannot parse is not a refusal.
+_RESET_AT_RE = re.compile(
+    r"resets\s+at\s+"
+    r"(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))",
+    re.IGNORECASE,
+)
+_QUOTA_RE = re.compile(
+    r"(?:API error\s+)?429|quota exhausted|rate_limit|rate limit",
+    re.IGNORECASE,
+)
+
+
+def parse_quota_refusal(text: str) -> dict | None:
+    """{"kind": "quota", "reset": iso, "detail": one line}, or None.
+
+    Both a capacity-refusal signal and a parseable reset instant are
+    required: a rate-limit mention with no reset is not a guess we act
+    on, and a reset with no refusal is not one either.
+    """
+    if not isinstance(text, str) or not text:
+        return None
+    if _QUOTA_RE.search(text) is None:
+        return None
+    match = _RESET_AT_RE.search(text)
+    if match is None:
+        return None
+    reset = match.group(1)
+    try:
+        datetime.fromisoformat(reset.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    start = text.rfind("\n", 0, match.start()) + 1
+    end = text.find("\n", match.end())
+    if end < 0:
+        end = len(text)
+    detail = " ".join(text[start:end].split())
+    if not detail:
+        return None
+    return {"kind": "quota", "reset": reset, "detail": detail}
+
+
+def read_quota_refusal(transcript: Path) -> dict | None:
+    """Quota refusal from a vendor JSON/JSONL log, or nothing."""
+    try:
+        text = transcript.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    return parse_quota_refusal(text)
 
 
 def window_launcher() -> str | None:

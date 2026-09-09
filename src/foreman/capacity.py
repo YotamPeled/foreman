@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config, entities, fronts, ids, paths, store
@@ -209,13 +210,82 @@ def _who(role: str, front: str | None) -> str:
             else f"role {role!r} on no front")
 
 
-def launch_problems(role: str, pool: str, front: str | None) -> list[str]:
+def _as_utc(now: datetime | None) -> datetime:
+    moment = now if now is not None else datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+def _parse_iso(text: object) -> datetime | None:
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+def format_out_until(moment: datetime) -> str:
+    """The Capacity spelling of a reset: ``2026-09-14 00:00Z``."""
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%MZ")
+
+
+def folded_pools() -> list[dict]:
+    """Every pool-state record, folded last-wins by pool name."""
+    try:
+        records = store.read_ledger(paths.pools_path())
+    except OSError:
+        return []
+    return store.fold_by_id(records)
+
+
+def pool_out(pool: str, now: datetime | None = None) -> dict | None:
+    """The folded record if ``pool`` is out at ``now``, else None.
+
+    A record whose ``out_until`` has passed is not out: the fold is read
+    against now, and nothing rewrites the ledger to clear it. An
+    unparseable reset is not out either — a pool is never put out on a
+    guess.
+    """
+    moment = _as_utc(now)
+    for record in folded_pools():
+        name = record.get("id")
+        if name != pool:
+            continue
+        until = _parse_iso(record.get("out_until"))
+        if until is None or moment >= until:
+            return None
+        return record
+    return None
+
+
+def out_pools(now: datetime | None = None) -> dict[str, dict]:
+    """Pool name -> folded record, for every pool that is out at ``now``."""
+    moment = _as_utc(now)
+    out: dict[str, dict] = {}
+    for record in folded_pools():
+        name = record.get("id")
+        if not isinstance(name, str) or not name:
+            continue
+        until = _parse_iso(record.get("out_until"))
+        if until is None or moment >= until:
+            continue
+        out[name] = record
+    return out
+
+
+def launch_problems(role: str, pool: str, front: str | None,
+                    now: datetime | None = None) -> list[str]:
     """The capacity refusals for one launch, in the order they are checked.
 
-    The front's ceiling first, then the pool's cap, each naming the role,
-    the front, the numbers it saw and the limit it hit. Both are returned
-    so a launch wrong on both counts is told both at once, like every other
-    refusal here.
+    The front's ceiling first, then the pool's cap, then whether the pool
+    is out until a named reset. Each names the role, the front, and the
+    limit it hit. A launch wrong on more than one count is told every
+    one at once, like every other refusal here.
     """
     problems: list[str] = []
     limit = ceiling(front, role)
@@ -230,6 +300,13 @@ def launch_problems(role: str, pool: str, front: str | None) -> list[str]:
         if held >= cap:
             problems.append(f"{_who(role, front)}: {held} held in pool "
                             f"{pool!r}, cap {cap}")
+    record = pool_out(pool, now)
+    if record is not None:
+        until = _parse_iso(record.get("out_until"))
+        because = record.get("because") or "quota"
+        when = format_out_until(until) if until is not None else ""
+        problems.append(f"{_who(role, front)}: pool {pool!r} is out "
+                        f"until {when} ({because})")
     return problems
 
 
@@ -345,7 +422,8 @@ def front_allocations() -> list[tuple[str, str, int]]:
     return rows
 
 
-def capacity_lines(observed: dict | None) -> list[str]:
+def capacity_lines(observed: dict | None,
+                   now: datetime | None = None) -> list[str]:
     """The Capacity block: held/cap per pool, held/ceiling per front role,
     and who is waiting on a pool that has nothing left to give.
 
@@ -356,22 +434,34 @@ def capacity_lines(observed: dict | None) -> list[str]:
     so reading them here would keep showing the old ceiling after `foreman
     cap` until the collector is restarted. Only the held counts ride along
     in observed.json.
+
+    A pool that is out until a named reset prints that instead of
+    held/cap, for as long as the reset is in the future.
     """
     pool_view = (observed or {}).get("pools")
     pool_view = pool_view if isinstance(pool_view, dict) else {}
     held_pool = held_by_pool()
     allocations = front_allocations()
     held_front = held_by_front_role()
+    out_now = out_pools(now)
 
     names = set(held_pool)
     names.update(name for name in pool_view if isinstance(name, str))
     names.update(pool_for_role(role) for _front, role, _n in allocations)
+    names.update(out_now)
 
     settings = config.load()
 
     waiting = waiting_by_pool()
     lines: list[str] = []
     for pool in sorted(names):
+        record = out_now.get(pool)
+        if record is not None:
+            until = _parse_iso(record.get("out_until"))
+            because = record.get("because") or "quota"
+            when = format_out_until(until) if until is not None else ""
+            lines.append(f"  {pool}: out until {when} ({because})")
+            continue
         total = settings.cap(pool)
         held = held_pool.get(pool, 0)
         if total is None and held == 0:

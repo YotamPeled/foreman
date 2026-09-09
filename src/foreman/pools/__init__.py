@@ -33,6 +33,10 @@ Adapter contract (the whole interface a new pool must implement):
 - ``usage(session) -> dict | None``: ``{"input_tokens": int,
   "output_tokens": int}`` where the vendor exposes a counter, else
   ``None`` — a pool with no counter reports nothing, never an invention.
+- ``refusal(session) -> dict | None``: ``{"kind": "quota",
+  "reset": "<iso8601>", "detail": "<one line>"}`` when this session's
+  transcript shows the vendor refusing for capacity reasons and names
+  a reset instant, else ``None`` — a pool is never put out on a guess.
 - ``verdict(path) -> dict`` (review-capable pools): the review job's
   verdict file normalised to ``{"passed": bool, "summary": str}``; every
   pool uses the one reading in :mod:`foreman.pools._common`.
@@ -93,6 +97,12 @@ class PoolAdapter:
 
     def usage(self, session: Session) -> dict | None:
         """Token use, or None where the vendor exposes no counter."""
+        return None
+
+    def refusal(self, session: Session) -> dict | None:
+        """{"kind": "quota", "reset": "<iso8601>", "detail": "<one line>"}
+        when this session's transcript shows the vendor refusing for
+        capacity reasons, else None."""
         return None
 
 
