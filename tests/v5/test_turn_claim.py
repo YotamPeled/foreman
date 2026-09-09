@@ -219,6 +219,20 @@ def test_the_turn_script_records_the_process_on_the_marker(env):
         wake_module.turn_ended(sid)
 
 
+def test_a_stamp_keeps_the_turn_s_own_start_time(env):
+    """The stamp fills in a pid; it does not restart the turn. Resetting
+    ``started_at`` would make an old turn look fresh, and the clock reads
+    that stamp to decide whether a turn is still running."""
+    wake_module.turn_started(SUP, now=NOW)
+    before = store.read_snapshot(paths.session_turn_path(SUP), default=None)
+    assert isinstance(before, dict)
+    wake_module.record_turn_pid(SUP, WRAPPER, pid_starttime=START)
+    after = store.read_snapshot(paths.session_turn_path(SUP), default=None)
+    assert isinstance(after, dict)
+    assert after["started_at"] == before["started_at"]
+    assert after["pid"] == WRAPPER
+
+
 def test_a_stamp_before_the_marker_exists_still_claims(env):
     """A stamp that lands before the marker exists still claims: the
     shell that runs it is the turn, so a missing marker is a race, not
