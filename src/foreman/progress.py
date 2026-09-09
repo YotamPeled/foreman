@@ -812,7 +812,8 @@ def evidence_main(on: str, claim: str, status: str,
 
 
 def finding_main(on: str, class_: str, title: str,
-                 detail: str) -> int:
+                 detail: str,
+                 output_file: str | None = None) -> int:
     verb = "finding"
     me, violations = caller.resolve(verb)
     key = (on or "").strip()
@@ -827,6 +828,11 @@ def finding_main(on: str, class_: str, title: str,
     body = (detail or "").strip()
     if not body:
         violations.append("field '--detail' is required")
+    file_text = (output_file or "").strip()
+    if file_text:
+        unreadable = _unreadable_output_file(file_text)
+        if unreadable:
+            violations.append(unreadable)
     front: str | None = None
     stored_on = key
     if key:
@@ -853,13 +859,20 @@ def finding_main(on: str, class_: str, title: str,
     caller.check_self_contained(headline, "finding title")
     who = caller.by_line(me)
     fid = ids.mint("finding")
+    copied = ""
+    if file_text:
+        dest_dir = paths.session_dir(who) / "findings"
+        basename = Path(file_text).name or "output"
+        copied = _store_output_file(
+            file_text, dest_dir / f"{fid}-{basename}")
     store.append_ledger(
         paths.front_findings_path(front),
         entities.Finding(id=fid, on=stored_on, class_=word, title=headline,
-                         detail=body, evidence_ref="").to_dict(),
+                         detail=body, evidence_ref=copied).to_dict(),
         session_id=who,
     )
-    print(f"{fid} on {stored_on}")
+    extra = f" evidence: {copied}" if copied else ""
+    print(f"{fid} on {stored_on}{extra}")
     return 0
 
 
@@ -1063,11 +1076,14 @@ def add_finding_arguments(sub: argparse.ArgumentParser) -> None:
     sub.add_argument("--title", default=None,
                      help="self-contained title (required)")
     sub.add_argument("--detail", default=None, help="detail (required)")
+    sub.add_argument("--output-file", dest="output_file", default=None,
+                     help="path to evidence, copied under the caller's session")
 
 
 @cli.subcommand("finding", help="Append a finding record.")
 def _finding_entry(args: argparse.Namespace) -> int:
-    return finding_main(args.on, args.class_, args.title, args.detail)
+    return finding_main(args.on, args.class_, args.title, args.detail,
+                        output_file=args.output_file)
 
 
 _finding_entry.add_arguments = add_finding_arguments  # type: ignore[attr-defined]

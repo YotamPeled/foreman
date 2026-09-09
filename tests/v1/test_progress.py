@@ -1115,3 +1115,69 @@ def test_job_verify_help_names_output_file(env, capsys):
         cli.main(["job", "verify", "--help"])
     assert caught.value.code == 0
     assert "--output-file" in capsys.readouterr().out
+
+
+def test_finding_output_file_copies_under_the_caller_session(
+        env, monkeypatch, capsys):
+    """`--output-file` keeps a finding's evidence as a file named by id.
+
+    Without the flag the record is what it is today: `evidence_ref` empty.
+    """
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    first = tasks_by_title("flow")["first"]["id"]
+    src = env / "verdict.txt"
+    content = b"the long verdict\nacross two lines\n"
+    src.write_bytes(content)
+
+    assert run(monkeypatch, ["finding", "--on", "first",
+                             "--class", "scope",
+                             "--title", "The first draft needs a bound",
+                             "--detail", "See the attached verdict",
+                             "--output-file", str(src)], SUP) == 0
+    out = capsys.readouterr().out
+    findings = store.read_ledger(paths.front_findings_path("flow"))
+    assert len(findings) == 1
+    fid = findings[0]["id"]
+    dest = paths.session_dir(SUP) / "findings" / f"{fid}-{src.name}"
+    assert dest.is_file()
+    assert dest.read_bytes() == content
+    assert findings[0]["evidence_ref"] == str(dest.resolve())
+    assert f"evidence: {dest.resolve()}" in out
+
+    assert run(monkeypatch, ["finding", "--on", "first",
+                             "--class", "scope",
+                             "--title", "A second finding has no file",
+                             "--detail", "Nothing to attach"], SUP) == 0
+    capsys.readouterr()
+    findings = store.read_ledger(paths.front_findings_path("flow"))
+    assert len(findings) == 2
+    assert findings[1]["evidence_ref"] == ""
+    assert findings[1]["on"] == first
+
+
+def test_finding_refuses_an_unreadable_output_file_by_name(
+        env, monkeypatch, capsys):
+    """Same read refusal as job verify: named, and nothing is written."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    missing = env / "no-such-verdict.txt"
+    before = store.read_ledger(paths.front_findings_path("flow"))
+    assert run(monkeypatch, ["finding", "--on", "first",
+                             "--class", "scope",
+                             "--title", "A title that never lands",
+                             "--detail", "Nothing to attach",
+                             "--output-file", str(missing)], SUP) == 1
+    _, err = capsys.readouterr()
+    assert "cannot read --output-file" in err
+    assert str(missing) in err
+    assert store.read_ledger(paths.front_findings_path("flow")) == before
+    assert not (paths.session_dir(SUP) / "findings").exists()
+
+
+def test_finding_help_names_output_file(env, capsys):
+    """`finding --help` names the option."""
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["finding", "--help"])
+    assert caught.value.code == 0
+    assert "--output-file" in capsys.readouterr().out
