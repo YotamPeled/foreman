@@ -52,7 +52,7 @@
    "isHeadless": true,
    "landOn": "main",
    "landed": 1,
-   "lastTurnS": 1140,
+   "lastTurnS": -30,
    "monitors": [
     {
      "measuredS": 3600,
@@ -395,7 +395,7 @@
     "isHeadless": true,
     "landOn": "main",
     "landed": 1,
-    "lastTurnS": 1140,
+    "lastTurnS": -30,
     "monitors": [
      {
       "measuredS": 3600,

@@ -23,6 +23,7 @@ Item {
   }
 
   function ageText(s) {
+    s = Foreman.Model.liveAge(s)
     if (typeof s !== "number" || !(s >= 0)) return "?"
     var m = Math.floor(s / 60)
     if (m < 1) return Math.floor(s) + "s"

@@ -18,6 +18,7 @@ Item {
   // chips sit, not the scheme.
 
   function ageText(s) {
+    s = Foreman.Model.liveAge(s)
     if (!(s >= 0)) return "waited unknown"
     var m = Math.floor(s / 60)
     if (m < 1) return "waited " + Math.floor(s) + "s"

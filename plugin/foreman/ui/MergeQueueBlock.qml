@@ -67,8 +67,8 @@ Item {
     if (row.state === "landed")
       return " · " + root.clockText(row.landedS) + " · " + root.reviewText(row)
     var age = row.state === "merging"
-      ? "started " + root.ageText(row.requestedS) + " ago"
-      : "waited " + root.ageText(row.requestedS)
+      ? "started " + root.ageText(Foreman.Model.liveAge(row.requestedS)) + " ago"
+      : "waited " + root.ageText(Foreman.Model.liveAge(row.requestedS))
     return " · " + root.reviewText(row) + " · " + age
   }
 

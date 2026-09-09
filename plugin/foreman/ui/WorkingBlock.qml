@@ -80,6 +80,7 @@ Item {
 
   // A human age as the status screen reads it: 14m, 2h. Never a timestamp.
   function ageWord(s) {
+    s = Foreman.Model.liveAge(s)
     if (s === null || s === undefined) return "?"
     var total = Math.max(0, Math.floor(s))
     if (total < 60) return total + "s"
@@ -220,7 +221,7 @@ Item {
       var oldest = waiting[0]
       for (var w = 1; w < waiting.length; w++)
         if ((waiting[w].waitedS || 0) > (oldest.waitedS || 0)) oldest = waiting[w]
-      var mins = Math.max(0, Math.round((oldest.waitedS || 0) / 60))
+      var mins = Math.max(0, Math.round((Foreman.Model.liveAge(oldest.waitedS) || 0) / 60))
       var pool = Foreman.Model.poolFor(oldest.role || "")
       segs.push("waiting " + mins + " min for a " + root.esc(pool) + " slot")
     }

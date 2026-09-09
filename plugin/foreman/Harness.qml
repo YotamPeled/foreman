@@ -44,9 +44,10 @@ ShellRoot {
       out.push("front." + row.name + ".doingNow " + row.doingNow)
       out.push("front." + row.name + ".headless " + row.isHeadless)
       out.push("front." + row.name + ".wakeReason " + row.wakeReason)
-      out.push("front." + row.name + ".wakeAgeS " + row.wakeAgeS)
+      out.push("front." + row.name + ".wakeAgeS " + Foreman.Model.liveAge(row.wakeAgeS))
       out.push("front." + row.name + ".turnCount " + row.turnCount)
-      out.push("front." + row.name + ".lastTurnS " + row.lastTurnS)
+      out.push("front." + row.name + ".lastTurnS " + Foreman.Model.liveAge(row.lastTurnS))
+      out.push("front." + row.name + ".doingAgeS " + Foreman.Model.liveAge(row.doingAgeS))
       out.push("front." + row.name + ".turnRunning " + row.turnRunning)
       out.push("front." + row.name + ".remaining " + row.remaining.join("|"))
       out.push("front." + row.name + ".blockedOnOwner " + row.blockedOnOwner.join("|"))
@@ -60,12 +61,33 @@ ShellRoot {
         out.push("task." + row.name + "." + row.tasks[t].id + ".jobs " + jobs.join("|"))
       }
     }
+    var head = Foreman.Model.header
+    out.push("header.collectorAt " + head.collectorAt)
+    out.push("header.collectorAgeS " + head.collectorAgeS)
+    var need = Foreman.Model.needsYou
+    for (var n = 0; n < need.rows.length; n++)
+      out.push("needsYou." + need.rows[n].id + ".waitedS "
+               + Foreman.Model.liveAge(need.rows[n].waitedS))
+    var probs = Foreman.Model.problems
+    for (var p = 0; p < probs.rows.length; p++)
+      out.push("problems." + (probs.rows[p].subject || p) + ".sinceS "
+               + Foreman.Model.liveAge(probs.rows[p].sinceS))
     var cap = Foreman.Model.capacity
     for (var c = 0; c < cap.rows.length; c++)
       out.push("capacity." + cap.rows[c].pool + ".waiting " + cap.rows[c].waiting)
     var queue = Foreman.Model.jobQueue
-    for (var q = 0; q < queue.rows.length; q++)
+    for (var q = 0; q < queue.rows.length; q++) {
       out.push("job." + queue.rows[q].id + ".model " + queue.rows[q].model)
+      out.push("job." + queue.rows[q].id + ".waitedS "
+               + Foreman.Model.liveAge(queue.rows[q].waitedS))
+    }
+    var merges = Foreman.Model.mergeQueue
+    for (var m = 0; m < merges.rows.length; m++) {
+      out.push("merge." + merges.rows[m].id + ".requestedS "
+               + Foreman.Model.liveAge(merges.rows[m].requestedS))
+      out.push("merge." + merges.rows[m].id + ".landedS "
+               + Foreman.Model.liveAge(merges.rows[m].landedS))
+    }
     // The queue holds only planned and queued jobs, so the models of
     // running and finished jobs are reported off their task rows instead.
     for (var a = 0; a < fronts.length; a++)

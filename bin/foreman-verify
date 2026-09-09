@@ -34,6 +34,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
@@ -149,14 +150,18 @@ EXPECTED_LIVE = {
 #:   harbor.headless        ses-hb0001 rosters headless with a wake, a turn
 #:                          and a fresh marker: the Working line's facts
 #:   harbor.wakeReason      the session's one event, "job returned"
-#:   harbor.wakeAgeS        that event's 14:40 stamp to the 15:00 collector
-#:                          clock: 1200 seconds
 #:   harbor.turnCount       the session's one turn record
-#:   harbor.lastTurnS       that turn's 14:41 stamp to the 15:00 clock: 1140
 #:   harbor.turnRunning     the turn.json marker at 14:59 is fresher than
 #:                          the 600-second staleness: a turn is running
 #:   quay.headless          no supervisor and no roster flag: no facts, and
 #:                          the supervisor line reads as it always has
+#:
+#: Ages are not pinned here. The panel measures them against its own
+#: clock, not the collector tick, and check_ages owns that: lastTurnS
+#: would be -30 against observed.at (the turn is stamped 15:00:30, after
+#: the 15:00 tick) and is instead the wall-clock age of that stamp;
+#: every other age the harness prints is non-negative; collectorAgeS
+#: still ages observed.at.
 EXPECTED_LIVE_ROWS = {
     "front.harbor.doingNow": "Second soundings running, 8 of 12 read",
     "front.harbor.remaining": "second soundings|buoy labels|tide window",
@@ -176,9 +181,7 @@ EXPECTED_LIVE_ROWS = {
     "front.harbor.projectedFinish": "2026-06-02T16:30:00.000Z",
     "front.harbor.headless": "true",
     "front.harbor.wakeReason": "job returned",
-    "front.harbor.wakeAgeS": "1200",
     "front.harbor.turnCount": "1",
-    "front.harbor.lastTurnS": "1140",
     "front.harbor.turnRunning": "true",
     "front.quay.headless": "false",
     "front.quay.turnCount": "0",
@@ -186,6 +189,21 @@ EXPECTED_LIVE_ROWS = {
 }
 #: The one row fact read back as a float rather than compared as text.
 EXPECTED_LIVE_RATE = 14 / 3
+
+#: Live-shape stamps check_ages measures against the wall clock. Hand
+#: derived from fixture-live: observed.json `at`, and the harbor
+#: supervisor's one turn, written 30 seconds after that tick so a
+#: collector-clock age is negative.
+LIVE_OBSERVED_AT = "2026-06-02T15:00:00+00:00"
+LIVE_LAST_TURN_AT = "2026-06-02T15:00:30+00:00"
+AGE_SLACK_S = 120
+
+#: DETAIL keys that are ages. A suffix match, never a parse of the
+#: model's own field list: the harness names what it prints.
+AGE_KEY_SUFFIXES = (
+    "AgeS", "lastTurnS", "waitedS", "sinceS", "requestedS", "landedS",
+    "measuredS",
+)
 
 #: What `panel --blocks` must read off the headless render against the
 #: mock fixture in plugin/foreman/test/fixture. Hand-derived from the
@@ -620,6 +638,80 @@ def check_live_rows(details: dict) -> None:
                       % (len(wrong), "\n  ".join(wrong)))
 
 
+def _wall_age_s(iso: str) -> float:
+    """Seconds from `iso` to now. The same question the panel's clock asks."""
+    moment = datetime.fromisoformat(iso)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return (datetime.now(timezone.utc) - moment).total_seconds()
+
+
+def _age_key(key: str) -> bool:
+    return any(key.endswith(suffix) for suffix in AGE_KEY_SUFFIXES)
+
+
+def _parse_age(value: str):
+    """A harness age: a number, or one of the empty forms QML prints."""
+    if value in ("", "null", "undefined"):
+        return None
+    try:
+        return float(value)
+    except ValueError:
+        raise Failure("ages (live-shape): not a number: %r" % value)
+
+
+def check_ages(details: dict) -> None:
+    """Every age the harness prints is non-negative, lastTurnS is the
+    wall-clock age of a stamp after observed.at, and collector freshness
+    still ages observed.at.
+
+    The break it catches: Model.now was observed.at, so a turn written
+    between ticks rendered negative. Clamping to 0 without switching
+    clocks also fails: lastTurnS would be 0, not months.
+    """
+    missing = [key for key in ("front.harbor.lastTurnS",
+                               "front.harbor.wakeAgeS",
+                               "header.collectorAt",
+                               "header.collectorAgeS")
+               if key not in details]
+    if missing:
+        raise Failure("ages (live-shape): the model never reported "
+                      + ", ".join(missing))
+
+    wrong = []
+    for key, raw in details.items():
+        if not _age_key(key):
+            continue
+        age = _parse_age(raw)
+        if age is None:
+            continue
+        if age < 0:
+            wrong.append("%s: got %r, ages are not negative" % (key, raw))
+    if wrong:
+        raise Failure("ages (live-shape): %d age(s) negative:\n  %s"
+                      % (len(wrong), "\n  ".join(wrong)))
+
+    got = _parse_age(details["front.harbor.lastTurnS"])
+    want = _wall_age_s(LIVE_LAST_TURN_AT)
+    if got is None or abs(got - want) > AGE_SLACK_S:
+        raise Failure("ages (live-shape): front.harbor.lastTurnS: got %r, "
+                      "the wall clock holds ~%.0f "
+                      "(turn %s is after observed.at %s)"
+                      % (details["front.harbor.lastTurnS"], want,
+                         LIVE_LAST_TURN_AT, LIVE_OBSERVED_AT))
+
+    if details["header.collectorAt"] != LIVE_OBSERVED_AT:
+        raise Failure("ages (live-shape): header.collectorAt: got %r, "
+                      "observed.at is %r"
+                      % (details["header.collectorAt"], LIVE_OBSERVED_AT))
+    cgot = _parse_age(details["header.collectorAgeS"])
+    cwant = _wall_age_s(LIVE_OBSERVED_AT)
+    if cgot is None or abs(cgot - cwant) > AGE_SLACK_S:
+        raise Failure("ages (live-shape): header.collectorAgeS: got %r, "
+                      "observed.at ages to ~%.0f"
+                      % (details["header.collectorAgeS"], cwant))
+
+
 def loads(state_dir: Path) -> int:
     files = check_lint()
     print("qmllint: %d QML file(s) clean" % len(files))
@@ -634,8 +726,12 @@ def loads(state_dir: Path) -> int:
     for name in BLOCKS:
         print("live %s %d" % (name, live["counts"][name]))
     check_live_rows(live["details"])
+    check_ages(live["details"])
     print("live rows: %d row fact(s) as the fixture holds them"
           % (len(EXPECTED_LIVE_ROWS) + 1))
+    print("live ages: lastTurnS is the wall-clock age of a stamp after "
+          "observed.at; no printed age is negative; collectorAgeS still "
+          "ages observed.at")
     print("loads: the plugin lints and its model folds both fixtures "
           "into all eight blocks")
     return 0

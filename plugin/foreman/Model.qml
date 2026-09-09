@@ -42,11 +42,36 @@ QtObject {
     return root.home + "/.local/state/foreman"
   }
 
-  // The collector's own clock, so every age on the panel is measured from
-  // the same tick rather than from when a binding happened to re-evaluate.
+  // Two clocks. `now` is the collector's last tick (observed.at), and it
+  // stays that: the header time, a projected finish, and a landing clock
+  // reconstructed from a baked age all ask how stale the observation is,
+  // or what the collector thought "now" was. Every age the panel renders
+  // as a duration is measured from `clockMs` instead — the panel's own
+  // wall clock, refreshed on the same 2 second poll — so a row written
+  // between ticks is not in the future, and a row's age advances between
+  // ticks instead of freezing and then jumping.
   readonly property string now: root.feed.now || ""
+  property real clockMs: Date.now()
 
   signal changed()
+
+  function tickClock() {
+    root.clockMs = Date.now()
+  }
+
+  // Seconds from a stamp to the panel clock, given the collector-relative
+  // age the file already carries. A stamp after the collector tick, or
+  // after the wall clock (skew, a hand-edited ledger), reads as 0, never
+  // as a minus.
+  function liveAge(s) {
+    var _tick = root.clockMs
+    if (typeof s !== "number") return s
+    var elapsed = 0
+    var origin = Date.parse(root.now)
+    if (!isNaN(origin)) elapsed = (_tick - origin) / 1000
+    var age = s + elapsed
+    return age < 0 ? 0 : age
+  }
 
   // ---- the eight blocks of DESIGN section 13 -------------------------------
   // Read, never computed. The shapes are the ones the ui/ files bind to.
@@ -152,23 +177,26 @@ QtObject {
     root.roster = data.roster || ({})
     root.slots = data.slots || []
     root.frozen = data.frozen === true
+    root.tickClock()
     root.freshenCollector()
     root.changed()
   }
 
-  // The one fact the file cannot carry frozen: how old the collector's last
-  // tick is. Every other age is measured from that tick, so it belongs to
-  // the file; this one is measured against the wall clock, and freezing it
-  // would leave a dead collector reading "alive" forever. The file carries
-  // the tick's timestamp and this ages it — one Date.parse, on the same
-  // 2 second beat the poll already runs.
+  // The one fact that still reads from observed.at: how old the
+  // collector's last tick is. Every other age is measured from the panel
+  // clock; this one is how stale the observation is, and freezing it
+  // would leave a dead collector reading "alive" forever. The file
+  // carries the tick's timestamp (`collectorAt` = observed.at) and this
+  // ages it against clockMs — one Date.parse, on the same 2 second beat
+  // the poll already runs.
   function freshenCollector() {
     var head = root.header
     if (!head) return
     var age = null
     if (typeof head.collectorAt === "string" && head.collectorAt !== "") {
       var at = Date.parse(head.collectorAt)
-      if (!isNaN(at)) age = (Date.now() - at) / 1000
+      if (!isNaN(at)) age = (root.clockMs - at) / 1000
+      if (age !== null && age < 0) age = 0
     }
     if (head.collectorAgeS === age) return
     var next = ({})
@@ -213,10 +241,14 @@ QtObject {
     running: true
     repeat: true
     onTriggered: {
+      root.tickClock()
       root.freshenCollector()
       panelFile.reload()
     }
   }
 
-  Component.onCompleted: panelFile.reload()
+  Component.onCompleted: {
+    root.tickClock()
+    panelFile.reload()
+  }
 }
