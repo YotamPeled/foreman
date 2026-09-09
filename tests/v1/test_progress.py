@@ -555,6 +555,10 @@ def test_finding_appends_and_names_its_subject(
     assert len(findings) == 1
     assert findings[0]["on"] == tasks_by_title("flow")["second"]["id"]
     assert findings[0]["class"] == "scope"
+    # append_ledger already stamps `by` from the session; that is the
+    # filer, so a finding filed from outside is distinguishable without
+    # a new field.
+    assert findings[0]["by"] == SUP
     assert run(monkeypatch, ["finding", "--on", "job-flow1",
                              "--class", "scope",
                              "--title", "A title",
@@ -607,6 +611,67 @@ def test_two_findings_in_the_same_millisecond_get_different_ids(
     assert all(isinstance(fid, str) and fid.startswith("fnd-") for fid in ids)
     assert ids[0] in first_out
     assert ids[1] in second_out
+
+
+def test_supervisor_of_another_front_files_a_finding(
+        env, monkeypatch, capsys):
+    """A finding moves nothing, so a supervisor rostered on another
+    front may file one. It lands on the named front's ledger, and `by`
+    is the filer's session — append_ledger already stamps that, so no
+    extra field."""
+    add_front(env, monkeypatch, capsys, name="flow")
+    add_front(env, monkeypatch, capsys, name="harbor")
+    store.write_snapshot(paths.roster_path(), {"sessions": {
+        SUP: sup_session(SUP, "flow"),
+        OTHER_SUP: sup_session(OTHER_SUP, "harbor")}})
+    assert run(monkeypatch, ["finding", "--on", "flow",
+                             "--class", "scope",
+                             "--title", "The other front's draft is missing a bound",
+                             "--detail", "Seen while preparing the next front"],
+               OTHER_SUP) == 0
+    capsys.readouterr()
+    findings = store.read_ledger(paths.front_findings_path("flow"))
+    assert len(findings) == 1
+    assert findings[0]["on"] == "flow"
+    assert findings[0]["by"] == OTHER_SUP
+    assert store.read_ledger(paths.front_findings_path("harbor")) == []
+
+
+def test_unknown_session_cannot_file_a_finding(env, monkeypatch, capsys):
+    """A caller the roster does not know is refused in the same words
+    as any other progress verb, and nothing is appended."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("flow")
+    before = store.read_ledger(paths.front_findings_path("flow"))
+    assert run(monkeypatch, ["finding", "--on", "flow",
+                             "--class", "scope",
+                             "--title", "A title a ghost cannot file",
+                             "--detail", "Nothing to record"], GHOST) == 1
+    _, err = capsys.readouterr()
+    assert f"unknown session '{GHOST}' (unregistered writer)" in err
+    assert store.read_ledger(paths.front_findings_path("flow")) == before
+
+
+def test_worker_may_not_file_a_finding(env, monkeypatch, capsys):
+    """The verb opens to supervisors, not to everyone: a worker is
+    refused by role and nothing is appended."""
+    add_front(env, monkeypatch, capsys)
+    store.write_snapshot(paths.roster_path(), {"sessions": {
+        SUP: sup_session(SUP, "flow"),
+        WRK: entities.Session.from_dict({
+            "id": WRK, "role": "muse", "pool": "muse", "model": "muse",
+            "front": "flow", "job": None, "pid": None,
+            "launched_by": SUP,
+            "started_at": iso(NOW - timedelta(minutes=5)),
+            "state": "running"}).to_dict()}})
+    before = store.read_ledger(paths.front_findings_path("flow"))
+    assert run(monkeypatch, ["finding", "--on", "flow",
+                             "--class", "scope",
+                             "--title", "A title a worker cannot file",
+                             "--detail", "Nothing to record"], WRK) == 1
+    _, err = capsys.readouterr()
+    assert "role 'muse' may not call 'finding'" in err
+    assert store.read_ledger(paths.front_findings_path("flow")) == before
 
 
 def test_worker_may_not_move_a_task(env, monkeypatch, capsys):

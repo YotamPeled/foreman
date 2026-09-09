@@ -8,9 +8,11 @@ free-standing records to the front's ledgers. A CONFIRMED claim with no
 command behind it is refused: running the command is what turns a claim
 into evidence.
 
-Every verb refuses a caller who is not the front's supervisor, and every
-state change appends a revised copy of the record — no byte already
-written is ever edited.
+Every verb that moves work refuses a caller who is not the front's
+supervisor. ``finding`` is the exception: it records something seen and
+moves nothing, so any roster supervisor may file one, and the ledger
+stamps who. Every state change appends a revised copy of the record —
+no byte already written is ever edited.
 """
 
 from __future__ import annotations
@@ -756,7 +758,8 @@ def finding_main(on: str, class_: str, title: str,
                 violations.append(f"unknown task or front '{key}'")
             else:
                 front, stored_on = task_front, task_record.get("id") or key
-    _check(me, front, verb, violations)
+    # Any roster supervisor, not only the one who holds this front.
+    caller.check_role(me, verb, SUPERVISOR, violations=violations)
     if violations:
         return _refuse(violations)
     assert front is not None
