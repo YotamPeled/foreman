@@ -77,6 +77,12 @@ def install_binding(path: str | Path | None = None) -> str:
     The refusal holds on every install, including a reinstall over an
     existing block: our own block never counts, so a competing binding
     anywhere outside it still refuses.
+
+    The edit is exactly reversible: a fresh install appends one newline,
+    the block and one newline to the untouched original bytes (nothing is
+    ever stripped, so trailing blank lines survive), and reinstalling over
+    an existing block swaps that span in place. `uninstall_binding`
+    removes exactly that unit.
     """
     target = Path(path).expanduser() if path else bindings_path()
     current = target.read_text() if target.exists() else ""
@@ -89,10 +95,16 @@ def install_binding(path: str | Path | None = None) -> str:
                      BINDINGS_BLOCK, current, flags=re.S)
         if new == current:
             return "already there"
+    elif current == "":
+        if target.exists():
+            # Existed but empty: the leading newline keeps this case apart
+            # from a file the install created, so uninstall restores the
+            # empty file instead of deleting it.
+            new = "\n" + BINDINGS_BLOCK + "\n"
+        else:
+            new = BINDINGS_BLOCK + "\n"
     else:
-        new = current.rstrip("\n") + "\n\n" + BINDINGS_BLOCK + "\n"
-        if new == current:
-            return "already there"
+        new = current + "\n" + BINDINGS_BLOCK + "\n"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(new)
     return "added" if BEGIN not in current else "reinstalled"
@@ -104,6 +116,13 @@ def uninstall_binding(path: str | Path | None = None) -> str:
     A block whose content no longer matches what install wrote — a line
     the owner added inside the markers, for example — is left for a
     person rather than destroyed.
+
+    Reversal is byte-exact for anything install wrote: a fresh install
+    ends the file with the block and one newline, so uninstall strips
+    exactly that unit; a file that did not exist before the install does
+    not exist after the uninstall. A block sitting mid-file (only a hand
+    move puts one there) is removed best-effort: the block span and one
+    following newline, leaving the owner's lines alone.
     """
     target = Path(path).expanduser() if path else bindings_path()
     if not target.exists():
@@ -119,11 +138,25 @@ def uninstall_binding(path: str | Path | None = None) -> str:
         return ("skipped, the managed block in "
                 f"{target} was edited by hand; "
                 "remove it by hand and run again")
-    new = re.sub(r"\n*" + re.escape(BEGIN) + r".*?" + re.escape(END) + r"\n*",
-                 "\n", current, flags=re.S)
-    if new == current:
-        return "none found"
-    target.write_text(new)
+    unit = BINDINGS_BLOCK + "\n"
+    if current == unit:
+        # Install created this file outright: take it back.
+        target.unlink()
+        return "removed"
+    if current == "\n" + unit:
+        # Install found an empty file: give the empty file back.
+        target.write_text("")
+        return "removed"
+    suffix = "\n" + unit
+    if current.endswith(suffix):
+        target.write_text(current[:-len(suffix)])
+        return "removed"
+    # Mid-file block: drop the span and at most the newline after it.
+    if current[found.end():found.end() + 1] == "\n":
+        rest = current[:found.start()] + current[found.end() + 1:]
+    else:
+        rest = current[:found.start()] + current[found.end():]
+    target.write_text(rest)
     return "removed"
 
 
