@@ -42,12 +42,13 @@ SUPERVISOR_TOOLS = frozenset({
     "ask", "checkpoint", "doctor", "evidence", "finding", "front_done",
     "front_take", "job_fail", "job_verify", "kill", "launch", "measure",
     "merge_request", "register", "relaunch", "rule", "status", "task_add",
-    "task_built", "task_landed", "task_reset", "version",
+    "task_built", "task_landed", "task_reset", "version", "wake",
 })
 #: The foreman role's own row: answers and rules, never front or job verbs.
 FOREMAN_TOOLS = frozenset({
     "answer", "checkpoint", "doctor", "front_allocate", "inbox", "kill",
-    "launch", "register", "relaunch", "rule", "status", "version",
+    "launch", "register", "relaunch", "rule", "status", "tell", "version",
+    "wake",
 })
 #: A worker holds no verb, so only the gateless one survives.
 WORKER_TOOLS = frozenset({"version"})
@@ -151,9 +152,10 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     # 34 before the doctor/hooks/migrations job: doctor, freeze, thaw,
     # hook_install, hook_list, migrate; plus task add and front done from
     # the launches job, and kill, the verb the design gave the owner and
-    # this runtime had never shipped. Counted, not derived, so a verb
-    # added without intent fails here.
-    assert len(names) == 43
+    # this runtime had never shipped; plus tell and wake from the wake
+    # events job, the clock the headless turn loop reads. Counted, not
+    # derived, so a verb added without intent fails here.
+    assert len(names) == 45
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):
