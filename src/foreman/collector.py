@@ -1311,7 +1311,18 @@ def reload_after_config_change() -> None:
 
     `foreman cap` and `front allocate` call this once their own write is
     durable, so the `collector stale` line clears with no hand restart.
+
+    Only on the default world. A process running against an isolated
+    ``FOREMAN_STATE`` or ``FOREMAN_CONFIG`` — every test, and every proof
+    run — has no service of its own, and the one service on the machine
+    observes somebody else's state: restarting it there is a verb in a
+    sandbox reaching out and bouncing the owner's live collector. Found
+    by a test that flaked because a ceiling change in it restarted the
+    real one.
     """
+    if any(os.environ.get(name) for name in (paths.STATE_ENV,
+                                             paths.CONFIG_ENV)):
+        return
     restart_collector(quiet=True)
 
 

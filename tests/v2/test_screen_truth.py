@@ -465,3 +465,25 @@ def test_post_merge_hook_warns_and_restarts_without_a_main_checkout(
     assert proc.returncode == 0
     assert "FOREMAN_MAIN_CHECKOUT is not set" in proc.stderr
     assert "collector\nrestart\n" in calls.read_text(encoding="utf-8")
+
+
+def test_a_reload_never_leaves_an_isolated_world(monkeypatch):
+    """A ceiling change in a sandbox must not bounce the real collector.
+
+    Every test and every proof run works against an isolated
+    FOREMAN_STATE, which has no collector service of its own: the one
+    service on the machine observes somebody else's state directory. A
+    reload pushed from there restarts the owner's live collector. Found
+    by a test that flaked for exactly that reason.
+    """
+    calls = []
+    monkeypatch.setattr(collector_module, "restart_collector",
+                        lambda quiet=False: calls.append(quiet))
+    monkeypatch.setenv(paths.STATE_ENV, "/somewhere/isolated")
+    collector_module.reload_after_config_change()
+    assert calls == []
+
+    monkeypatch.delenv(paths.STATE_ENV, raising=False)
+    monkeypatch.delenv(paths.CONFIG_ENV, raising=False)
+    collector_module.reload_after_config_change()
+    assert calls == [True]
