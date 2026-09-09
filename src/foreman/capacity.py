@@ -222,6 +222,21 @@ def running_by_pool(table: dict[int, dict] | None = None) -> dict[str, int]:
     return counts
 
 
+def _binary_is_foreman_worker(pool: str) -> bool:
+    """True when this pool's vendor binary is only ever a Foreman worker.
+
+    Read off the adapter. A pool that does not declare it, or that
+    nothing registers, defaults to True.
+    """
+    from . import pools as poolmod
+
+    try:
+        adapter = poolmod.get(pool)
+    except ValueError:
+        return True
+    return bool(getattr(adapter, "binary_is_foreman_worker", True))
+
+
 def ceiling(front: str | None, role: str) -> int | None:
     """The most sessions ``front`` may hold of ``role``, or None for none.
 
@@ -343,12 +358,14 @@ def launch_problems(role: str, pool: str, front: str | None,
     """The capacity refusals for one launch, in the order they are checked.
 
     The front's ceiling first, then the pool's cap against held slots,
-    then the same cap against vendor processes on the machine, then
+    then the same cap against vendor processes on the machine (only
+    for a pool whose binary is only ever a Foreman worker), then
     whether the pool is out until a named reset. Held and the box are
-    two numbers against one cap: the refusal fires when either reaches
-    it, and says which. Each names the role, the front, and the limit
-    it hit. A launch wrong on more than one count is told every one at
-    once, like every other refusal here.
+    two numbers against one cap: the held refusal fires for every
+    pool, the box refusal only for a pool that declares its binary
+    Foreman's. Each names the role, the front, and the limit it hit.
+    A launch wrong on more than one count is told every one at once,
+    like every other refusal here.
 
     ``table`` is the process table the box count is read from; ``None``
     takes a fresh snapshot.
@@ -367,7 +384,7 @@ def launch_problems(role: str, pool: str, front: str | None,
             problems.append(f"{_who(role, front)}: {held} held in pool "
                             f"{pool!r}, cap {cap}")
         running = running_by_pool(table).get(pool, 0)
-        if running >= cap:
+        if running >= cap and _binary_is_foreman_worker(pool):
             problems.append(f"{_who(role, front)}: {running} {pool} "
                             f"processes on the box, cap {cap}")
     record = pool_out(pool, now)

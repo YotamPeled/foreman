@@ -342,6 +342,25 @@ def _vendor_binary(manifest: PoolManifest) -> str:
     return ""
 
 
+def _binary_is_foreman_worker(manifest: PoolManifest) -> bool:
+    """Whether this directory pool's vendor binary is only ever a Foreman worker.
+
+    A ``[vendor]`` argv is the user's own command, so the default
+    stands. Otherwise the packaged adapter this directory wraps
+    declares it, the way ``binary`` is read. A pool that names
+    neither defaults to True.
+    """
+    if manifest.vendor_argv:
+        return True
+    if manifest.adapter:
+        from . import REGISTRY
+
+        impl = REGISTRY.get(manifest.adapter)
+        if impl is not None:
+            return bool(getattr(impl, "binary_is_foreman_worker", True))
+    return True
+
+
 class DirectoryPool(PoolAdapter):
     """A pool read from a directory: a user override or a new pool.
 
@@ -359,6 +378,7 @@ class DirectoryPool(PoolAdapter):
         self.interactive = manifest.interactive
         self.roles: tuple[str, ...] = manifest.roles
         self.binary = _vendor_binary(manifest)
+        self.binary_is_foreman_worker = _binary_is_foreman_worker(manifest)
 
     def _impl(self) -> PoolAdapter | None:
         if self.manifest.adapter is None:

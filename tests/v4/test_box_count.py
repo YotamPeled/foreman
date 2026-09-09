@@ -38,6 +38,10 @@ TWO_GROK = {
     42: {"cmdline": "grok --prompt-file b.md"},
 }
 
+NINE_CLAUDE = {
+    50 + i: {"cmdline": "claude -p --model opus"} for i in range(9)
+}
+
 
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
@@ -116,3 +120,78 @@ def test_capacity_lines_print_the_box_count_when_it_differs(env):
     agree = capacity.capacity_lines({}, table=ONE_GROK)
     assert "  grok: 1/3 held" in agree
     assert "running on the box" not in "\n".join(agree)
+
+
+def test_a_claude_launch_is_admitted_when_the_box_is_over_the_cap(env):
+    """Nine claude processes on the machine are the owner's own
+    sessions, not a swarm over its cap of two. Refusing on the box
+    count would refuse every Opus backup build. The number still
+    prints: it is true and worth seeing."""
+    problems = capacity.launch_problems(
+        "opus", "claude", "runtime-v4b", table=NINE_CLAUDE)
+    assert problems == []
+    assert not any("box" in line for line in problems)
+
+    lines = capacity.capacity_lines({}, table=NINE_CLAUDE)
+    assert "  claude: 0/2 held · 9 running on the box" in lines
+
+
+def test_a_grok_launch_is_refused_when_the_box_is_over_the_cap(env):
+    """The same table-shape on grok is a swarm over its cap: the binary
+    is only ever a Foreman worker. The refusal names the box, and the
+    Capacity block still prints the count."""
+    problems = capacity.launch_problems(
+        "grok", "grok", "runtime-v4b", table=TWO_GROK)
+    assert problems == [
+        "role 'grok' on front 'runtime-v4b': 2 grok processes on the box, "
+        "cap 1",
+    ]
+
+    lines = capacity.capacity_lines({}, table=TWO_GROK)
+    assert "  grok: 0/1 held · 2 running on the box" in lines
+
+
+def test_a_pool_that_declares_nothing_is_capped_on_the_box(env):
+    """A new pool is Foreman-owned unless it says otherwise. Forgetting
+    the attribute must not skip the refusal: that would let a new
+    vendor binary fill the machine."""
+
+    class Unspecified(PoolAdapter):
+        name = "unspecified"
+        binary = "unspecified"
+
+    pools.register("unspecified", Unspecified())
+    try:
+        assert cli.main(["cap", "unspecified", "1"]) == 0
+        table = {51: {"cmdline": "unspecified --prompt-file a.md"}}
+        problems = capacity.launch_problems(
+            "unspecified", "unspecified", None, table=table)
+        assert problems == [
+            "role 'unspecified' on no front: 1 unspecified processes "
+            "on the box, cap 1",
+        ]
+    finally:
+        pools.unregister("unspecified")
+
+
+def test_a_user_pool_wrapping_claude_inherits_the_declaration(env):
+    """A user directory wrapping the claude adapter is still the
+    owner's binary. Dropping the attribute on DirectoryPool would
+    refuse the clone on the box count the packaged pool just
+    stopped refusing."""
+    from foreman import paths
+
+    dest = paths.config_dir() / "pools" / "claude"
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "manifest.toml").write_text(
+        'name = "claude"\n'
+        'model = "claude-opus-5"\n'
+        'timeout_default = "20m"\n'
+        'interactive = false\n'
+        'adapter = "claude"\n',
+        encoding="utf-8")
+
+    problems = capacity.launch_problems(
+        "opus", "claude", "runtime-v4b", table=NINE_CLAUDE)
+    assert problems == []
+    assert not any("box" in line for line in problems)

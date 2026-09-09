@@ -158,6 +158,8 @@ class ClaudeAdapter(PoolAdapter):
     name = "claude"
     model = MODEL
     binary = "claude"
+    # The owner's own sessions run the same binary.
+    binary_is_foreman_worker = False
     timeout_default = "20m"
     interactive = False
 
