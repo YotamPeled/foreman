@@ -759,3 +759,68 @@ def test_windowed_prompt_has_no_headless_contract(env, capsys):
     out = capsys.readouterr().out
     prompt = Path(line(out, "role prompt: ")).read_text(encoding="utf-8")
     assert "How a headless turn works" not in prompt
+
+
+def test_a_wake_that_summons_records_the_id_it_learns(
+        env, fake_claude, fake_spawn, capsys, monkeypatch):
+    """A session that never learned a conversation summons on its next
+    wake — and keeps what that turn reports.
+
+    A vendor that dies before it names its session leaves the roster with
+    no id to resume, so the next wake runs the first-turn shape. If that
+    turn's id is not written down, every later wake summons afresh and
+    the supervisor never accumulates a conversation at all.
+    """
+    monkeypatch.setenv("FAKE_VENDOR", "")
+    sid = launch_headless_supervisor(env, capsys, monkeypatch, fake_spawn)
+    assert headless_module.read_vendor_session(sid) is None
+    assert roster()[sid].get("vendor_session") in (None, "")
+
+    monkeypatch.setenv("FAKE_VENDOR", VENDOR_ID)
+    wake_module.append_event(sid, "told", text="the front has a rule now")
+    result = headless_module.run_wake(sid, spawn=fake_spawn)
+    assert result["status"] == "ok"
+    assert [turn["kind"] for turn in turns_of(sid)] == ["first", "first"]
+    assert headless_module.read_vendor_session(sid) == VENDOR_ID
+
+    # Learned once: the wake after it resumes rather than summoning.
+    wake_module.append_event(sid, "told", text="and another rule")
+    assert headless_module.run_wake(sid, spawn=fake_spawn)["status"] == "ok"
+    assert [turn["kind"] for turn in turns_of(sid)] == [
+        "first", "first", "wake"]
+    assert f"--resume\n{VENDOR_ID}\n" in argv_blocks(fake_claude)[-1]
+
+
+def test_a_session_that_is_not_running_gets_no_turn(env, fake_claude,
+                                                    fake_spawn, capsys,
+                                                    monkeypatch):
+    """A wake for a session the roster has finished with runs nothing.
+
+    Events outlive the session they were written for: a job returns after
+    its supervisor was killed, a rule lands on a closed front. Waking a
+    dead session would summon a process for a seat nobody holds, so the
+    wake stays queued for whoever takes that seat next.
+    """
+    sid = launch_headless_supervisor(env, capsys, monkeypatch, fake_spawn)
+    turns_before = len(turns_of(sid))
+    entries = roster()
+    entries[sid] = dict(entries[sid], state="exited")
+    store.write_snapshot(paths.roster_path(), {"sessions": entries})
+
+    wake_module.append_event(sid, "job failed", job="job-0001",
+                             front="panel", task="tas-0001")
+    result = headless_module.run_wake(sid, spawn=fake_spawn)
+
+    assert result["status"] == "not-running"
+    assert result["attempts"] == []
+    assert len(turns_of(sid)) == turns_before
+    assert len(pending_of(sid)) == 1
+
+
+def test_the_relaunch_wake_tells_the_session_to_read_its_checkpoint(env):
+    """The relaunch event's text is the whole instruction the woken
+    session gets: a relaunched supervisor has no memory of its former
+    turns, so the sentence must send it to its checkpoint by name.
+    """
+    assert headless_module.RELAUNCH_TEXT == (
+        "you were relaunched, read your checkpoint")
