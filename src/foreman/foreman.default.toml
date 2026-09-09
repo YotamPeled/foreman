@@ -25,6 +25,16 @@
 # value flow 4 runs on.
 [launch]
 default_workspace = 6
+# A headless session — a supervisor or the merge desk summoned with
+# `--headless` — runs one turn per wake with no window and no workspace.
+# Interactive launch stays the default until the owner flips this: the
+# flag switches the default, it does not remove the interactive shape
+# (`--no-headless` still summons a window).
+headless = false
+# How long one headless turn may run before its transient unit ends it.
+# `RuntimeMaxSec` on the turn's unit; a turn past it is retried once
+# with the same event, then raised as `supervisor turn failed twice`.
+turn_timeout = "15m"
 
 [pool.muse]
 cap = 5

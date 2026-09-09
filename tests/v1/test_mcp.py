@@ -525,10 +525,20 @@ def test_supervisor_dry_run_prints_the_mcp_wiring(env, capsys):
     assert f"--mcp-config {config_path} --strict-mcp-config" in out
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    assert config == {"mcpServers": {"foreman": {
-        "type": "stdio", "command": "foreman", "args": ["mcp"],
-        "env": {"FOREMAN_SESSION": sid},
-    }}}
+    # rul-ym3xjam: the config names the absolute interpreter and package
+    # of the checkout the launch came from, never a bare `foreman` off
+    # PATH — a session summoned from a branch checkout runs that branch's
+    # verbs over MCP too.
+    server = config["mcpServers"]["foreman"]
+    assert server["type"] == "stdio"
+    assert server["command"] == str(Path(sys.executable).resolve())
+    assert server["command"] != "foreman"
+    assert server["args"] == ["-m", "foreman", "mcp"]
+    assert server["env"]["FOREMAN_SESSION"] == sid
+    expected_src = Path(__file__).resolve().parents[2] / "src"
+    assert (expected_src / "foreman" / "__init__.py").exists()
+    assert server["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(
+        expected_src)
 
 
 def test_relaunch_dry_run_rewrites_the_mcp_wiring(env, capsys):
@@ -539,6 +549,8 @@ def test_relaunch_dry_run_rewrites_the_mcp_wiring(env, capsys):
     vendor line must carry the role prompt, not a `--resume` the session
     could never be handed a prompt through.
     """
+    from foreman import mcp as mcp_module
+
     repo = make_repo(env / "repo")
     assert cli.main(["front", "add", str(PANEL_BRIEF)]) == 0
     capsys.readouterr()
@@ -557,8 +569,11 @@ def test_relaunch_dry_run_rewrites_the_mcp_wiring(env, capsys):
     config_path = Path(line(out, "mcp config: "))
     assert f"--mcp-config {config_path} --strict-mcp-config" in out
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    assert config["mcpServers"]["foreman"]["env"] == \
-        {"FOREMAN_SESSION": sid}
+    env = config["mcpServers"]["foreman"]["env"]
+    assert env["FOREMAN_SESSION"] == sid
+    expected_src = Path(__file__).resolve().parents[2] / "src"
+    assert (expected_src / "foreman" / "__init__.py").exists()
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(expected_src)
 
 
 def test_a_gate_written_with_a_qualified_role_is_still_read(env):

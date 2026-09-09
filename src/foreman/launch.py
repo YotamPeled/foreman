@@ -175,6 +175,15 @@ def add_launch_arguments(parser: argparse.ArgumentParser) -> None:
                              + WORKER_WINDOW_ENV + "=1 and refuses any caller "
                              "but the owner; workers and reviewers are never "
                              "on screen.")
+    parser.add_argument("--headless", action="store_true",
+                        help="summon a supervisor or the merge desk with no "
+                             "window: the session runs one `claude -p` turn "
+                             "per wake and holds no long-lived process. "
+                             "With neither this nor --no-headless the "
+                             "[launch] headless flag decides.")
+    parser.add_argument("--no-headless", action="store_true",
+                        help="summon with a window even when [launch] "
+                             "headless is true.")
     parser.add_argument("--dry-run", action="store_true",
                         help="do everything except start the process; print the command")
 
@@ -1434,7 +1443,9 @@ def supervisor_inner_command(*, pid_path: Path, session_id: str, repo: str,
     the front's latest checkpoint.
     """
     # The summoned session's verbs arrive as tools, and no other server's
-    # do: the config names `foreman mcp` for this session id, and the
+    # do: the config names this checkout's interpreter running
+    # `foreman mcp` for this session id (never a bare `foreman` off PATH,
+    # so a branch checkout's session runs that branch's verbs), and the
     # strict flag ignores every other source. A worker launch passes
     # neither flag on any pool (see the pool adapters), so a worker has
     # no server at all.
@@ -1686,14 +1697,25 @@ def predecessor_block(session_id: str | None,
     )
 
 
+#: The headless variant of the supervisor prompt: one event, act,
+#: checkpoint, end the turn. Same fields as the windowed template, so the
+#: same mapping renders both.
+SUPERVISOR_HEADLESS_TEMPLATE = "supervisor-headless"
+#: The headless variant of the merge-desk prompt. Same fields as the
+#: windowed desk template.
+MERGE_DESK_HEADLESS_TEMPLATE = "merge-desk-headless"
+
+
 def render_supervisor_prompt(*, front: str, record: dict, session_id: str,
                              repo: str, branch: str, role_prompt: Path,
                              predecessor: str | None,
-                             relaunched: bool = False) -> str:
+                             relaunched: bool = False,
+                             headless: bool = False) -> str:
     from .collector import DEFAULTS
 
     silent = float(DEFAULTS["supervisor_silent_seconds"]) / 60
-    return render_role_template(SUPERVISOR, {
+    template = SUPERVISOR_HEADLESS_TEMPLATE if headless else SUPERVISOR
+    return render_role_template(template, {
         "front": front,
         "session_id": session_id,
         "want": (record.get("want") or "(the brief records no want)").strip(),
@@ -1739,7 +1761,8 @@ def read_vendor_session(session_id: str) -> str | None:
 
 def _supervisor_session(session_id: str, front: str | None, repo: str,
                         launched_by: str | None,
-                        vendor_id: str | None = None) -> Session:
+                        vendor_id: str | None = None,
+                        headless: bool = False) -> Session:
     return Session(
         id=session_id,
         role=SUPERVISOR,
@@ -1751,6 +1774,7 @@ def _supervisor_session(session_id: str, front: str | None, repo: str,
         log=str(paths.session_log_path(session_id)),
         launched_by=launched_by,
         vendor_session=vendor_id,
+        headless=headless,
         started_at=store.utcnow_iso(),
         state="starting",
     )
@@ -1883,6 +1907,31 @@ def _print_supervisor(session_id: str, vendor_id: str, role_prompt: Path,
     print_world()
 
 
+def _print_headless(session_id: str, vendor_id: str | None,
+                      role_prompt: Path, vendor_argv: list[str],
+                      outer_argv: list[str],
+                      front: str | None = None,
+                      branch: str | None = None,
+                      mcp_config: Path | None = None) -> None:
+    """Report a headless summon: rostered with no window and no process."""
+    from . import headless as headless_module
+
+    print(f"session: {session_id}")
+    print(f"vendor session: {vendor_id or '(none yet — recorded off the first turn stream)'}")
+    print(f"role prompt: {role_prompt}")
+    if mcp_config is not None:
+        print(f"mcp config: {mcp_config}")
+    if front:
+        print(f"front prompt: {front_prompt_path(front)}")
+    if branch:
+        print(f"branch: {branch}")
+    print("window: none (headless — one turn per wake, no long-lived process)")
+    print("pid: (none — a headless session holds no process between turns)")
+    inner = headless_module.turn_script_inner(vendor_argv)
+    print(f"command: {_common.printable_command(outer_argv, inner)}")
+    print_world()
+
+
 def _confirm_started(pid: int | None) -> tuple[int | None, str | None]:
     """The process identity of a launch, or why it is not a launch at all.
 
@@ -1936,9 +1985,18 @@ def _record_failed(session_id: str) -> None:
 
 def launch_supervisor_main(args: argparse.Namespace,
                            problems: list[str]) -> int:
-    """`foreman launch supervisor <front> [--workspace N] [--dry-run]`."""
+    """`foreman launch supervisor <front> [--workspace N] [--headless] [--dry-run]`."""
+    from . import headless as headless_module
+
     front = args.pool
-    workspace = _resolve_window_workspace(args.workspace, problems)
+    headless = headless_module.resolve_launch_headless(args, problems)
+    if headless and getattr(args, "workspace", None) is not None:
+        problems.append(
+            f"--workspace {args.workspace!r} names a window workspace, but "
+            f"a headless session has no window and no workspace; "
+            f"drop --workspace")
+    workspace = None if headless \
+        else _resolve_window_workspace(args.workspace, problems)
     record = fronts.read_front_record(front) if front is not None else None
     if front is None:
         problems.append(
@@ -1978,6 +2036,9 @@ def launch_supervisor_main(args: argparse.Namespace,
     if problems:
         return refuse(*problems)
     assert record is not None and branch is not None
+    if headless:
+        return launch_supervisor_headless(
+            args, front=front, record=record, repo=repo, branch=branch)
 
     session_id = ids.mint("session")
     # The vendor mints no id of its own for a fresh session, so Foreman
@@ -2077,6 +2138,110 @@ def launch_supervisor_main(args: argparse.Namespace,
                       mcp_config=mcp_module.mcp_config_path(session_id))
     hooks.fire("on-launch", {"session": session_id, "role": "supervisor",
                              "front": front, "branch": branch})
+    return 0
+
+
+def launch_supervisor_headless(args: argparse.Namespace, *, front: str,
+                               record: dict, repo: str,
+                               branch: str) -> int:
+    """Mint a headless supervisor: rostered with no window, first turn now.
+
+    The session is recorded before its first turn runs, so a dead first
+    turn still leaves a record, never an orphan. The first turn runs
+    synchronously under its transient unit; its vendor session id is
+    recorded off the stream. A first turn that dies twice is retried
+    with the same prompt and then raised as an anomaly, and the launch
+    is refused — the session stays rostered for the next wake either
+    way.
+    """
+    from . import headless as headless_module
+    from . import mcp as mcp_module
+
+    session_id = ids.mint("session")
+    session_dir = paths.session_dir(session_id)
+    role_prompt = session_dir / ROLE_PROMPT_FILE
+    try:
+        session_dir.mkdir(parents=True, exist_ok=True)
+        text = render_supervisor_prompt(
+            front=front, record=record, session_id=session_id, repo=repo,
+            branch=branch, role_prompt=role_prompt, predecessor=None,
+            headless=True)
+        write_no_symlink(str(role_prompt), text)
+        mcp_config = mcp_module.write_mcp_config(session_id)
+    except Refused as exc:
+        return refuse(str(exc))
+    except OSError as exc:
+        return refuse(f"cannot write launch files: {exc.strerror or exc}")
+
+    vendor_argv = headless_module.first_turn_vendor_argv(
+        prompt_text=text, mcp_config=mcp_config)
+    outer_argv = headless_module.turn_outer_argv(
+        session_id, session_dir / RUN_SCRIPT_FILE, repo=repo)
+    if args.dry_run:
+        _print_headless(session_id, None, role_prompt, vendor_argv,
+                        outer_argv, front=front, branch=branch,
+                        mcp_config=mcp_config)
+        print()
+        print(text)
+        return 0
+
+    try:
+        store.update_snapshot(
+            paths.roster_path(),
+            lambda roster: _place_session(
+                roster,
+                _supervisor_session(session_id, front, repo,
+                                    os.environ.get(caller.SESSION_ENV),
+                                    headless=True)),
+            default={"sessions": {}},
+        )
+    except OSError as exc:
+        return refuse(f"cannot record the session on the roster: "
+                      f"{exc.strerror or exc}")
+
+    try:
+        publish_front_prompt(front, text)
+    except (Refused, OSError) as exc:
+        _record_failed(session_id)
+        return refuse(f"cannot publish the front prompt: {exc}")
+
+    first = headless_module.run_first_turn(
+        session_id, prompt_text=text, repo=repo, mcp_config=mcp_config)
+    vendor_id = first["vendor_session"]
+    if vendor_id is not None:
+        try:
+            headless_module.record_vendor_session(session_id, vendor_id)
+        except OSError as exc:
+            _record_failed(session_id)
+            return refuse(f"cannot record the vendor session: "
+                          f"{exc.strerror or exc}")
+    store.update_snapshot(
+        paths.roster_path(),
+        lambda roster: _move_session(roster, session_id, state="running",
+                                     pid=None, pgid=None),
+        default={"sessions": {}},
+    )
+    try:
+        fronts.set_front_supervisor(
+            front, session_id,
+            by=os.environ.get(caller.SESSION_ENV) or caller.OWNER)
+    except OSError as exc:
+        print(f"foreman launch: warning: cannot record the supervisor on "
+              f"front '{front}': {exc.strerror or exc}", file=sys.stderr)
+    _print_headless(session_id, vendor_id, role_prompt, vendor_argv,
+                    outer_argv, front=front, branch=branch,
+                    mcp_config=mcp_config)
+    hooks.fire("on-launch", {"session": session_id, "role": "supervisor",
+                             "front": front, "branch": branch,
+                             "headless": True})
+    if not first["ok"]:
+        exits = [attempt["exit_code"] if not attempt["timed_out"]
+                 else "timeout" for attempt in first["attempts"]]
+        headless_module.raise_turn_anomaly(session_id, [], exits)
+        return refuse(
+            f"the first turn failed twice (exits "
+            f"{', '.join(str(exit) for exit in exits)}); the session "
+            f"'{session_id}' stays rostered for its next wake")
     return 0
 
 
@@ -2207,8 +2372,10 @@ def desk_environment_block(*, repo: str, branch: str, session_id: str,
 
 
 def render_merge_desk_prompt(*, session_id: str, repo: str, branch: str,
-                             role_prompt: Path) -> str:
-    return render_role_template(MERGE_DESK, {
+                             role_prompt: Path,
+                             headless: bool = False) -> str:
+    template = MERGE_DESK_HEADLESS_TEMPLATE if headless else MERGE_DESK
+    return render_role_template(template, {
         "session_id": session_id,
         "queue": merge_queue_block(),
         "verbs": desk_verbs_block(),
@@ -2239,7 +2406,8 @@ def live_merge_desk(ignore: str | None = None
 
 
 def _merge_desk_session(session_id: str, repo: str,
-                        launched_by: str | None) -> Session:
+                        launched_by: str | None,
+                        headless: bool = False) -> Session:
     return Session(
         id=session_id,
         role=MERGE_DESK,
@@ -2250,6 +2418,7 @@ def _merge_desk_session(session_id: str, repo: str,
         worktree=repo,
         log=str(paths.session_log_path(session_id)),
         launched_by=launched_by,
+        headless=headless,
         started_at=store.utcnow_iso(),
         state="starting",
     )
@@ -2257,7 +2426,9 @@ def _merge_desk_session(session_id: str, repo: str,
 
 def launch_merge_desk_main(args: argparse.Namespace,
                            problems: list[str]) -> int:
-    """`foreman launch merge-desk [--workspace N] [--dry-run]`."""
+    """`foreman launch merge-desk [--workspace N] [--headless] [--dry-run]`."""
+    from . import headless as headless_module
+
     if args.pool is not None:
         problems.append(
             f"a merge desk takes no pool (got {args.pool!r}): it is the "
@@ -2266,7 +2437,14 @@ def launch_merge_desk_main(args: argparse.Namespace,
         problems.append(
             "a merge desk takes no spec file: it works the merge queue in "
             "the repository")
-    workspace = _resolve_window_workspace(args.workspace, problems)
+    headless = headless_module.resolve_launch_headless(args, problems)
+    if headless and getattr(args, "workspace", None) is not None:
+        problems.append(
+            f"--workspace {args.workspace!r} names a window workspace, but "
+            f"a headless session has no window and no workspace; "
+            f"drop --workspace")
+    workspace = None if headless \
+        else _resolve_window_workspace(args.workspace, problems)
     repo = os.path.abspath(args.repo or os.getcwd())
     if not os.path.isdir(repo):
         problems.append(f"repo {repo!r} is not a directory")
@@ -2285,6 +2463,9 @@ def launch_merge_desk_main(args: argparse.Namespace,
     if problems:
         return refuse(*problems)
     assert branch is not None
+    if headless:
+        return launch_merge_desk_headless(
+            args, repo=repo, branch=branch)
 
     session_id = ids.mint("session")
     vendor_id = str(uuid.uuid4())
@@ -2348,6 +2529,89 @@ def launch_merge_desk_main(args: argparse.Namespace,
     _print_supervisor(session_id, vendor_id, role_prompt, workspace, pid,
                       argv_, inner, branch=branch)
     hooks.fire("on-launch", {"session": session_id, "role": "merge-desk"})
+    return 0
+
+
+def launch_merge_desk_headless(args: argparse.Namespace, *, repo: str,
+                               branch: str) -> int:
+    """Mint a headless merge desk: rostered with no window, first turn now.
+
+    The desk owns no front, so its prompt carries the merge queue instead
+    of a front's tasks; otherwise the shape is the supervisor's — record
+    first, run the first turn under its transient unit, record the vendor
+    session id off the stream.
+    """
+    from . import headless as headless_module
+    from . import mcp as mcp_module
+
+    session_id = ids.mint("session")
+    session_dir = paths.session_dir(session_id)
+    role_prompt = session_dir / ROLE_PROMPT_FILE
+    try:
+        session_dir.mkdir(parents=True, exist_ok=True)
+        text = render_merge_desk_prompt(
+            session_id=session_id, repo=repo, branch=branch,
+            role_prompt=role_prompt, headless=True)
+        write_no_symlink(str(role_prompt), text)
+        mcp_config = mcp_module.write_mcp_config(session_id)
+    except Refused as exc:
+        return refuse(str(exc))
+    except OSError as exc:
+        return refuse(f"cannot write launch files: {exc.strerror or exc}")
+
+    vendor_argv = headless_module.first_turn_vendor_argv(
+        prompt_text=text, mcp_config=mcp_config)
+    outer_argv = headless_module.turn_outer_argv(
+        session_id, session_dir / RUN_SCRIPT_FILE, repo=repo)
+    if args.dry_run:
+        _print_headless(session_id, None, role_prompt, vendor_argv,
+                        outer_argv, branch=branch, mcp_config=mcp_config)
+        print()
+        print(text)
+        return 0
+
+    try:
+        store.update_snapshot(
+            paths.roster_path(),
+            lambda roster: _place_session(
+                roster,
+                _merge_desk_session(session_id, repo,
+                                    os.environ.get(caller.SESSION_ENV),
+                                    headless=True)),
+            default={"sessions": {}},
+        )
+    except OSError as exc:
+        return refuse(f"cannot record the session on the roster: "
+                      f"{exc.strerror or exc}")
+
+    first = headless_module.run_first_turn(
+        session_id, prompt_text=text, repo=repo, mcp_config=mcp_config)
+    vendor_id = first["vendor_session"]
+    if vendor_id is not None:
+        try:
+            headless_module.record_vendor_session(session_id, vendor_id)
+        except OSError as exc:
+            _record_failed(session_id)
+            return refuse(f"cannot record the vendor session: "
+                          f"{exc.strerror or exc}")
+    store.update_snapshot(
+        paths.roster_path(),
+        lambda roster: _move_session(roster, session_id, state="running",
+                                     pid=None, pgid=None),
+        default={"sessions": {}},
+    )
+    _print_headless(session_id, vendor_id, role_prompt, vendor_argv,
+                    outer_argv, branch=branch, mcp_config=mcp_config)
+    hooks.fire("on-launch", {"session": session_id, "role": "merge-desk",
+                             "headless": True})
+    if not first["ok"]:
+        exits = [attempt["exit_code"] if not attempt["timed_out"]
+                 else "timeout" for attempt in first["attempts"]]
+        headless_module.raise_turn_anomaly(session_id, [], exits)
+        return refuse(
+            f"the first turn failed twice (exits "
+            f"{', '.join(str(exit) for exit in exits)}); the session "
+            f"'{session_id}' stays rostered for its next wake")
     return 0
 
 
@@ -2508,6 +2772,11 @@ def _foreman_session(session_id: str, repo: str,
 def launch_foreman_main(args: argparse.Namespace,
                         problems: list[str]) -> int:
     """`foreman launch foreman [--workspace N] [--dry-run]`."""
+    if getattr(args, "headless", False):
+        problems.append(
+            "the foreman stays interactive: `foreman launch foreman "
+            "--headless` is refused; only supervisors and the merge desk "
+            "run headless")
     if args.pool is not None:
         problems.append(
             f"a foreman takes no pool (got {args.pool!r}): it holds the "
@@ -2731,6 +3000,50 @@ def add_relaunch_arguments(parser: argparse.ArgumentParser) -> None:
                         help="render the prompt and print the command; start nothing")
 
 
+def relaunch_headless_main(session_id: str, *, old: dict,
+                             problems: list[str],
+                             workspace: str | None = None,
+                             dry_run: bool = False,
+                             by: str | None = None,
+                             quiet: bool = False) -> int:
+    """Relaunch a headless session as a wake, never as a new process."""
+    from . import headless as headless_module
+
+    def say(text: str = "") -> None:
+        if not quiet:
+            print(text)
+
+    if workspace is not None:
+        problems.append(
+            f"--workspace {workspace!r} names a window workspace, but a "
+            f"headless session has no window and no workspace; "
+            f"drop --workspace")
+    role = old.get("role") or ""
+    front = old.get("front")
+    if role == SUPERVISOR:
+        record = fronts.read_front_record(front) if front else None
+        if record is None:
+            problems.append(
+                f"session '{session_id}' names front '{front or '(none)'}', "
+                f"which has no record on the ledger")
+    if (old.get("state") or "") not in ("starting", "running"):
+        problems.append(
+            f"session '{session_id}' is {old.get('state') or 'in no state'}; "
+            f"only a live headless session is relaunched as a wake")
+    if problems:
+        return refuse(*problems)
+    if dry_run:
+        say(f"relaunches: {session_id} "
+            f"(headless — queued as a wake, no new process)")
+        say(f"event text: {headless_module.RELAUNCH_TEXT}")
+        return 0
+    event = headless_module.relaunch_wake(session_id, by=by)
+    say(f"relaunches: {session_id} "
+        f"(headless — queued as a wake, no new process)")
+    say(f"event: {event['id']}")
+    return 0
+
+
 def relaunch_main(session_id: str, *, workspace: str | None = None,
                   repo: str | None = None, branch: str | None = None,
                   dry_run: bool = False, by: str | None = None,
@@ -2753,22 +3066,32 @@ def relaunch_main(session_id: str, *, workspace: str | None = None,
             f"frozen file {frozen} exists; the launcher refuses while frozen")
     # The role gate lives in `cmd_relaunch`: the collector calls this
     # function directly and holds no session, so gating here would refuse
-    # the one caller flow 4 depends on. The workspace, though, is resolved
-    # for every caller — the daemon's relaunch needs a window as much as
-    # the verb's does, and a windowed launch with nowhere to put its
-    # window is refused by name rather than left to time out.
-    workspace = _resolve_window_workspace(workspace, problems)
-
+    # the one caller flow 4 depends on.
     sessions = caller.read_roster().get("sessions", {})
     old = sessions.get(session_id)
     if not isinstance(old, dict):
         problems.append(
             f"unknown session '{session_id}'; the roster has no record of it")
         old = {}
-    elif (old.get("role") or "") != SUPERVISOR:
+    elif (old.get("role") or "") != SUPERVISOR and not (
+            bool(old.get("headless"))
+            and (old.get("role") or "") == MERGE_DESK):
         problems.append(
             f"session '{session_id}' has role '{old.get('role') or '(none)'}'; "
             f"only a supervisor is relaunched")
+    # A headless relaunch is not a new process shape: it is a wake
+    # carrying "you were relaunched, read your checkpoint". No window, no
+    # workspace, no vendor conversation to stop or summon.
+    if old.get("headless"):
+        return relaunch_headless_main(
+            session_id, old=old, problems=problems, workspace=workspace,
+            dry_run=dry_run, by=by, quiet=quiet)
+    # The workspace is resolved for every windowed caller — the daemon's
+    # relaunch needs a window as much as the verb's does, and a windowed
+    # launch with nowhere to put its window is refused by name rather
+    # than left to time out.
+    workspace = _resolve_window_workspace(workspace, problems)
+
     front = old.get("front")
     record = fronts.read_front_record(front) if front else None
     if old and record is None:
