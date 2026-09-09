@@ -194,6 +194,7 @@ def read_usage(transcript: Path) -> dict | None:
 class MuseAdapter(PoolAdapter):
     name = "muse"
     model = MODEL
+    binary = "muse"
     timeout_default = "20m"
     interactive = False
 

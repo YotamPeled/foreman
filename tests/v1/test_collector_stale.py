@@ -216,6 +216,11 @@ def test_header_carries_staleness_and_pristine_fixture_unchanged(
 
     monkeypatch.chdir(ROOT)
     monkeypatch.setenv(NOW_ENV, PINNED_NOW)
+    from foreman import capacity
+    monkeypatch.setattr(capacity, "_snapshot", lambda: {
+        101: {"cmdline": "grok --prompt-file job.md"},
+        102: {"cmdline": "muse exec --prompt-file job.md"},
+    })
     assert cli.main(["status", "--fixture", FIXTURE]) == 0
     out = capsys.readouterr().out
     expected = (ROOT / "tests" / "v0" / "status_expected.txt").read_text(

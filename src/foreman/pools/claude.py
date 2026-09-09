@@ -157,6 +157,7 @@ def read_pid_file(path: Path) -> int | None:
 class ClaudeAdapter(PoolAdapter):
     name = "claude"
     model = MODEL
+    binary = "claude"
     timeout_default = "20m"
     interactive = False
 
