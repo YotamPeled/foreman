@@ -47,6 +47,15 @@ def slots_path() -> Path:
     return state_dir() / "slots.jsonl"
 
 
+def pools_path() -> Path:
+    """Append-only pool state, folded last-wins by pool name.
+
+    A record says a pool is out until a named reset (quota). Readers
+    compare ``out_until`` to now; nothing rewrites the ledger to clear it.
+    """
+    return state_dir() / "pools.jsonl"
+
+
 def rulings_path() -> Path:
     return state_dir() / "rulings.jsonl"
 

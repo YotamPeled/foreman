@@ -321,6 +321,27 @@ def vendor_outer(manifest: PoolManifest, ctx: LaunchContext) -> list[str]:
                               timeout=ctx.timeout)
 
 
+def _vendor_binary(manifest: PoolManifest) -> str:
+    """The executable Capacity counts for a directory pool.
+
+    A ``[vendor]`` argv names it in argv[0]. Otherwise the packaged
+    adapter this directory wraps names it. A pool that names neither
+    counts nothing.
+    """
+    if manifest.vendor_argv:
+        from ..procs import executable_of
+
+        return executable_of(manifest.vendor_argv[0])
+    if manifest.adapter:
+        from . import REGISTRY
+
+        impl = REGISTRY.get(manifest.adapter)
+        value = getattr(impl, "binary", "") if impl is not None else ""
+        if isinstance(value, str) and value:
+            return value
+    return ""
+
+
 class DirectoryPool(PoolAdapter):
     """A pool read from a directory: a user override or a new pool.
 
@@ -337,6 +358,7 @@ class DirectoryPool(PoolAdapter):
         self.timeout_default = manifest.timeout_default
         self.interactive = manifest.interactive
         self.roles: tuple[str, ...] = manifest.roles
+        self.binary = _vendor_binary(manifest)
 
     def _impl(self) -> PoolAdapter | None:
         if self.manifest.adapter is None:
@@ -381,6 +403,12 @@ class DirectoryPool(PoolAdapter):
         impl = self._impl()
         if impl is not None and self.manifest.vendor_argv is None:
             return impl.usage(session)
+        return None
+
+    def refusal(self, session: Session) -> dict | None:
+        impl = self._impl()
+        if impl is not None and self.manifest.vendor_argv is None:
+            return impl.refusal(session)
         return None
 
     def verdict(self, path: Path | str) -> dict:

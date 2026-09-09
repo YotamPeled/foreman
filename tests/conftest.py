@@ -43,6 +43,21 @@ def real_door():
 
 
 @pytest.fixture(autouse=True)
+def _no_live_box_count(monkeypatch):
+    """Capacity must not read this machine's process table.
+
+    The box count walks vendor processes whoever started them. A test
+    that does not pass a fake table would otherwise see this machine's
+    grok (and refuse a launch onto a cap of one). The collector still
+    reads ``procs.snapshot`` for the children it started; only
+    capacity's default table is substituted.
+    """
+    import foreman.capacity as capacity
+
+    monkeypatch.setattr(capacity, "_snapshot", lambda: {})
+
+
+@pytest.fixture(autouse=True)
 def _no_systemd(monkeypatch, request):
     """Shut every door to systemd unless the test opened one itself."""
     import importlib

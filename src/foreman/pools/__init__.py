@@ -16,6 +16,10 @@ Adapter contract (the whole interface a new pool must implement):
 
 - ``name``: pool name, the registry key.
 - ``model``: model id recorded on the session and passed to the vendor CLI.
+- ``binary``: basename of the vendor executable (``grok``, ``muse``,
+  ``claude``, ``codex``). Capacity counts processes whose argv[0]
+  basename equals this. Default ``""``: a pool that names none counts
+  nothing, never everything.
 - ``timeout_default``: e.g. ``"20m"``; used unless ``--timeout`` overrides.
 - ``interactive``: only ``interactive = True`` pools may open a window.
 - ``launch(ctx) -> int``: start the worker detached, return its pid. The
@@ -33,6 +37,10 @@ Adapter contract (the whole interface a new pool must implement):
 - ``usage(session) -> dict | None``: ``{"input_tokens": int,
   "output_tokens": int}`` where the vendor exposes a counter, else
   ``None`` — a pool with no counter reports nothing, never an invention.
+- ``refusal(session) -> dict | None``: ``{"kind": "quota",
+  "reset": "<iso8601>", "detail": "<one line>"}`` when this session's
+  transcript shows the vendor refusing for capacity reasons and names
+  a reset instant, else ``None`` — a pool is never put out on a guess.
 - ``verdict(path) -> dict`` (review-capable pools): the review job's
   verdict file normalised to ``{"passed": bool, "summary": str}``; every
   pool uses the one reading in :mod:`foreman.pools._common`.
@@ -79,6 +87,7 @@ class PoolAdapter:
 
     name: str = ""
     model: str = ""
+    binary: str = ""
     timeout_default: str = "20m"
     interactive: bool = False
 
@@ -93,6 +102,12 @@ class PoolAdapter:
 
     def usage(self, session: Session) -> dict | None:
         """Token use, or None where the vendor exposes no counter."""
+        return None
+
+    def refusal(self, session: Session) -> dict | None:
+        """{"kind": "quota", "reset": "<iso8601>", "detail": "<one line>"}
+        when this session's transcript shows the vendor refusing for
+        capacity reasons, else None."""
         return None
 
 

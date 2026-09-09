@@ -175,6 +175,7 @@ def read_usage(transcript: Path) -> dict | None:
 class GrokAdapter(PoolAdapter):
     name = "grok"
     model = MODEL
+    binary = "grok"
     timeout_default = "20m"
     interactive = False
 
@@ -195,6 +196,10 @@ class GrokAdapter(PoolAdapter):
     def usage(self, session: Session) -> dict | None:
         """Input/output tokens from the ``--output-format json`` log."""
         return read_usage(transcript_path(session))
+
+    def refusal(self, session: Session) -> dict | None:
+        """Quota/rate refusal from the JSON log, else nothing."""
+        return _common.read_quota_refusal(transcript_path(session))
 
     def verdict(self, path: Path | str) -> dict:
         """A review job's verdict file, normalised to pass/fail + summary."""

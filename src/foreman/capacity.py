@@ -21,9 +21,10 @@ from __future__ import annotations
 
 import json
 import os
+from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, entities, fronts, ids, paths, store
+from . import config, entities, fronts, ids, paths, procs, store
 
 #: Work not yet running: a job in one of these states is waiting for a slot.
 QUEUE_STATES = ("planned", "queued")
@@ -177,6 +178,50 @@ def release_for_session(session_id: str, when: str, because: str) -> int:
 # --------------------------------------------------------------------------
 
 
+def _snapshot() -> dict[int, dict]:
+    """The live process table. A test substitutes this, never ``procs.snapshot``
+    itself: the collector still has to see the children it started."""
+    return procs.snapshot()
+
+
+def running_by_pool(table: dict[int, dict] | None = None) -> dict[str, int]:
+    """Vendor processes on the machine, by pool.
+
+    ``table`` is a process table of the shape :func:`procs.snapshot`
+    returns (pid -> ``{cmdline, ...}``). ``None`` takes a fresh snapshot.
+    A process counts for a pool when
+    ``procs.executable_of(cmdline)`` equals that pool's adapter
+    ``binary`` — argv[0]'s basename, never a substring of the rest of
+    the line. A pool that names no binary counts nothing, never
+    everything.
+    """
+    from . import pools as poolmod
+
+    if table is None:
+        table = _snapshot()
+    counts: dict[str, int] = {}
+    for name in poolmod.names():
+        try:
+            adapter = poolmod.get(name)
+        except ValueError:
+            continue
+        binary = getattr(adapter, "binary", "") or ""
+        if not isinstance(binary, str) or not binary:
+            counts[name] = 0
+            continue
+        n = 0
+        for info in table.values():
+            if not isinstance(info, dict):
+                continue
+            if info.get("state") == "Z":
+                continue
+            cmdline = info.get("cmdline", "") or ""
+            if procs.executable_of(cmdline) == binary:
+                n += 1
+        counts[name] = n
+    return counts
+
+
 def ceiling(front: str | None, role: str) -> int | None:
     """The most sessions ``front`` may hold of ``role``, or None for none.
 
@@ -209,13 +254,104 @@ def _who(role: str, front: str | None) -> str:
             else f"role {role!r} on no front")
 
 
-def launch_problems(role: str, pool: str, front: str | None) -> list[str]:
+def _as_utc(now: datetime | None) -> datetime:
+    moment = now if now is not None else datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+def _parse_iso(text: object) -> datetime | None:
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+def format_out_until(moment: datetime) -> str:
+    """The Capacity spelling of a reset: ``2026-09-14 00:00Z``."""
+    return moment.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%MZ")
+
+
+def folded_pools() -> list[dict]:
+    """Every pool-state record, folded last-wins by pool name."""
+    try:
+        records = store.read_ledger(paths.pools_path())
+    except OSError:
+        return []
+    return store.fold_by_id(records)
+
+
+def pool_out(pool: str, now: datetime | None = None) -> dict | None:
+    """The folded record if ``pool`` is out at ``now``, else None.
+
+    A record whose ``out_until`` has passed is not out: the fold is read
+    against now, and nothing rewrites the ledger to clear it. An
+    unparseable reset is not out either — a pool is never put out on a
+    guess.
+    """
+    moment = _as_utc(now)
+    for record in folded_pools():
+        name = record.get("id")
+        if name != pool:
+            continue
+        until = _parse_iso(record.get("out_until"))
+        if until is None or moment >= until:
+            return None
+        return record
+    return None
+
+
+def out_pools(now: datetime | None = None) -> dict[str, dict]:
+    """Pool name -> folded record, for every pool that is out at ``now``."""
+    moment = _as_utc(now)
+    out: dict[str, dict] = {}
+    for record in folded_pools():
+        name = record.get("id")
+        if not isinstance(name, str) or not name:
+            continue
+        until = _parse_iso(record.get("out_until"))
+        if until is None or moment >= until:
+            continue
+        out[name] = record
+    return out
+
+
+def allocation_out(role: str, now: datetime | None = None) -> str | None:
+    """``out until <reset> (because)`` if ``role``'s pool is out, else None.
+
+    Both places a front's allocation is rendered read this, so a pool
+    that is out cannot print held on one screen and out on the other.
+    """
+    record = pool_out(pool_for_role(role), now)
+    if record is None:
+        return None
+    until = _parse_iso(record.get("out_until"))
+    because = record.get("because") or "quota"
+    when = format_out_until(until) if until is not None else ""
+    return f"out until {when} ({because})"
+
+
+def launch_problems(role: str, pool: str, front: str | None,
+                    now: datetime | None = None,
+                    table: dict[int, dict] | None = None) -> list[str]:
     """The capacity refusals for one launch, in the order they are checked.
 
-    The front's ceiling first, then the pool's cap, each naming the role,
-    the front, the numbers it saw and the limit it hit. Both are returned
-    so a launch wrong on both counts is told both at once, like every other
-    refusal here.
+    The front's ceiling first, then the pool's cap against held slots,
+    then the same cap against vendor processes on the machine, then
+    whether the pool is out until a named reset. Held and the box are
+    two numbers against one cap: the refusal fires when either reaches
+    it, and says which. Each names the role, the front, and the limit
+    it hit. A launch wrong on more than one count is told every one at
+    once, like every other refusal here.
+
+    ``table`` is the process table the box count is read from; ``None``
+    takes a fresh snapshot.
     """
     problems: list[str] = []
     limit = ceiling(front, role)
@@ -230,6 +366,17 @@ def launch_problems(role: str, pool: str, front: str | None) -> list[str]:
         if held >= cap:
             problems.append(f"{_who(role, front)}: {held} held in pool "
                             f"{pool!r}, cap {cap}")
+        running = running_by_pool(table).get(pool, 0)
+        if running >= cap:
+            problems.append(f"{_who(role, front)}: {running} {pool} "
+                            f"processes on the box, cap {cap}")
+    record = pool_out(pool, now)
+    if record is not None:
+        until = _parse_iso(record.get("out_until"))
+        because = record.get("because") or "quota"
+        when = format_out_until(until) if until is not None else ""
+        problems.append(f"{_who(role, front)}: pool {pool!r} is out "
+                        f"until {when} ({because})")
     return problems
 
 
@@ -345,7 +492,9 @@ def front_allocations() -> list[tuple[str, str, int]]:
     return rows
 
 
-def capacity_lines(observed: dict | None) -> list[str]:
+def capacity_lines(observed: dict | None,
+                   now: datetime | None = None,
+                   table: dict[int, dict] | None = None) -> list[str]:
     """The Capacity block: held/cap per pool, held/ceiling per front role,
     and who is waiting on a pool that has nothing left to give.
 
@@ -356,29 +505,54 @@ def capacity_lines(observed: dict | None) -> list[str]:
     so reading them here would keep showing the old ceiling after `foreman
     cap` until the collector is restarted. Only the held counts ride along
     in observed.json.
+
+    A pool that is out until a named reset prints that instead of
+    held/cap, for as long as the reset is in the future. A front's
+    allocation over such a pool prints the same out line in place of
+    held/ceiling. The box count — vendor processes on the machine,
+    whoever started them — prints on the pool's row when it differs
+    from held; a pool whose two numbers agree keeps the row it printed
+    before.
+
+    ``table`` is the process table the box count is read from; ``None``
+    takes a fresh snapshot.
     """
     pool_view = (observed or {}).get("pools")
     pool_view = pool_view if isinstance(pool_view, dict) else {}
     held_pool = held_by_pool()
     allocations = front_allocations()
     held_front = held_by_front_role()
+    out_now = out_pools(now)
+    running_pool = running_by_pool(table)
 
     names = set(held_pool)
     names.update(name for name in pool_view if isinstance(name, str))
     names.update(pool_for_role(role) for _front, role, _n in allocations)
+    names.update(out_now)
+    names.update(pool for pool, n in running_pool.items() if n)
 
     settings = config.load()
 
     waiting = waiting_by_pool()
     lines: list[str] = []
     for pool in sorted(names):
+        record = out_now.get(pool)
+        if record is not None:
+            until = _parse_iso(record.get("out_until"))
+            because = record.get("because") or "quota"
+            when = format_out_until(until) if until is not None else ""
+            lines.append(f"  {pool}: out until {when} ({because})")
+            continue
         total = settings.cap(pool)
         held = held_pool.get(pool, 0)
-        if total is None and held == 0:
+        running = running_pool.get(pool, 0)
+        if total is None and held == 0 and running == 0:
             # Nothing configured and nothing held: an empty row about a
             # pool nobody is using is noise on a one-screen panel.
             continue
         line = f"  {pool}: {held}/{total if total is not None else '-'} held"
+        if running != held:
+            line += f" · {running} running on the box"
         # A queued job is waiting for a slot only where there is no slot to
         # give it. With one free, the job waits on the supervisor's order,
         # which the Job queue block already shows by name.
@@ -387,6 +561,10 @@ def capacity_lines(observed: dict | None) -> list[str]:
             line += f" · {behind} waiting"
         lines.append(line)
     for front, role, limit in allocations:
+        shown = allocation_out(role, now)
+        if shown is not None:
+            lines.append(f"  {front} {role}: {shown}")
+            continue
         lines.append(f"  {front} {role}: "
                      f"{held_front.get((front, role), 0)}/{limit} held")
     if not lines:

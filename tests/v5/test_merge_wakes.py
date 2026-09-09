@@ -151,6 +151,7 @@ def make_repo(root: Path) -> Path:
     origin = root / "origin.git"
     git(root, "init", "-q", "--bare", "-b", "main", str(origin))
     git(repo, "remote", "add", "origin", str(origin))
+    git(repo, "push", "-q", "origin", "HEAD:refs/heads/main")
     return repo
 
 

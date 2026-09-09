@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from foreman import cli, paths, procs, store
+from foreman import cli, paths, procs, store, wake
 from foreman import launch as launch_module
 from foreman.caller import SESSION_ENV
 
@@ -123,6 +123,7 @@ def make_repo(root: Path) -> tuple[Path, Path]:
     origin = root / "origin.git"
     git(root, "init", "-q", "--bare", "-b", "main", str(origin))
     git(repo, "remote", "add", "origin", str(origin))
+    git(repo, "push", "-q", "origin", "HEAD:refs/heads/main")
     return repo, origin
 
 
@@ -155,6 +156,29 @@ def write_check(tmp_path: Path, command: str) -> None:
     config.mkdir(parents=True, exist_ok=True)
     (config / "foreman.toml").write_text(
         f"[merge]\ncheck = {json.dumps(command)}\n", encoding="utf-8")
+
+
+def moving_target_check(origin: Path) -> str:
+    """One line of shell: push a commit onto the origin's target.
+
+    Each run clones into a fresh temp dir so a second land can move
+    the target again without colliding with the first clone.
+    """
+    return (
+        f"d=$(mktemp -d) && "
+        f"git clone --quiet {origin} \"$d\" && "
+        f"git -C \"$d\" config user.email test@example.invalid && "
+        f"git -C \"$d\" config user.name test && "
+        f"echo during-$(date +%s%N) > \"$d\"/during.txt && "
+        f"git -C \"$d\" add during.txt && "
+        f"git -C \"$d\" commit -qm during-check && "
+        f"git -C \"$d\" push origin HEAD:refs/heads/main"
+    )
+
+
+def pending_ids(sid: str) -> set[str]:
+    return {event["id"] for event in wake.pending_events(sid)
+            if isinstance(event.get("id"), str)}
 
 
 def run(monkeypatch, argv, session=None, cwd=None):
@@ -270,6 +294,7 @@ def test_flow_2_request_take_land(env, monkeypatch, capsys):
     (repo / "moved.txt").write_text("moved\n", encoding="utf-8")
     git(repo, "add", "moved.txt")
     git(repo, "commit", "-qm", "target moves")
+    git(repo, "push", "-q", "origin", "main")
     old_head = git(repo, "rev-parse", "feat")
 
     assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
@@ -283,7 +308,9 @@ def test_flow_2_request_take_land(env, monkeypatch, capsys):
     assert head in out
     assert git(repo, "merge-base", "--is-ancestor", "main", "feat") == ""
     assert (repo / "moved.txt").is_file()
-    # Pushed: the bare origin holds the rebased branch.
+    # Pushed: the bare origin holds the rebased head on the target
+    # and on the branch.
+    assert git(origin, "rev-parse", "refs/heads/main") == head
     assert git(origin, "rev-parse", "refs/heads/feat") == head
 
     record = merges_by_id()[mid]
@@ -367,6 +394,51 @@ def test_request_missing_fields_are_all_named(env, monkeypatch, capsys):
     assert "'--front'" in err
     assert "'--tasks'" in err
     assert "'--target'" in err
+
+
+def test_request_on_self_mode_front_is_refused(env, monkeypatch, capsys):
+    """A front whose record carries `merge = ""` is refused at request
+    time: the message names `task landed`, no merge record is minted,
+    and the desk's wake queue gains no event."""
+    repo, _origin = make_repo(env)
+    make_branch(repo, "feat", "feat.txt")
+    write_check(env, "true")
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "plain", merge=None))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "plain"),
+                session_record(DESK, "merge-desk"))
+    first = build_task(monkeypatch, capsys, "plain", "first")
+    before = len(store.read_ledger(paths.merges_path()))
+    rc = run(monkeypatch, ["merge", "request", "feat",
+                           "--front", "plain", "--tasks", first,
+                           "--target", "main"], SUP, cwd=repo)
+    assert rc == 1
+    _, err = capsys.readouterr()
+    assert "task landed" in err
+    assert len(store.read_ledger(paths.merges_path())) == before
+    assert wake.pending_events(DESK) == []
+
+
+def test_self_mode_refusal_arrives_with_other_violations(
+        env, monkeypatch, capsys):
+    """A self-mode front that is also missing a field is told both,
+    not the first alone."""
+    repo, _origin = make_repo(env)
+    make_branch(repo, "feat", "feat.txt")
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "plain", merge=None))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "plain"))
+    first = build_task(monkeypatch, capsys, "plain", "first")
+    rc = run(monkeypatch, ["merge", "request", "feat",
+                           "--front", "plain", "--tasks", first],
+             SUP, cwd=repo)
+    assert rc == 1
+    _, err = capsys.readouterr()
+    assert "task landed" in err
+    assert "'--target'" in err
+    assert store.read_ledger(paths.merges_path()) == []
 
 
 def test_request_refused_for_anyone_but_the_front_supervisor(
@@ -483,6 +555,8 @@ def test_land_without_a_check_command_is_refused(env, monkeypatch, capsys):
 
 
 def test_land_failing_check_leaves_the_tasks_built(env, monkeypatch, capsys):
+    """A red check is a broken deliverable, not a race: the land
+    refuses, the record stays taken, and nobody is woken."""
     repo, _origin = make_repo(env)
     make_branch(repo, "feat", "feat.txt")
     write_check(env, "test -f this-file-is-not-there")
@@ -496,11 +570,220 @@ def test_land_failing_check_leaves_the_tasks_built(env, monkeypatch, capsys):
                      "main", cwd=repo)
     assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
     capsys.readouterr()
+    desk_before = pending_ids(DESK)
+    sup_before = pending_ids(SUP)
     assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo) == 1
     err = capsys.readouterr().err
     assert "failed" in err
     assert tasks_by_title("flow")["first"]["state"] == "built"
-    assert merges_by_id()[mid]["result"] == "merging"
+    record = merges_by_id()[mid]
+    assert record["result"] == "merging"
+    assert record.get("taken_by") == DESK
+    assert not record.get("land_attempts")
+    assert pending_ids(DESK) == desk_before
+    assert pending_ids(SUP) == sup_before
+
+
+def test_land_advances_the_target(env, monkeypatch, capsys):
+    """After land, the origin's target ref is the landed head, not the
+    sha it started at; the branch and the task record match it."""
+    repo, origin = make_repo(env)
+    make_branch(repo, "feat", "feat.txt")
+    write_check(env, "test -f feat.txt")
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "flow"))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "flow"),
+                session_record(DESK, "merge-desk"))
+    first = build_task(monkeypatch, capsys, "flow", "first")
+    old_main = git(origin, "rev-parse", "refs/heads/main")
+    mid = request_id(monkeypatch, capsys, "feat", "flow", [first],
+                     "main", cwd=repo)
+    assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo) == 0
+    capsys.readouterr()
+    head = git(repo, "rev-parse", "feat")
+    assert head != old_main
+    assert git(origin, "rev-parse", "refs/heads/main") == head
+    assert git(origin, "rev-parse", "refs/heads/feat") == head
+    assert git(repo, "rev-parse", "feat") == head
+    record = merges_by_id()[mid]
+    assert record["result"] == "landed"
+    assert record["head"] == head
+    assert tasks_by_title("flow")["first"]["state"] == "landed"
+    assert tasks_by_title("flow")["first"]["head"] == head
+
+
+def test_land_is_a_fast_forward(env, monkeypatch, capsys):
+    """The target's new tip has the old target as its first parent, and
+    the landed range contains no merge commit."""
+    repo, origin = make_repo(env)
+    make_branch(repo, "feat", "feat.txt")
+    write_check(env, "test -f feat.txt")
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "flow"))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "flow"),
+                session_record(DESK, "merge-desk"))
+    first = build_task(monkeypatch, capsys, "flow", "first")
+    old_main = git(origin, "rev-parse", "refs/heads/main")
+    mid = request_id(monkeypatch, capsys, "feat", "flow", [first],
+                     "main", cwd=repo)
+    assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo) == 0
+    capsys.readouterr()
+    head = git(origin, "rev-parse", "refs/heads/main")
+    assert git(origin, "rev-parse", f"{head}^") == old_main
+    parents = subprocess.run(
+        ["git", "--git-dir", str(origin), "cat-file", "-p", head],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert parents.returncode == 0
+    parent_lines = [line for line in parents.stdout.splitlines()
+                    if line.startswith("parent ")]
+    assert parent_lines == [f"parent {old_main}"]
+    assert git(origin, "rev-list", "--merges", f"{old_main}..{head}") == ""
+
+
+def test_land_refuses_when_the_target_moved_during_the_check(
+        env, monkeypatch, capsys):
+    """A check that pushes a new commit onto the origin's target leaves
+    land refusing: origin stays at that commit, the branch is unmoved
+    by us, the record goes back to requested with attempt 1 and nobody
+    holding it, and the desk's queue holds one fresh merge requested."""
+    repo, origin = make_repo(env)
+    make_branch(repo, "feat", "feat.txt")
+    write_check(env, moving_target_check(origin))
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "flow"))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "flow"),
+                session_record(DESK, "merge-desk"))
+    first = build_task(monkeypatch, capsys, "flow", "first")
+    old_main = git(origin, "rev-parse", "refs/heads/main")
+    old_feat = git(repo, "rev-parse", "feat")
+    mid = request_id(monkeypatch, capsys, "feat", "flow", [first],
+                     "main", cwd=repo)
+    assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
+    capsys.readouterr()
+    desk_before = pending_ids(DESK)
+    sup_before = pending_ids(SUP)
+    assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo) == 1
+    err = capsys.readouterr().err
+    found = git(origin, "rev-parse", "refs/heads/main")
+    assert found != old_main
+    assert git(origin, "show", "refs/heads/main:during.txt").startswith("during")
+    missing_feat = subprocess.run(
+        ["git", "--git-dir", str(origin), "cat-file", "-e",
+         "refs/heads/main:feat.txt"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert missing_feat.returncode != 0
+    assert old_main in err
+    assert found in err
+    assert "push of 'feat'" not in err
+    assert git(repo, "rev-parse", "feat") == old_feat
+    absent = subprocess.run(
+        ["git", "--git-dir", str(origin), "show-ref", "--verify", "--quiet",
+         "refs/heads/feat"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert absent.returncode != 0
+    record = merges_by_id()[mid]
+    assert record["result"] == "requested"
+    assert record["land_attempts"] == 1
+    assert record.get("taken_by") in (None, "")
+    assert old_main in (record.get("fail_reason") or "")
+    assert found in (record.get("fail_reason") or "")
+    assert tasks_by_title("flow")["first"]["state"] == "built"
+    fresh = [event for event in wake.pending_events(DESK)
+             if event.get("id") not in desk_before]
+    assert len(fresh) == 1
+    assert fresh[0]["reason"] == "merge requested"
+    assert fresh[0]["merge"] == mid
+    assert pending_ids(SUP) == sup_before
+
+
+def test_a_second_target_moved_land_fails_the_record(
+        env, monkeypatch, capsys):
+    """The same landing against a target that moved again fails the
+    record with the reason, and the supervisor's queue holds merge
+    failed. The desk is not woken a second time."""
+    repo, origin = make_repo(env)
+    make_branch(repo, "feat", "feat.txt")
+    write_check(env, moving_target_check(origin))
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "flow"))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "flow"),
+                session_record(DESK, "merge-desk"))
+    first = build_task(monkeypatch, capsys, "flow", "first")
+    mid = request_id(monkeypatch, capsys, "feat", "flow", [first],
+                     "main", cwd=repo)
+    assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo) == 1
+    capsys.readouterr()
+    assert merges_by_id()[mid]["result"] == "requested"
+    assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
+    capsys.readouterr()
+    desk_before = pending_ids(DESK)
+    sup_before = pending_ids(SUP)
+    old_feat = git(repo, "rev-parse", "feat")
+    assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo) == 1
+    err = capsys.readouterr().err
+    found = git(origin, "rev-parse", "refs/heads/main")
+    record = merges_by_id()[mid]
+    assert record["result"] == "failed"
+    assert record["failed_at"]
+    assert found in (record.get("fail_reason") or "")
+    assert found in err
+    assert git(repo, "rev-parse", "feat") == old_feat
+    assert tasks_by_title("flow")["first"]["state"] == "built"
+    fresh_desk = [event for event in wake.pending_events(DESK)
+                  if event.get("id") not in desk_before]
+    assert fresh_desk == []
+    fresh_sup = [event for event in wake.pending_events(SUP)
+                 if event.get("id") not in sup_before]
+    assert len(fresh_sup) == 1
+    assert fresh_sup[0]["reason"] == "merge failed"
+    assert fresh_sup[0]["merge"] == mid
+
+
+def test_land_succeeds_on_the_second_attempt_and_clears_it(
+        env, monkeypatch, capsys):
+    """After a target-moved re-queue, a land whose check does not move
+    the target lands normally and the attempt is gone."""
+    repo, origin = make_repo(env)
+    make_branch(repo, "feat", "feat.txt")
+    write_check(env, moving_target_check(origin))
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "flow"))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "flow"),
+                session_record(DESK, "merge-desk"))
+    first = build_task(monkeypatch, capsys, "flow", "first")
+    old_main = git(origin, "rev-parse", "refs/heads/main")
+    mid = request_id(monkeypatch, capsys, "feat", "flow", [first],
+                     "main", cwd=repo)
+    assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo) == 1
+    capsys.readouterr()
+    assert merges_by_id()[mid]["land_attempts"] == 1
+    git(origin, "update-ref", "refs/heads/main", old_main)
+    write_check(env, "true")
+    assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo) == 0
+    capsys.readouterr()
+    record = merges_by_id()[mid]
+    assert record["result"] == "landed"
+    assert record.get("land_attempts") in (0, None)
+    assert record.get("fail_reason") in (None, "")
+    head = git(origin, "rev-parse", "refs/heads/main")
+    assert record["head"] == head
+    assert tasks_by_title("flow")["first"]["state"] == "landed"
+    assert tasks_by_title("flow")["first"]["head"] == head
 
 
 # --------------------------------------------------------------------------

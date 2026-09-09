@@ -749,11 +749,15 @@ def test_cap_refuses_a_file_it_cannot_parse_and_writes_nothing(env, capsys):
 # --------------------------------------------------------------------------
 
 
-def test_the_capacity_block_reads_held_ceiling_and_waiting(env, capsys):
+def test_the_capacity_block_reads_held_ceiling_and_waiting(env, capsys,
+                                                          monkeypatch):
     """Per pool held/cap, per front one line per allocated role reading
     held/ceiling, and the count waiting on a pool with nothing left to
     give. Built from the ledgers, so it is right on a machine whose
     collector has never ticked — this test never runs one."""
+    monkeypatch.setattr(capacity, "_snapshot", lambda: {
+        1: {"cmdline": "muse exec --prompt-file job.md"},
+    })
     add_front(env, "alpha")
     assert cli.main(["cap", "muse", "1"]) == 0
     capsys.readouterr()
@@ -860,11 +864,14 @@ def test_a_supervisor_launch_holds_no_job_slot(env, capsys):
 
 
 def test_queued_work_is_counted_against_the_pool_its_role_runs_on(
-        env, capsys):
+        env, capsys, monkeypatch):
     """An `astra` reviewer runs on `codex`. Mapping a role to a pool by
     returning the role unchanged counted the queue against a pool named
     `astra`, which nothing can launch: the codex row said nobody was waiting
     while a reviewer had been waiting for its one slot all along."""
+    monkeypatch.setattr(capacity, "_snapshot", lambda: {
+        1: {"cmdline": "codex exec --prompt-file job.md"},
+    })
     add_front(env, "alpha")
     assert cli.main(["cap", "codex", "1"]) == 0
     capsys.readouterr()
