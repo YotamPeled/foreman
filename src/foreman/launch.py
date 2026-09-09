@@ -863,6 +863,75 @@ AUTOCOMPACT = "CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=40"
 WINDOW_LINGER_SECONDS = 120
 WORKSPACE_RE = re.compile(r"\d+")
 
+
+def _configured_default_workspace() -> tuple[str | None, str | None]:
+    """The configured default window workspace: (valid, malformed).
+
+    Exactly one of the two is set. ``default_workspace`` is read from the
+    ``[launch]`` table first and the top level second, as an integer or a
+    string of digits — the same shape ``--workspace`` takes. A missing file
+    or one that does not parse means no default, never a crash: the caller
+    refuses the launch by name instead.
+    """
+    try:
+        with open(paths.config_file(), "rb") as handle:
+            data = tomllib.load(handle)
+    except (OSError, ValueError):
+        return None, None
+    if not isinstance(data, dict):
+        return None, None
+    candidates: list[object] = []
+    launch = data.get("launch")
+    if isinstance(launch, dict) and launch.get("default_workspace") is not None:
+        candidates.append(launch.get("default_workspace"))
+    if data.get("default_workspace") is not None:
+        candidates.append(data.get("default_workspace"))
+    for value in candidates:
+        if isinstance(value, bool):
+            text = ""
+        elif isinstance(value, int):
+            text = str(value)
+        elif isinstance(value, str):
+            text = value.strip()
+        else:
+            text = ""
+        if text and WORKSPACE_RE.fullmatch(text):
+            return text, None
+        if text or value is not None:
+            return None, str(value)
+    return None, None
+
+
+def _resolve_window_workspace(given: str | None,
+                              problems: list[str]) -> str | None:
+    """The workspace a windowed launch opens on, or a named refusal.
+
+    An explicit ``--workspace`` wins; without one the launch lands on
+    ``default_workspace`` from the configuration. With neither, the launch
+    is refused here — while it is still a list of problems, before a
+    session is minted or a byte is written — so it never spends thirty
+    seconds waiting on a pid file no window will write.
+    """
+    if given is not None:
+        if not WORKSPACE_RE.fullmatch(str(given)):
+            problems.append(
+                f"bad workspace {given!r}; a workspace is digits, e.g. 6")
+            return None
+        return str(given)
+    default, bad = _configured_default_workspace()
+    if default is not None:
+        return default
+    if bad is not None:
+        problems.append(
+            f"bad default_workspace {bad!r} in {paths.config_file()}; "
+            f"a workspace is digits, e.g. 6")
+        return None
+    problems.append(
+        f"field '--workspace' is required for a windowed launch "
+        f"(no default_workspace in {paths.config_file()}); "
+        f"pass --workspace <n>")
+    return None
+
 #: The design's supervisor row (docs/DESIGN.md section 12), verbatim. What
 #: this checkout has not shipped is this row minus what the CLI registers
 #: for the role, computed at render time: a verb that lands can never be
@@ -1310,6 +1379,8 @@ def front_tasks_block(front: str) -> str:
         title = record.get("title") or "(untitled)"
         scope = (record.get("scope") or "").strip()
         verify = (record.get("verify") or "").strip()
+        added = (f" · added by {record.get('added_by')}"
+                 if record.get("added_by") else "")
         block = [
             f"### Task \"{title}\"",
             "",
@@ -1317,7 +1388,7 @@ def front_tasks_block(front: str) -> str:
             f"size {record.get('size', 0)} · "
             f"units {record.get('units_done', 0)}/"
             f"{record.get('units_total', 0)} · "
-            f"after {', '.join(after) if after else 'nothing'}",
+            f"after {', '.join(after) if after else 'nothing'}{added}",
             f"- lands on: {record.get('land_on') or '(the front’s branch)'}",
             "- verification, which you re-run yourself before this task is "
             "done: " + (f"`{verify}`" if verify
@@ -1725,10 +1796,7 @@ def launch_supervisor_main(args: argparse.Namespace,
                            problems: list[str]) -> int:
     """`foreman launch supervisor <front> [--workspace N] [--dry-run]`."""
     front = args.pool
-    workspace = args.workspace
-    if workspace is not None and not WORKSPACE_RE.fullmatch(str(workspace)):
-        problems.append(
-            f"bad workspace {workspace!r}; a workspace is digits, e.g. 6")
+    workspace = _resolve_window_workspace(args.workspace, problems)
     record = fronts.read_front_record(front) if front is not None else None
     if front is None:
         problems.append(
@@ -2042,10 +2110,7 @@ def launch_merge_desk_main(args: argparse.Namespace,
         problems.append(
             "a merge desk takes no spec file: it works the merge queue in "
             "the repository")
-    workspace = args.workspace
-    if workspace is not None and not WORKSPACE_RE.fullmatch(str(workspace)):
-        problems.append(
-            f"bad workspace {workspace!r}; a workspace is digits, e.g. 6")
+    workspace = _resolve_window_workspace(args.workspace, problems)
     repo = os.path.abspath(args.repo or os.getcwd())
     if not os.path.isdir(repo):
         problems.append(f"repo {repo!r} is not a directory")
@@ -2295,10 +2360,7 @@ def launch_foreman_main(args: argparse.Namespace,
         problems.append(
             "a foreman takes no spec file: it works the front queue in "
             "the repository")
-    workspace = args.workspace
-    if workspace is not None and not WORKSPACE_RE.fullmatch(str(workspace)):
-        problems.append(
-            f"bad workspace {workspace!r}; a workspace is digits, e.g. 6")
+    workspace = _resolve_window_workspace(args.workspace, problems)
     repo = os.path.abspath(args.repo or os.getcwd())
     if not os.path.isdir(repo):
         problems.append(f"repo {repo!r} is not a directory")
@@ -2516,10 +2578,7 @@ def cmd_relaunch(args: argparse.Namespace) -> int:
     caller.check_role(me, "relaunch", FOREMAN, SUPERVISOR,
                       violations=violations)
     problems.extend(violations)
-    workspace = args.workspace
-    if workspace is not None and not WORKSPACE_RE.fullmatch(str(workspace)):
-        problems.append(
-            f"bad workspace {workspace!r}; a workspace is digits, e.g. 6")
+    workspace = _resolve_window_workspace(args.workspace, problems)
 
     old_id = args.session
     sessions = caller.read_roster().get("sessions", {})

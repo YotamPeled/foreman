@@ -39,10 +39,10 @@ PANEL_BRIEF = ROOT / "briefs" / "panel"
 #: here, not derived: the drift being caught is exactly the server
 #: disagreeing with the table.
 SUPERVISOR_TOOLS = frozenset({
-    "ask", "checkpoint", "doctor", "evidence", "finding", "front_take",
-    "job_fail", "job_verify", "launch", "measure", "merge_request",
-    "register", "relaunch", "rule", "status", "task_built", "task_landed",
-    "task_reset", "version",
+    "ask", "checkpoint", "doctor", "evidence", "finding", "front_done",
+    "front_take", "job_fail", "job_verify", "launch", "measure",
+    "merge_request", "register", "relaunch", "rule", "status", "task_add",
+    "task_built", "task_landed", "task_reset", "version",
 })
 #: The foreman role's own row: answers and rules, never front or job verbs.
 FOREMAN_TOOLS = frozenset({
@@ -149,9 +149,10 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     assert SUPERVISOR_TOOLS | FOREMAN_TOOLS | {"front_add", "cap",
                                               "collector"} <= names
     # 34 before the doctor/hooks/migrations job: doctor, freeze, thaw,
-    # hook_install, hook_list, migrate. Counted, not derived, so a verb
-    # added without intent fails here.
-    assert len(names) == 40
+    # hook_install, hook_list, migrate; plus task add and front done from
+    # the launches job. Counted, not derived, so a verb added without
+    # intent fails here.
+    assert len(names) == 42
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):
@@ -512,8 +513,8 @@ def test_supervisor_dry_run_prints_the_mcp_wiring(env, capsys):
     repo = make_repo(env / "repo")
     assert cli.main(["front", "add", str(PANEL_BRIEF)]) == 0
     capsys.readouterr()
-    assert cli.main(["launch", "supervisor", "panel", "--repo", str(repo),
-                     "--dry-run"]) == 0
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6",
+                     "--repo", str(repo), "--dry-run"]) == 0
     out = capsys.readouterr().out
     sid = line(out, "session: ")
     config_path = Path(line(out, "mcp config: "))
@@ -540,8 +541,8 @@ def test_relaunch_dry_run_rewrites_the_mcp_wiring(env, capsys):
                      "--pid", str(os.getpid()),
                      "--session", "a-vendor-uuid"]) == 0
     old = line(capsys.readouterr().out, "session: ")
-    assert cli.main(["relaunch", old, "--repo", str(repo),
-                     "--dry-run"]) == 0
+    assert cli.main(["relaunch", old, "--workspace", "6",
+                     "--repo", str(repo), "--dry-run"]) == 0
     out = capsys.readouterr().out
     sid = line(out, "session: ")
     assert sid != old

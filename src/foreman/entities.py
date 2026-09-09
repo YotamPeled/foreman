@@ -89,6 +89,10 @@ class Task(Entity):
     state: str = "waiting"
     units_done: int = 0
     units_total: int = 0
+    #: Who commissioned this task onto a running front: "" for a brief's
+    #: own tasks, otherwise the role that added it ("supervisor", "owner").
+    #: The screen marks such a task "added by <role>".
+    added_by: str = ""
 
 
 @dataclass(frozen=True)

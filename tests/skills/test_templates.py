@@ -240,7 +240,8 @@ def test_unknown_mapping_key_is_refused(env):
 
 def test_launch_foreman_dry_run_leaves_nothing_behind(env, tmp_path, capsys):
     repo = make_repo(tmp_path / "repo")
-    rc = cli.main(["launch", "foreman", "--repo", str(repo), "--dry-run"])
+    rc = cli.main(["launch", "foreman", "--workspace", "6",
+                     "--repo", str(repo), "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
     assert "You are the Foreman" in out
