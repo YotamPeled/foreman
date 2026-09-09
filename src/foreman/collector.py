@@ -1327,7 +1327,14 @@ def tick(now: datetime | None = None,
     now_iso = moment.isoformat()
     config = config or load_config()
     with _exclusive_tick():
-        return _tick_inner(moment, now_iso, config)
+        observed = _tick_inner(moment, now_iso, config)
+    # The panel's summary is derived from what this tick just wrote, so it
+    # is refolded here and nowhere inside the tick: once per tick, after
+    # the writes are durable, outside the lock.
+    from . import panel_feed as _panel_feed
+
+    _panel_feed.rewrite_quietly()
+    return observed
 
 
 def _jobs_view(moment: datetime) -> dict:

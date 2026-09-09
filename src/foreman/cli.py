@@ -51,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     from . import hooks as _hooks  # noqa: F401
     from . import launch as _launch  # noqa: F401
     from . import mcp as _mcp  # noqa: F401
+    from . import panel_feed as _panel_feed  # noqa: F401
     from . import measure as _measure  # noqa: F401
     from . import merge as _merge  # noqa: F401
     from . import migrate as _migrate  # noqa: F401
@@ -61,4 +62,11 @@ def main(argv: list[str] | None = None) -> int:
     from . import wake as _wake  # noqa: F401
 
     args = build_parser().parse_args(argv)
-    return args._handler(args)
+    code = args._handler(args)
+    # The panel reads one summary file and no ledger, so a verb that moved
+    # the state must leave that file moved too. Cheaper than deciding which
+    # verbs write: fold once on the way out, and never let the summary
+    # change what the verb reported.
+    if args.verb != "panel-feed":
+        _panel_feed.rewrite_quietly()
+    return code
