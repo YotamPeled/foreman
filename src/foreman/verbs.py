@@ -143,6 +143,10 @@ def rule_main(scope: str, parts: list[str]) -> int:
                         source=source, acks=[]).to_dict(),
         session_id=who,
     )
+    if scope != "swarm":
+        from . import wake as _wake
+
+        _wake.emit_rule_landed(scope, rid, store.utcnow_iso())
     print(rid)
     return 0
 
@@ -260,6 +264,11 @@ def answer_main(iid: str, answer_parts: list[str]) -> int:
                         source=source, acks=[]).to_dict(),
         session_id=who,
     )
+    from . import wake as _wake
+
+    _wake.emit_inbox_answered(item.from_, item.id or "", rid, now)
+    if scope != "swarm":
+        _wake.emit_rule_landed(scope, rid, now)
     print(f"{item.id} answered; ruling {rid}")
     return 0
 

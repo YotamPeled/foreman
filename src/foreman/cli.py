@@ -42,10 +42,12 @@ def main(argv: list[str] | None = None) -> int:
     # Importing here, not at module top, keeps the import cycle out: every verb
     # module imports this one for the decorator. Doing it before the parser is
     # built is what makes `python -m foreman.cli <verb>` find the verb at all.
+    from . import attach as _attach  # noqa: F401
     from . import collector as _collector  # noqa: F401
     from . import config as _config  # noqa: F401
     from . import doctor as _doctor  # noqa: F401
     from . import fronts as _fronts  # noqa: F401
+    from . import headless as _headless  # noqa: F401
     from . import hooks as _hooks  # noqa: F401
     from . import launch as _launch  # noqa: F401
     from . import mcp as _mcp  # noqa: F401
@@ -56,6 +58,7 @@ def main(argv: list[str] | None = None) -> int:
     from . import progress as _progress  # noqa: F401
     from . import status as _status  # noqa: F401
     from . import verbs as _verbs  # noqa: F401
+    from . import wake as _wake  # noqa: F401
 
     args = build_parser().parse_args(argv)
     return args._handler(args)

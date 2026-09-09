@@ -103,6 +103,13 @@ QtObject {
   property var checkpointFeeds: ({})
   property var sessionNames: []
 
+  // session id -> { wakeReason, wakeAt, turnCount, lastTurnAt,
+  // turnStartedAt }, read out of sessions/<id>/events.jsonl, turns.jsonl
+  // and turn.json (see HeadlessFeed). Sessions without those files read
+  // as unwoken with no turns, never as an error.
+  property var headlessFacts: ({})
+  property var headlessFeeds: ({})
+
   // ---- reading ------------------------------------------------------------
 
   // Ask for every re-read. The fold happens in onLoaded, on the new data,
@@ -122,6 +129,7 @@ QtObject {
     sessionsFolder.folder = "file://" + root.sessionsDir
     for (var name in root.feeds) root.feeds[name].reload()
     for (var sid in root.checkpointFeeds) root.checkpointFeeds[sid].reload()
+    for (var hid in root.headlessFeeds) root.headlessFeeds[hid].reload()
   }
 
   function refold() {
@@ -203,8 +211,8 @@ QtObject {
   // untouched. Where the anomaly names a supported verb outright the
   // panel derives it from kind and subject: a silent or dead supervisor
   // is relaunched from its checkpoint, an intruder carries the mock's
-  // kill pill (whose key reports the verb absent, this runtime ships
-  // no kill). Job kinds need a job id the anomaly does not carry, so
+  // kill pill (the runtime ships kill, and Keys asks it so at load).
+  // Job kinds need a job id the anomaly does not carry, so
   // like defect repeated they stay keyless rather than guessing one.
   function actionForAnomaly(row) {
     var explicit = row.action || ""
@@ -234,6 +242,38 @@ QtObject {
       })
     }
     return { count: rows.length, rows: rows }
+  }
+
+  // A turn marker counts as running while it is fresher than the turn
+  // timeout the collector clears it at. The panel cannot read the
+  // configured value, so this is the default it clears against.
+  readonly property int turnStaleS: 600
+
+  // What the Working block's supervisor line shows for a headless
+  // session: the last wake reason with its age, the turn count with the
+  // last turn's age, and whether a turn is running — from the session's
+  // own ledgers, never from a process. A windowed session carries none
+  // of it: isHeadless stays false and the line reads as it always has.
+  function headlessRow(supervisor) {
+    var empty = { isHeadless: false, wakeReason: "", wakeAgeS: null,
+                  turnCount: 0, lastTurnS: null, turnRunning: false }
+    var record = root.roster[supervisor] || ({})
+    if (!record || record.headless !== true) return empty
+    var facts = root.headlessFacts[supervisor] || ({})
+    var wakeAge = (typeof facts.wakeAt === "string" && facts.wakeAt !== "")
+      ? Ledger.seconds(facts.wakeAt, root.now) : null
+    var lastTurn = (typeof facts.lastTurnAt === "string" && facts.lastTurnAt !== "")
+      ? Ledger.seconds(facts.lastTurnAt, root.now) : null
+    var started = (typeof facts.turnStartedAt === "string" && facts.turnStartedAt !== "")
+      ? Ledger.seconds(facts.turnStartedAt, root.now) : null
+    return {
+      isHeadless: true,
+      wakeReason: (typeof facts.wakeReason === "string") ? facts.wakeReason : "",
+      wakeAgeS: wakeAge,
+      turnCount: (typeof facts.turnCount === "number") ? facts.turnCount : 0,
+      lastTurnS: lastTurn,
+      turnRunning: started !== null && started <= root.turnStaleS
+    }
   }
 
   // Working and the front queue come out of the same walk: a front is either
@@ -287,12 +327,19 @@ QtObject {
       // carries no timestamp, so a live doingAgeS is honestly unknown.
       var checkpoint = root.checkpoints[supervisor] || ({})
       var progress = root.progressRate(feed.taskHistory || [], taskRows)
+      var headed = root.headlessRow(supervisor)
       var row = {
         name: name,
         want: record.want || "",
         state: record.state || "",
         landOn: record.land_on || "",
         supervisor: supervisor,
+        isHeadless: headed.isHeadless,
+        wakeReason: headed.wakeReason,
+        wakeAgeS: headed.wakeAgeS,
+        turnCount: headed.turnCount,
+        lastTurnS: headed.lastTurnS,
+        turnRunning: headed.turnRunning,
         doingNow: checkpoint.doing || derived.doing_now || "",
         doingNext: checkpoint.next || "",
         doingAgeS: (typeof derived.doing_age_s === "number") ? derived.doing_age_s : null,
@@ -648,14 +695,57 @@ QtObject {
     }
   }
 
+  // ---- headless liveness --------------------------------------------------
+  // The same session set as the checkpoints above, one HeadlessFeed each.
+  // Synced beside them: a session directory arriving or leaving rebuilds
+  // both maps together.
+
+  function ingestHeadless() {
+    var next = ({})
+    for (var sid in root.headlessFeeds) {
+      var feed = root.headlessFeeds[sid]
+      next[sid] = { wakeReason: feed.wakeReason, wakeAt: feed.wakeAt,
+                    turnCount: feed.turnCount, lastTurnAt: feed.lastTurnAt,
+                    turnStartedAt: feed.turnStartedAt }
+    }
+    root.headlessFacts = next
+    root.rebuild()
+  }
+
+  function syncHeadless(names) {
+    var next = ({})
+    for (var n = 0; n < names.length; n++) {
+      var existing = root.headlessFeeds[names[n]]
+      if (existing) {
+        next[names[n]] = existing
+      } else {
+        next[names[n]] = headlessComponent.createObject(root, {
+          sessionId: names[n],
+          dir: root.sessionsDir + "/" + names[n]
+        })
+      }
+    }
+    for (var old in root.headlessFeeds)
+      if (!(old in next)) root.headlessFeeds[old].destroy()
+
+    root.headlessFeeds = next
+    root.ingestHeadless()
+  }
+
+  property Component headlessComponent: Component {
+    HeadlessFeed {
+      onUpdated: root.ingestHeadless()
+    }
+  }
+
   property FolderListModel sessionsFolder: FolderListModel {
     folder: "file://" + root.sessionsDir
     showDirs: true
     showFiles: false
     showDotAndDotDot: false
     sortField: FolderListModel.Name
-    onCountChanged: root.syncCheckpoints()
-    onStatusChanged: if (status === FolderListModel.Ready) root.syncCheckpoints()
+    onCountChanged: { root.syncCheckpoints(); root.syncHeadless(root.sessionNames) }
+    onStatusChanged: if (status === FolderListModel.Ready) { root.syncCheckpoints(); root.syncHeadless(root.sessionNames) }
   }
 
   // ---- the watched files at the state root --------------------------------

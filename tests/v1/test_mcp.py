@@ -39,15 +39,17 @@ PANEL_BRIEF = ROOT / "briefs" / "panel"
 #: here, not derived: the drift being caught is exactly the server
 #: disagreeing with the table.
 SUPERVISOR_TOOLS = frozenset({
-    "ask", "checkpoint", "doctor", "evidence", "finding", "front_done",
-    "front_take", "job_fail", "job_verify", "kill", "launch", "measure",
-    "merge_request", "register", "relaunch", "rule", "status", "task_add",
-    "task_built", "task_landed", "task_reset", "version",
+    "ask", "attach", "checkpoint", "doctor", "evidence", "finding",
+    "front_done", "front_take", "job_fail", "job_verify", "kill", "launch",
+    "measure", "merge_request", "register", "relaunch", "rule", "status",
+    "task_add", "task_built", "task_landed", "task_reset", "turn",
+    "version", "wake",
 })
 #: The foreman role's own row: answers and rules, never front or job verbs.
 FOREMAN_TOOLS = frozenset({
-    "answer", "checkpoint", "doctor", "front_allocate", "inbox", "kill",
-    "launch", "register", "relaunch", "rule", "status", "version",
+    "answer", "attach", "checkpoint", "doctor", "front_allocate", "inbox",
+    "kill", "launch", "register", "relaunch", "rule", "status", "tell",
+    "turn", "version", "wake",
 })
 #: A worker holds no verb, so only the gateless one survives.
 WORKER_TOOLS = frozenset({"version"})
@@ -151,9 +153,12 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     # 34 before the doctor/hooks/migrations job: doctor, freeze, thaw,
     # hook_install, hook_list, migrate; plus task add and front done from
     # the launches job, and kill, the verb the design gave the owner and
-    # this runtime had never shipped. Counted, not derived, so a verb
-    # added without intent fails here.
-    assert len(names) == 43
+    # this runtime had never shipped; plus tell and wake from the wake
+    # events job, the clock the headless turn loop reads; plus attach
+    # from the headless status job, the window on a session's turn log;
+    # plus turn from the collector-carries job, the tick's hands.
+    # Counted, not derived, so a verb added without intent fails here.
+    assert len(names) == 47
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):
@@ -523,10 +528,20 @@ def test_supervisor_dry_run_prints_the_mcp_wiring(env, capsys):
     assert f"--mcp-config {config_path} --strict-mcp-config" in out
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    assert config == {"mcpServers": {"foreman": {
-        "type": "stdio", "command": "foreman", "args": ["mcp"],
-        "env": {"FOREMAN_SESSION": sid},
-    }}}
+    # rul-ym3xjam: the config names the absolute interpreter and package
+    # of the checkout the launch came from, never a bare `foreman` off
+    # PATH — a session summoned from a branch checkout runs that branch's
+    # verbs over MCP too.
+    server = config["mcpServers"]["foreman"]
+    assert server["type"] == "stdio"
+    assert server["command"] == str(Path(sys.executable).resolve())
+    assert server["command"] != "foreman"
+    assert server["args"] == ["-m", "foreman", "mcp"]
+    assert server["env"]["FOREMAN_SESSION"] == sid
+    expected_src = Path(__file__).resolve().parents[2] / "src"
+    assert (expected_src / "foreman" / "__init__.py").exists()
+    assert server["env"]["PYTHONPATH"].split(os.pathsep)[0] == str(
+        expected_src)
 
 
 def test_relaunch_dry_run_rewrites_the_mcp_wiring(env, capsys):
@@ -537,6 +552,8 @@ def test_relaunch_dry_run_rewrites_the_mcp_wiring(env, capsys):
     vendor line must carry the role prompt, not a `--resume` the session
     could never be handed a prompt through.
     """
+    from foreman import mcp as mcp_module
+
     repo = make_repo(env / "repo")
     assert cli.main(["front", "add", str(PANEL_BRIEF)]) == 0
     capsys.readouterr()
@@ -555,8 +572,11 @@ def test_relaunch_dry_run_rewrites_the_mcp_wiring(env, capsys):
     config_path = Path(line(out, "mcp config: "))
     assert f"--mcp-config {config_path} --strict-mcp-config" in out
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    assert config["mcpServers"]["foreman"]["env"] == \
-        {"FOREMAN_SESSION": sid}
+    env = config["mcpServers"]["foreman"]["env"]
+    assert env["FOREMAN_SESSION"] == sid
+    expected_src = Path(__file__).resolve().parents[2] / "src"
+    assert (expected_src / "foreman" / "__init__.py").exists()
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(expected_src)
 
 
 def test_a_gate_written_with_a_qualified_role_is_still_read(env):

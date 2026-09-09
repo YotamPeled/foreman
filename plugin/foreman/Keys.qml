@@ -200,16 +200,69 @@ QtObject {
     return null
   }
 
-  // Verbs this runtime does not ship: `kill` was never added to the CLI
-  // and `job` offers only verify and fail, so a row asking for either
-  // cannot run. The key still attempts the verb verbatim — the CLI is
-  // the only way the panel mutates anything — but it says so first
-  // rather than failing silently.
-  function verbMissing(argv) {
-    if (argv.length === 0) return false
-    if (argv[0] === "kill") return true
-    if (argv[0] === "job" && argv.length > 1 && argv[1] === "kill") return true
-    return false
+  // What the runtime ships is asked, never baked in: each distinct verb
+  // is probed once per panel lifetime — `foreman <verb> --help`, and its
+  // exit status is the answer — cached in verbShipped and never re-asked
+  // per keypress. A key whose verb is absent still renders and still
+  // attempts it verbatim — the CLI is the only way the panel mutates
+  // anything — but fire() says so first rather than failing silently.
+  // A verb with no answer yet runs without the note: the probe is still
+  // in flight, not a refusal.
+  property var verbShipped: ({})
+  property var verbQueued: ({})
+  property var probeQueue: []
+  property string probeCurrent: ""
+
+  // Every verb on screen plus the static freeze, first-seen order.
+  function verbsToProbe() {
+    var seen = ({})
+    var out = ["freeze"]
+    seen["freeze"] = true
+    var acts = root.currentActions()
+    for (var i = 0; i < acts.length; i++) {
+      var argv = acts[i].verb || []
+      if (argv.length === 0) continue
+      var verb = String(argv[0])
+      if (!seen[verb]) {
+        seen[verb] = true
+        out.push(verb)
+      }
+    }
+    return out
+  }
+
+  // Queue one `--help` run per verb never asked before; Model.changed
+  // carries every rebuild, so verbs arriving later are probed then.
+  function probeVerbs() {
+    var verbs = root.verbsToProbe()
+    for (var i = 0; i < verbs.length; i++) {
+      var verb = verbs[i]
+      if ((verb in root.verbShipped) || root.verbQueued[verb]) continue
+      root.verbQueued[verb] = true
+      root.probeQueue.push(verb)
+    }
+    root.pumpProbe()
+  }
+
+  function pumpProbe() {
+    if (prober.running) return
+    if (root.probeQueue.length === 0) return
+    root.probeCurrent = root.probeQueue[0]
+    prober.command = ["env", "-u", "FOREMAN_SESSION", "foreman",
+                      root.probeCurrent, "--help"]
+    prober.running = true
+  }
+
+  function onProbeExited(code) {
+    var verb = root.probeCurrent
+    root.probeCurrent = ""
+    if (root.probeQueue.length > 0 && root.probeQueue[0] === verb)
+      root.probeQueue.shift()
+    root.verbQueued[verb] = false
+    var known = root.verbShipped
+    known[verb] = (code === 0)
+    root.verbShipped = known
+    root.pumpProbe()
   }
 
   function fire(actionId) {
@@ -219,7 +272,7 @@ QtObject {
       root.done(actionId, 127)
       return false
     }
-    if (root.verbMissing(act.verb))
+    if (act.verb.length > 0 && root.verbShipped[String(act.verb[0])] === false)
       console.log("KEY-NOVERB " + actionId + " foreman " + act.verb.join(" ")
                   + " is absent from this runtime; attempting verbatim")
     root.queue.push({ id: actionId, argv: act.verb })
@@ -324,11 +377,21 @@ QtObject {
     onExited: (code, signal) => { root.onRunnerExited(code) }
   }
 
+  // The probe asks what the runtime ships, once per verb, on its own
+  // Process — never on the runner, never per keypress.
+  property Process prober: Process {
+    running: false
+    onExited: (code, signal) => { root.onProbeExited(code) }
+  }
+
   // Model.changed carries every rebuild, so hints track the rows without
-  // a poll of our own. Connected imperatively: a Connections element has
-  // no default property to hold the handler in this Qt build.
+  // a poll of our own, and verbs arriving later are probed then.
+  // Connected imperatively: a Connections element has no default
+  // property to hold the handler in this Qt build.
   Component.onCompleted: {
     Foreman.Model.changed.connect(root.syncHints)
+    Foreman.Model.changed.connect(root.probeVerbs)
     root.syncHints()
+    root.probeVerbs()
   }
 }

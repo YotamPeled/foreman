@@ -33,9 +33,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from . import capacity, paths, procs, store
-from .caller import OWNER
+from .caller import OWNER, SESSION_ENV
 from .cli import subcommand
 from .entities import Session
 
@@ -47,6 +48,8 @@ DEFAULTS = {
     "relaunch_limit": 2,
     "relaunch_window_seconds": 60 * 60,
     "vendor_markers": ("muse", "grok", "claude"),
+    "heartbeat_minutes": 20,
+    "turn_stale_seconds": 10 * 60,
 }
 
 WORKER_EXEMPT_ROLES = ("supervisor", "foreman", "owner")
@@ -90,6 +93,8 @@ class CollectorConfig:
     relaunch_window_seconds: float = DEFAULTS["relaunch_window_seconds"]
     vendor_markers: tuple = field(
         default_factory=lambda: DEFAULTS["vendor_markers"])
+    heartbeat_minutes: float = DEFAULTS["heartbeat_minutes"]
+    turn_stale_seconds: float = DEFAULTS["turn_stale_seconds"]
     pools_total: dict = field(default_factory=dict)
 
 
@@ -110,7 +115,8 @@ def load_config(path: str | Path | None = None) -> CollectorConfig:
     table = raw.get("collector")
     if isinstance(table, dict):
         for key in ("tick_seconds", "supervisor_silent_seconds",
-                    "job_stalled_seconds", "relaunch_window_seconds"):
+                    "job_stalled_seconds", "relaunch_window_seconds",
+                    "heartbeat_minutes", "turn_stale_seconds"):
             value = table.get(key)
             if isinstance(value, (int, float)) and value > 0:
                 setattr(cfg, key, value)
@@ -334,9 +340,10 @@ def record_startup_version() -> None:
 def _load_state() -> dict:
     state = store.read_snapshot(paths.collector_path(), default=None)
     if not isinstance(state, dict):
-        return {"sessions": {}, "relaunches": [], "parents": {}}
+        return {"sessions": {}, "relaunches": [], "parents": {},
+                "turn_attempts": {}}
     for key, default in (("sessions", {}), ("relaunches", []),
-                         ("parents", {})):
+                         ("parents", {}), ("turn_attempts", {})):
         if not isinstance(state.get(key), (dict, list)):
             state[key] = default
     if not isinstance(state["sessions"], dict):
@@ -437,12 +444,17 @@ def _stopped_by(record: dict) -> str | None:
 
 
 def _mark_job(front: str | None, job_id: str | None, to_state: str,
-              stamp: str | None, by: str | None = None) -> None:
+              stamp: str | None, by: str | None = None,
+              reason: str | None = None) -> None:
     """Move a job to ``to_state``. A terminal state is terminal: when the
     latest record for the job is already returned, returned-with-work,
     verified, failed or killed, nothing is appended, so a returned event
     is never duplicated and a verification or failure is never overwritten
-    by a later tick."""
+    by a later tick. The one append carries the one wake event for the
+    job's launcher: the transition is computed here, so the event is
+    emitted here rather than recomputed anywhere else. ``reason``
+    overrides the event's reason where the cause differs from the state
+    (a timeout kill marks the job failed but wakes ``job timed out``)."""
     if not front or not job_id:
         return
     try:
@@ -467,6 +479,10 @@ def _mark_job(front: str | None, job_id: str | None, to_state: str,
         # the line it revises would name the launcher as the killer.
         revised.pop("by", None)
     store.append_ledger(paths.front_jobs_path(front), revised, session_id=by)
+    from . import wake as _wake
+
+    _wake.emit_job_event(front, job_id, revised,
+                         reason or f"job {to_state}", stamp)
 
 
 def _latest_job_record(front: str | None,
@@ -589,6 +605,46 @@ def _declared_at(record: dict):
     return best
 
 
+def _check_headless_silence(sid: str, record: dict, moment: datetime,
+                            now_iso: str, config: CollectorConfig,
+                            note_open, asserted: set) -> None:
+    """``supervisor silent`` for a headless session, from wakes and turns.
+
+    A headless session holds no window and no process between turns, so
+    window activity and the process table say nothing about it. What says
+    something is the two ledgers: a session that was woken and ran no
+    turn never started working, and one that ran no turn and heard no
+    wake for longer than the silence threshold never started either. A
+    session between turns — turns on its ledger, whatever its queue holds —
+    is working as designed and is never flagged: that false alarm is the
+    one this check exists not to raise.
+    """
+    from . import headless as _headless
+    from . import wake as _wake
+
+    try:
+        turns = _headless.read_turns(sid)
+    except OSError:
+        turns = []
+    if turns:
+        return
+    events = _wake.read_events(sid)
+    if events:
+        last = _wake.last_wake(sid) or {}
+        reason = last.get("reason") or "?"
+        note_open("supervisor silent", sid,
+                  f"supervisor {sid} woken (last wake '{reason}') "
+                  f"but ran no turn", asserted)
+        return
+    base = _parse_time(record.get("started_at"))
+    if base is None:
+        return
+    if (moment - base).total_seconds() > config.supervisor_silent_seconds:
+        note_open("supervisor silent", sid,
+                  f"supervisor {sid} ran no turn and had no wake for "
+                  f"{config.supervisor_silent_seconds:.0f}s", asserted)
+
+
 @contextmanager
 def _exclusive_tick():
     """Hold an exclusive lock for one tick so overlapping ticks cannot
@@ -624,6 +680,151 @@ def _live_supervisor_for(front: str | None, sessions: dict,
             continue
         return True
     return False
+
+
+#: Prefix of the transient unit one spawned ``foreman turn`` runs as.
+#: Per session *and* per attempt: a failed carrier stays loaded in its
+#: failed state, and systemd refuses a new unit under a loaded name, so
+#: reusing the name would wedge the clock behind one corpse.
+TURN_CARRIER_UNIT_PREFIX = "foreman-turn-"
+
+
+def turn_carrier_unit(session_id: str, attempt: int) -> str:
+    """The transient unit one spawned turn carrier runs as.
+
+    A different unit from the turn's own (``foreman-<session>``, the
+    stable name ``foreman kill`` stops and ``headless.free_unit_name``
+    clears before each turn): the carrier is the daemon's process, the
+    turn is the session's, and only the per-attempt name keeps a failed
+    carrier from blocking the next wake.
+    """
+    return f"{TURN_CARRIER_UNIT_PREFIX}{session_id}-{attempt}"
+
+
+def turn_carrier_argv(session_id: str) -> list[str]:
+    """``foreman turn <session>`` as this checkout's interpreter runs it.
+
+    The absolute interpreter, never a bare ``foreman`` off PATH: a
+    collector running from a branch checkout carries the wake with that
+    branch's verbs.
+    """
+    return [str(Path(sys.executable).resolve()), "-m", "foreman",
+            "turn", session_id]
+
+
+def turn_carrier_outer_argv(session_id: str, attempt: int) -> list[str]:
+    """The detached spawn: the carrier under its per-attempt unit.
+
+    ``systemd-run`` without ``--wait`` returns once the unit is started,
+    so starting it is all the tick ever does with it. No working
+    directory: the carrier reads absolute state paths, never a worktree.
+
+    The world travels as ``--setenv=`` and not as the spawn's own
+    environment. ``systemd-run --user`` hands the unit to the user
+    manager, which starts it from *its* environment, not the caller's:
+    an env= on the spawn reaches the systemd-run process and stops
+    there. Measured, by a carrier that died on "No module named
+    foreman" while its spawn's env held the right PYTHONPATH.
+    """
+    argv = ["systemd-run", "--user",
+            f"--unit={turn_carrier_unit(session_id, attempt)}"]
+    for name, value in sorted(turn_carrier_env(only_world=True).items()):
+        argv.append(f"--setenv={name}={value}")
+    return [*argv, *turn_carrier_argv(session_id)]
+
+
+def turn_carrier_env(only_world: bool = False) -> dict[str, str]:
+    """The world a turn carrier runs in: this process's, minus a session.
+
+    The state and config directories travel the way every other launch
+    carries them, and this checkout's ``src`` rides first on
+    ``PYTHONPATH`` so the carrier runs this branch's verbs. The calling
+    session does not travel: the carrier is the clock's own act, and it
+    arrives as the owner, never as whatever summoned the daemon.
+    """
+    from . import mcp as mcp_module
+
+    env = dict(os.environ)
+    env.pop(SESSION_ENV, None)
+    src = mcp_module.checkout_src()
+    if src is not None:
+        inherited = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = str(src) + (
+            os.pathsep + inherited if inherited else "")
+    if not only_world:
+        return env
+    # Just the part the unit must be told, since it inherits nothing:
+    # which world to read and where the package is.
+    world = {}
+    for name in (paths.STATE_ENV, paths.CONFIG_ENV, "PYTHONPATH"):
+        value = env.get(name)
+        if value:
+            world[name] = value
+    return world
+
+
+def _default_turn_spawn(argv: list[str], *,
+                        env: dict[str, str]) -> Any:
+    """Start one turn carrier detached and return at once.
+
+    Nothing here waits on the carrier: a turn takes up to the turn
+    timeout, and a daemon that blocked on one would stop observing the
+    swarm. Detached the way every other fire-and-forget spawn in this
+    runtime goes: no pipe, its own session, nothing inherited but the
+    world it was handed.
+    """
+    return subprocess.Popen(
+        argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+        env=env)
+
+
+def _carry_wakes(sessions: dict, cstate: dict) -> int:
+    """Start one detached ``foreman turn`` per queued, uncarried wake.
+
+    Every session with a queued wake and no running turn gets a carrier;
+    a session already running a turn is skipped — ``wake.turn_running``
+    is the check, and it is also what ``run_wake`` itself refuses on, so
+    a double start cannot produce two turns — and a session with an empty
+    queue is skipped. A skip touches no ledger byte: a held wake waits
+    unstamped and in order for the first tick after the turn ends.
+    Returns how many carriers went out.
+    """
+    from . import wake as _wake
+
+    attempts = cstate.get("turn_attempts")
+    if not isinstance(attempts, dict):
+        attempts = cstate["turn_attempts"] = {}
+    carried = 0
+    for sid in sorted(sessions):
+        if not isinstance(sid, str) or not sid:
+            continue
+        record = sessions.get(sid)
+        if not isinstance(record, dict):
+            continue
+        if not record.get("headless"):
+            # An interactive session is a conversation with a keyboard in
+            # front of it. Carrying its wake would run `claude -p --resume`
+            # inside that live conversation: two processes, one thread of
+            # talk. A windowed session reads its own screen; only a
+            # headless one has no other way to hear.
+            continue
+        if not _wake.pending_events(sid):
+            continue
+        if _wake.turn_running(sid):
+            continue
+        try:
+            attempt = int(attempts.get(sid) or 0) + 1
+        except (TypeError, ValueError):
+            attempt = 1
+        attempts[sid] = attempt
+        try:
+            _default_turn_spawn(turn_carrier_outer_argv(sid, attempt),
+                                env=turn_carrier_env())
+        except Exception:  # noqa: BLE001 - a failed spawn never stops
+            continue  # the clock; the wake stays queued for the next tick
+        carried += 1
+    return carried
 
 
 def _tick_inner(moment: datetime, now_iso: str,
@@ -758,7 +959,14 @@ def _tick_inner(moment: datetime, now_iso: str,
         overdue = elapsed is not None and timeout_s is not None and \
             elapsed > timeout_s
 
-        if role == "supervisor" and pid is not None and not alive:
+        if role == "supervisor" and record.get("headless") \
+                and state in RUNNING_LIKE:
+            # No window, no process between turns: liveness is wakes and
+            # turns, never the process table below. A pid here would be a
+            # stale breadcrumb, not a session, so this branch comes first.
+            _check_headless_silence(sid, record, moment, now_iso, config,
+                                    note_open, asserted)
+        elif role == "supervisor" and pid is not None and not alive:
             # Re-check liveness immediately: the roster was read after the
             # process snapshot, so a supervisor registered since still reads
             # dead from the stale table. A live recheck never relaunches
@@ -906,7 +1114,7 @@ def _tick_inner(moment: datetime, now_iso: str,
                 if not remaining:
                     update["state"] = "killed"
                     _mark_job(record.get("front"), record.get("job"),
-                              "failed", None)
+                              "failed", None, reason="job timed out")
                     _release_slots(sid, now_iso, "killed")
                     note_open("job timeout", sid,
                               f"elapsed {elapsed:.0f}s past timeout "
@@ -1011,6 +1219,19 @@ def _tick_inner(moment: datetime, now_iso: str,
                           f"session '{by}'", asserted)
 
     monitors_view = _monitors_tick(moment, now_iso, note_open, asserted)
+
+    # The clock this task builds: idle turn-contract sessions that heard
+    # nothing since their last wake get a heartbeat. It only appends to
+    # per-session event ledgers, so it cannot move a roster or job state.
+    from . import wake as _wake
+
+    _wake.heartbeat_tick(moment, config)
+
+    # The clock's hands: every queued wake no turn is carrying gets a
+    # detached `foreman turn` carrier. It only starts processes, so it
+    # cannot move a roster or job state; the resolve pass below is
+    # untouched by it.
+    _carry_wakes(sessions, cstate)
 
     # Resolve what this tick no longer asserts. Unregistered-writer lines
     # clear only when the roster learns the id: the ledger line itself is

@@ -42,6 +42,12 @@ ShellRoot {
     for (var f = 0; f < fronts.all.length; f++) {
       var row = fronts.all[f]
       out.push("front." + row.name + ".doingNow " + row.doingNow)
+      out.push("front." + row.name + ".headless " + row.isHeadless)
+      out.push("front." + row.name + ".wakeReason " + row.wakeReason)
+      out.push("front." + row.name + ".wakeAgeS " + row.wakeAgeS)
+      out.push("front." + row.name + ".turnCount " + row.turnCount)
+      out.push("front." + row.name + ".lastTurnS " + row.lastTurnS)
+      out.push("front." + row.name + ".turnRunning " + row.turnRunning)
       out.push("front." + row.name + ".remaining " + row.remaining.join("|"))
       out.push("front." + row.name + ".blockedOnOwner " + row.blockedOnOwner.join("|"))
       out.push("front." + row.name + ".ratePerHour " + row.ratePerHour)

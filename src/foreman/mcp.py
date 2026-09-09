@@ -54,12 +54,14 @@ def _ensure_verbs() -> None:
     from . import config as _config  # noqa: F401
     from . import doctor as _doctor  # noqa: F401
     from . import fronts as _fronts  # noqa: F401
+    from . import headless as _headless  # noqa: F401
     from . import hooks as _hooks  # noqa: F401
     from . import launch as _launch  # noqa: F401
     from . import migrate as _migrate  # noqa: F401
     from . import progress as _progress  # noqa: F401
     from . import status as _status  # noqa: F401
     from . import verbs as _verbs  # noqa: F401
+    from . import wake as _wake  # noqa: F401
 
 
 def mcp_config_path(session_id: str) -> Path:
@@ -67,15 +69,53 @@ def mcp_config_path(session_id: str) -> Path:
     return paths.session_dir(session_id) / MCP_CONFIG_FILENAME
 
 
+def checkout_src() -> Path | None:
+    """This checkout's ``src`` directory, when this module runs from one.
+
+    A session summoned from a branch checkout must run that branch's
+    verbs over MCP, not whatever ``foreman`` resolves to off PATH — so
+    the config below names this checkout explicitly. An installed wheel
+    has no checkout and answers None, and the config then names only the
+    absolute interpreter.
+    """
+    src = Path(__file__).resolve().parent.parent
+    if src.name == "src" and (src / "foreman" / "__init__.py").exists():
+        return src
+    return None
+
+
+def mcp_server_env(session_id: str) -> dict[str, str]:
+    """Environment the MCP server runs with: this session, this checkout.
+
+    ``PYTHONPATH`` puts the checkout this launch came from first, so a
+    session summoned from a branch checkout runs that branch's verbs.
+    The launcher's own ``PYTHONPATH`` is kept behind it, never replaced:
+    replacing it would drop whatever the owner's environment needed.
+    """
+    env = {SESSION_ENV: session_id}
+    src = checkout_src()
+    if src is not None:
+        inherited = os.environ.get("PYTHONPATH")
+        env["PYTHONPATH"] = str(src) + (
+            os.pathsep + inherited if inherited else "")
+    return env
+
+
 def mcp_config_text(session_id: str) -> str:
-    """The file content: this server over stdio, as this session."""
+    """The file content: this server over stdio, as this session.
+
+    Names the absolute interpreter running this launch
+    (``sys.executable -m foreman``), never a bare ``foreman`` off PATH:
+    a session summoned from a branch checkout runs that branch's verbs
+    over MCP too, via ``PYTHONPATH`` (see :func:`mcp_server_env`).
+    """
     return json.dumps(
         {"mcpServers": {
             SERVER_NAME: {
                 "type": "stdio",
-                "command": "foreman",
-                "args": ["mcp"],
-                "env": {SESSION_ENV: session_id},
+                "command": str(Path(sys.executable).resolve()),
+                "args": ["-m", "foreman", "mcp"],
+                "env": mcp_server_env(session_id),
             },
         }},
         indent=2,

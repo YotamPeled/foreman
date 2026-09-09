@@ -78,6 +78,33 @@ Item {
     return (rec && rec.state) || ""
   }
 
+  // A human age as the status screen reads it: 14m, 2h. Never a timestamp.
+  function ageWord(s) {
+    if (s === null || s === undefined) return "?"
+    var total = Math.max(0, Math.floor(s))
+    if (total < 60) return total + "s"
+    if (total < 3600) return Math.floor(total / 60) + "m"
+    if (total < 86400) return Math.floor(total / 3600) + "h"
+    return Math.floor(total / 86400) + "d"
+  }
+
+  // The supervisor line: the name for a windowed session, and the same
+  // three facts the status screen shows for a headless one — last wake
+  // reason, turn count with last-turn age, and turn running while one is.
+  function supervisorText(row) {
+    var base = "· sup·" + row.name
+    if (!row.isHeadless) return base
+    var wake = row.wakeReason
+      ? ("last wake '" + row.wakeReason + "' " + root.ageWord(row.wakeAgeS) + " ago")
+      : "no wake yet"
+    var turns = row.turnCount === 1 ? "1 turn"
+      : root.numFmt(row.turnCount) + " turns"
+    if (row.turnCount > 0)
+      turns += " · last turn " + root.ageWord(row.lastTurnS) + " ago"
+    var running = row.turnRunning ? " · turn running" : ""
+    return base + " · " + wake + " · " + turns + running
+  }
+
   // moving | stalled | halted | idle: the condition the tone, the
   // progress line and the empty-list sentence all read.
   function condition(row) {
@@ -311,7 +338,7 @@ Item {
           }
 
           Text {
-            text: "· sup·" + front.name
+            text: root.supervisorText(front)
             color: Color.muted
             font.family: Style.font.family
             font.pixelSize: Style.font.title

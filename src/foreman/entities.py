@@ -173,6 +173,11 @@ class Session(Entity):
     #: under the same Foreman session id, which is how the roster tells a
     #: relaunched supervisor from the one it replaced.
     vendor_session: str | None = None
+    #: Headless sessions run one turn per wake and hold no long-lived
+    #: process: no window, no workspace, pid None while running. The
+    #: collector's liveness branches all require a pid, so a headless
+    #: session is never read as dead, silent or stalled for having none.
+    headless: bool = False
     started_at: str | None = None
     last_declared_at: str | None = None
     last_observed_at: str | None = None
@@ -303,6 +308,60 @@ class Event(Entity):
     kind: str = ""
     subject: str = ""
     data: dict[str, Any] = field(default_factory=dict)
+
+
+#: Reasons a wake event names. Job reasons go to the job's launcher,
+#: ``inbox answered`` to the session that asked, ``rule landed`` to the
+#: supervisor of the rule's front, ``told`` to the named session,
+#: ``heartbeat`` to any session with a live turn contract, ``merge
+#: requested`` to the front's merge desk, and ``merge landed`` /
+#: ``merge failed`` to the supervisor that asked.
+WAKE_REASONS = (
+    "job returned",
+    "job returned-with-work",
+    "job failed",
+    "job killed",
+    "job timed out",
+    "inbox answered",
+    "rule landed",
+    "told",
+    "heartbeat",
+    "merge requested",
+    "merge landed",
+    "merge failed",
+)
+
+
+@dataclass(frozen=True)
+class WakeEvent(Entity):
+    """One wake event for one session, in its own events.jsonl ledger.
+
+    The ledger is append-only and folds last-wins by id like every other
+    ledger. Delivery is a revised copy of the same line with
+    ``delivered_at`` set, so the fold is what proves an event woke its
+    session exactly once. Each reason names only the ids the next task
+    needs — never a prose blob — except ``told``, which carries the
+    foreman's one sentence.
+    """
+
+    _aliases: ClassVar[dict[str, str]] = {"from_": "from"}
+
+    id: str | None = None
+    session: str = ""
+    reason: str = ""
+    at: str | None = None
+    job: str | None = None
+    front: str | None = None
+    task: str | None = None
+    inbox: str | None = None
+    ruling: str | None = None
+    rule: str | None = None
+    from_: str | None = None
+    text: str | None = None
+    merge: str | None = None
+    branch: str | None = None
+    sha: str | None = None
+    delivered_at: str | None = None
 
 
 @dataclass(frozen=True)

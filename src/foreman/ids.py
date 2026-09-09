@@ -32,8 +32,10 @@ KIND_PREFIXES = {
     "measurement": "msm",
     "checkpoint": "chk",
     "inbox": "inb",
+    "turn": "trn",
     "anomaly": "anm",
     "event": "evt",
+    "wake": "wke",
 }
 
 _lock = threading.Lock()

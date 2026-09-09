@@ -144,6 +144,17 @@ EXPECTED_LIVE = {
 #:                          collector clock: 15:00 + 1:30 = 16:30 UTC
 #:   quay.doingNow          no checkpoint and no observed.fronts: empty,
 #:                          not an error
+#:   harbor.headless        ses-hb0001 rosters headless with a wake, a turn
+#:                          and a fresh marker: the Working line's facts
+#:   harbor.wakeReason      the session's one event, "job returned"
+#:   harbor.wakeAgeS        that event's 14:40 stamp to the 15:00 collector
+#:                          clock: 1200 seconds
+#:   harbor.turnCount       the session's one turn record
+#:   harbor.lastTurnS       that turn's 14:41 stamp to the 15:00 clock: 1140
+#:   harbor.turnRunning     the turn.json marker at 14:59 is fresher than
+#:                          the 600-second staleness: a turn is running
+#:   quay.headless          no supervisor and no roster flag: no facts, and
+#:                          the supervisor line reads as it always has
 EXPECTED_LIVE_ROWS = {
     "front.harbor.doingNow": "Second soundings running, 8 of 12 read",
     "front.harbor.remaining": "second soundings|buoy labels|tide window",
@@ -161,6 +172,14 @@ EXPECTED_LIVE_ROWS = {
         "|Buy one more night of survey boat time?",
     "front.harbor.rateWindowH": "3",
     "front.harbor.projectedFinish": "2026-06-02T16:30:00.000Z",
+    "front.harbor.headless": "true",
+    "front.harbor.wakeReason": "job returned",
+    "front.harbor.wakeAgeS": "1200",
+    "front.harbor.turnCount": "1",
+    "front.harbor.lastTurnS": "1140",
+    "front.harbor.turnRunning": "true",
+    "front.quay.headless": "false",
+    "front.quay.turnCount": "0",
     "front.quay.doingNow": "",
 }
 #: The one row fact read back as a float rather than compared as text.
@@ -833,7 +852,8 @@ def check_panel_strict(renders: dict) -> None:
 #:   problems  anomalies.jsonl in ledger order, resolved rows dropped;
 #:             the defect-repeated row carries no action and gets no hint:
 #:             supervisor silent ("foreman relaunch ses-supeng01") then
-#:             intruder ("foreman kill pid-41180")
+#:             intruder ("foreman kill ses-wcorp002 --reason
+#:             intruder-pid-41180")
 #:   hints     assigned on appearance in model order (needsYou approve
 #:             then decline per item, then problems), aa down the alphabet
 #:             without f: aa ab ac ad ae ag
@@ -852,7 +872,7 @@ EXPECTED_KEYS = [
     ("ae", "problem:supervisor silent:ses-supeng01",
      ["relaunch", "ses-supeng01"]),
     ("ag", "problem:intruder:pid-41180",
-     ["kill", "pid-41180"]),
+     ["kill", "ses-wcorp002", "--reason", "intruder-pid-41180"]),
 ]
 EXPECTED_KEYS_QUEUE = [
     "static:freeze",
@@ -868,6 +888,15 @@ EXPECTED_KEYS_ANSWERS = {
     "inb-tokens01": "yes",
     "inb-reaper01": "no",
 }
+#: The kill the intruder row runs, hand-derived from the fixture bytes the
+#: same way: the action names roster session ses-wcorp002 (whose running
+#: job is job-cor-3 on front corpus) with a one-token reason, so the verb
+#: the panel runs verbatim succeeds against the throwaway copy.
+EXPECTED_KEYS_KILL_ID = "problem:intruder:pid-41180"
+EXPECTED_KEYS_KILL_SESSION = "ses-wcorp002"
+EXPECTED_KEYS_KILL_JOB = "job-cor-3"
+EXPECTED_KEYS_KILL_FRONT = "corpus"
+EXPECTED_KEYS_KILL_REASON = "intruder-pid-41180"
 
 HINT_RE = re.compile(r"^[a-e,g-z][a-e,g-z]$")
 
@@ -964,17 +993,40 @@ KEYS_SESSIONS = [
 ]
 
 
+def _scrub_throwaway_pids(tmp: Path) -> None:
+    """The throwaway roster carries no pids. The mock records processes the
+    machine never ran, and a recorded pid without a starttime is trusted,
+    so the kill this check proves could otherwise signal a live process
+    that happens to reuse the number. With no pid the kill stops nothing
+    and still writes its roster and job lines, which is what is proven."""
+    roster_path = tmp / "roster.json"
+    try:
+        roster = json.loads(roster_path.read_text())
+    except (OSError, ValueError):
+        raise Failure("keys: the throwaway copy has no readable roster.json")
+    sessions = roster.get("sessions")
+    if not isinstance(sessions, dict):
+        raise Failure("keys: the throwaway roster holds no sessions")
+    for record in sessions.values():
+        if isinstance(record, dict):
+            record["pid"] = None
+            record["pgid"] = None
+    roster_path.write_text(json.dumps(roster) + "\n")
+
+
 def panel_keys(state_dir: Path) -> int:
     """Every key against a throwaway copy of the fixture, asserting the
     ledger line the verb wrote, once per caller in KEYS_SESSIONS. The
-    mock fixture is copied to a temporary directory and FOREMAN_STATE
-    points at the copy; the real state directory is never touched.
-    Answers and the freeze are proven against the ledgers; the cheat
-    sheet, Esc and the panel's reflection of the change are proven
-    against the harness report; the Problems verbs the CLI cannot run
-    are attempted verbatim and reported unproven. A wrong-row probe
-    types a first letter, lands a new row underneath, and proves the
-    pending letter cancels and the second letter fires nothing."""
+    mock fixture is copied to a temporary directory, its roster pids are
+    scrubbed so the proven kill can signal no real process, and
+    FOREMAN_STATE points at the copy; the real state directory is never
+    touched. Answers, the freeze and the kill are proven against the
+    ledgers; the cheat sheet, Esc and the panel's reflection of the
+    change are proven against the harness report; the relaunch the CLI
+    cannot run against the fixture is attempted verbatim and reported
+    unproven. A wrong-row probe types a first letter, lands a new row
+    underneath, and proves the pending letter cancels and the second
+    letter fires nothing."""
     if not FIXTURE.is_dir():
         raise Failure("keys: no such fixture: " + str(FIXTURE))
     proven: dict = {}
@@ -982,6 +1034,7 @@ def panel_keys(state_dir: Path) -> int:
         tmp = Path(tempfile.mkdtemp(prefix="foreman-keys-"))
         try:
             shutil.copytree(FIXTURE, tmp, dirs_exist_ok=True)
+            _scrub_throwaway_pids(tmp)
             proven[label] = check_keys_once(tmp, label, session)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -990,10 +1043,10 @@ def panel_keys(state_dir: Path) -> int:
           "(exit %s: the fixture carries no vendor session and no repo, "
           "so the verb refuses)"
           % done["problem:supervisor silent:ses-supeng01"])
-    print("keys: UNPROVEN kill pid-41180 "
-          "(exit %s: the CLI has no `kill` verb and `foreman job` has "
-          "no `kill` either, so the row's verb cannot run)"
-          % done["problem:intruder:pid-41180"])
+    print("keys: kill ses-wcorp002 runs its verb (exit %s: the roster "
+          "and job-cor-3 hold killed, by the owner, for "
+          "intruder-pid-41180)"
+          % done[EXPECTED_KEYS_KILL_ID])
     print("keys: every provable key did its verb against the "
           "throwaway copy, under every caller (%s)"
           % ", ".join(label for label, _ in KEYS_SESSIONS))
@@ -1163,11 +1216,44 @@ def check_keys_once(tmp: Path, label: str, session: str | None) -> dict:
                           % (probe_match.group(1),
                              probe_row.get("answer")))
 
-        # The kill pill attempts its verb verbatim and says the verb is
-        # absent instead of failing silently.
-        if "problem:intruder:pid-41180" not in noverb:
-            raise Failure("keys: the kill key never reported the "
-                          "absent verb: %r" % sorted(noverb))
+        # The probe asks what the runtime ships, so no key may report an
+        # absent verb here: every verb on screen exists, and a KEY-NOVERB
+        # line means the hard-coded list is back.
+        if noverb:
+            raise Failure("keys: a key reported its verb absent: %r"
+                          % sorted(noverb))
+
+        # The kill key runs its verb for real: exit 0, the roster session
+        # killed by the owner for the row's reason, and its running job
+        # killed with the same hand and reason.
+        if done.get(EXPECTED_KEYS_KILL_ID) != "0":
+            raise Failure("keys: %s did not run its verb: exit %s"
+                          % (EXPECTED_KEYS_KILL_ID,
+                             done.get(EXPECTED_KEYS_KILL_ID)))
+        try:
+            roster = json.loads((tmp / "roster.json").read_text())
+            killed = roster["sessions"][EXPECTED_KEYS_KILL_SESSION]
+        except (OSError, ValueError, KeyError, TypeError):
+            raise Failure("keys: the throwaway roster no longer names %s"
+                          % EXPECTED_KEYS_KILL_SESSION)
+        for field, want in (("state", "killed"),
+                            ("killed_by", "owner"),
+                            ("killed_reason", EXPECTED_KEYS_KILL_REASON)):
+            if killed.get(field) != want:
+                raise Failure("keys: roster %s holds %r for %s, the kill "
+                              "should have written %r"
+                              % (EXPECTED_KEYS_KILL_SESSION,
+                                 killed.get(field), field, want))
+        jobs = fold_ledger(tmp / "fronts" / EXPECTED_KEYS_KILL_FRONT
+                           / "jobs.jsonl")
+        job = jobs.get(EXPECTED_KEYS_KILL_JOB, {})
+        for field, want in (("state", "killed"),
+                            ("killed_reason", EXPECTED_KEYS_KILL_REASON)):
+            if job.get(field) != want:
+                raise Failure("keys: job %s holds %r for %s, the kill "
+                              "should have written %r"
+                              % (EXPECTED_KEYS_KILL_JOB, job.get(field),
+                                 field, want))
 
         print("keys [%s]: F runs `foreman freeze` (frozen file %r)"
               % (label, frozen_text.splitlines()[0]))
@@ -1182,9 +1268,13 @@ def check_keys_once(tmp: Path, label: str, session: str | None) -> dict:
         print("keys [%s]: answered questions leave Needs you on the next "
               "tick" % label)
         print("keys [%s]: half-typed hint cancels when rows change (%s); "
-              "the new hint fires the new row (%s); the kill key reports "
-              "its absent verb" % (label, wrongrow.get("CANCELLED"),
-                                   wrongrow.get("FIRED")))
+              "the new hint fires the new row (%s)" % (label,
+                                                       wrongrow.get("CANCELLED"),
+                                                       wrongrow.get("FIRED")))
+        print("keys [%s]: %s runs `foreman kill %s --reason %s` "
+              "(exit 0: the roster and the job hold killed)"
+              % (label, hints[EXPECTED_KEYS_KILL_ID],
+                 EXPECTED_KEYS_KILL_SESSION, EXPECTED_KEYS_KILL_REASON))
         return done
     except Failure as failure:
         raise Failure("keys [%s]: %s" % (label, failure))

@@ -26,9 +26,9 @@ import "." as Foreman
 // the second), so both answer variants are proven without answering one
 // item twice. Every fire is typed: F through handleText, each dynamic row
 // through both letters of its current hint. The Problems fires attempt
-// their rows' verbs verbatim; where the CLI has no such verb Keys logs
-// KEY-NOVERB and the Python half marks the key unproven rather than
-// substituting another verb.
+// their rows' verbs verbatim: the relaunch the fixture cannot run stays
+// unproven, while the kill the runtime ships must succeed and the Python
+// half asserts the ledger lines it wrote.
 //
 // After the queue drains, the wrong-row probe types a first letter, adds
 // a row underneath through `foreman ask` on a separate Process, and
