@@ -1,0 +1,64 @@
+name      = "panel-perf"
+order     = 1
+want      = """
+The panel froze the owner's desktop on its first live install: quickshell went unresponsive for about
+20 s of every 90 (at-spi2 logged 'Disabling unresponsive app'), because Model.qml's 2-second poll
+re-reads eight ledger files and refolds them on the shell thread, and the live ledgers are far larger
+than the fixture the panel was proven on. The panel is uninstalled and stays so until this front proves
+the freeze absent against a copy of the live state directory.
+"""
+done-when = "Against a copy of the owner's live state directory (~/.local/state/foreman as of 2026-09-09 morning, 61 sessions), the installed panel runs for ten minutes with zero 'Disabling unresponsive app' lines from at-spi2 in the journal, the shell's main thread never blocks longer than 50 ms as measured by a probe the front writes, the blocks still show the same facts as `foreman status` (checked by the harness), and a change to a ledger reaches the screen within 3 s — all CONFIRMED by running, with the journal excerpt pasted as evidence."
+land-on   = "main"
+reviews   = "on request"
+after     = ["headless"]
+prefer    = 10
+
+[allocation]
+muse  = 0
+grok  = 1
+opus  = 1
+astra = 1
+
+[[task]]
+title   = "read and fold off the shell thread"
+core    = true
+scope   = """
+WHAT: `foreman status --json` (or `foreman panel-feed`) writes one small summary file, panel.json, holding
+exactly the facts the eight blocks render, produced by the same code `foreman status` uses; the collector
+rewrites it on every tick and any verb that writes a ledger triggers a rewrite (or the panel calls the verb
+on a file-change event of the ledgers, off-thread); Model.qml reads only panel.json, through one FileView,
+folds nothing, and skips the read when the file's mtime is unchanged; no ledger is parsed in QML; the
+2-second poll stays as fallback but costs one stat when nothing changed. Keep the fixtures working:
+foreman-verify panel --loads/--blocks/--keys read the same panel.json produced from the fixture state.
+INPUTS: plugin/foreman/Model.qml, Ledger.js, *Feed.qml; src/foreman/status.py; bin/foreman-verify;
+the finding text above.
+OUTPUTS: the verb, collector hook, Model.qml rewritten, harness green, a test that panel.json from the
+fixture equals what the blocks rendered before.
+OUT OF SCOPE: new blocks, visual changes.
+"""
+verify  = "python -m pytest tests -q && env -u FOREMAN_SESSION bin/foreman-verify panel --loads && env -u FOREMAN_SESSION bin/foreman-verify panel --blocks"
+size    = 1
+after   = []
+
+[[task]]
+title   = "the proof against the live state"
+scope   = """
+WHAT: copy ~/.local/state/foreman to an isolated FOREMAN_STATE; run quickshell with the plugin against it
+(offscreen is not enough for this one: run it in the owner's real shell only with his say-so, otherwise a
+nested Hyprland or a second quickshell instance on a spare output); write a main-thread probe (a QML Timer
+at 100 ms logging any gap over 50 ms); watch the journal for at-spi2 'Disabling unresponsive app' for ten
+minutes; append to a ledger and time its appearance on screen; paste the journal excerpt and the probe log
+as evidence.
+INPUTS: task 1 landed; journalctl --user; the at-spi2 line as the instrument.
+OUTPUTS: evidence records, the PR against main, the install command in the PR body.
+OUT OF SCOPE: reinstalling into the owner's shell (his act).
+"""
+verify  = "test -s /mnt/ssd/projects/foreman-scratch/proof-panel-perf/journal-10min.txt && ! grep -q 'Disabling unresponsive' /mnt/ssd/projects/foreman-scratch/proof-panel-perf/journal-10min.txt"
+size    = 1
+after   = ["read and fold off the shell thread"]
+
+[[rule]]
+text = "Nothing touches the owner's live Omarchy config, bindings or shell; the proof runs against a copy of his state directory in an isolated world. Builders are Opus (Claude) workers; Muse is out; Grok only per the owner's answer inb-by6c6is."
+
+[[rule]]
+text = "A component proven on a fixture is proven on the live state before it reaches the owner's desktop: every panel change runs against a copy of ~/.local/state/foreman before its PR."
