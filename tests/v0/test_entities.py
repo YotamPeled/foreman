@@ -89,6 +89,10 @@ INSTANCES = [
         requested_at="2026-09-08T00:00:00+00:00",
         landed_at="2026-09-08T01:00:00+00:00",
         by="ses-desk",
+        check_command="true",
+        check_exit=0,
+        check_seconds=0.4,
+        check_output_ref="sessions/ses-desk/merges/mrg-abc1234-check.log",
     ),
     Session(
         id="ses-abc1234",

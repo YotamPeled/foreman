@@ -168,6 +168,11 @@ def session_scratch_dir(session_id: str) -> Path:
     return session_dir(session_id) / "scratch"
 
 
+def merge_check_log_path(session_id: str, merge_id: str) -> Path:
+    """The check's combined output for one landing, under the desk session."""
+    return session_dir(session_id) / "merges" / f"{merge_id}-check.log"
+
+
 def config_file() -> Path:
     return config_dir() / "foreman.toml"
 

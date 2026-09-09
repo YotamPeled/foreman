@@ -27,6 +27,7 @@ import argparse
 import os
 import subprocess
 import tempfile
+import time
 import tomllib
 
 from . import caller, cli, fronts, ids, paths, procs, store, wake
@@ -397,6 +398,7 @@ def merge_land_main(ref: str | None) -> int:
     branch, target = str(record.get("branch")), str(record.get("target"))
     if not _branch_exists(repo, branch):
         return _refuse([f"field 'branch' does not exist ({branch!r})"])
+    check_fields: dict = {}
     # The desk works in a detached worktree of its own, never by checking
     # the branch out in the repository. Every branch it is asked to land
     # was produced by a worker and is still checked out in that worker's
@@ -426,13 +428,33 @@ def merge_land_main(ref: str | None) -> int:
                 return _refuse([
                     f"rebase of '{branch}' onto '{target}' conflicts; "
                     f"the rebase was aborted: {tail}".strip()])
+            started = time.perf_counter()
             proc = subprocess.run(check, shell=True, cwd=area,
                                   stdout=subprocess.PIPE,
                                   stderr=subprocess.STDOUT, text=True)
+            elapsed = time.perf_counter() - started
+            output = proc.stdout or ""
+            log_path = paths.merge_check_log_path(who, mid)
+            log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_path.write_text(output, encoding="utf-8")
+            check_fields = {
+                "check_command": check,
+                "check_exit": proc.returncode,
+                "check_seconds": elapsed,
+                "check_output_ref": str(log_path),
+            }
             if proc.returncode != 0:
-                tail = (proc.stdout or "").strip()[-2000:]
-                return _refuse([f"check '{check}' failed on '{branch}' "
-                                f"(exit {proc.returncode}): {tail}".strip()])
+                tail = output.strip()[-2000:]
+                store.append_ledger(
+                    paths.merges_path(),
+                    dict(record, **check_fields),
+                    session_id=who,
+                )
+                detail = f": {tail}" if tail else ""
+                return _refuse([
+                    f"check '{check}' failed on '{branch}' "
+                    f"(exit {proc.returncode}){detail} "
+                    f"(output {log_path})"])
             head = _git(area, "rev-parse", "HEAD").stdout.strip()
             # Advance the target first, leased to `base`. The rebase put
             # `head` directly on top of `base`, so this is a fast-forward
@@ -481,7 +503,7 @@ def merge_land_main(ref: str | None) -> int:
     store.append_ledger(paths.merges_path(),
                         dict(record, result=LANDED, head=head,
                              landed_at=now, land_attempts=0,
-                             fail_reason=""),
+                             fail_reason="", **check_fields),
                         session_id=who)
     wake.emit_merge_landed(str(record.get("front") or ""), mid,
                            str(record.get("branch") or ""),

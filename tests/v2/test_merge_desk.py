@@ -656,6 +656,72 @@ def test_land_uses_the_fallback_check_when_the_repository_has_no_table(
     assert merges_by_id()[mid]["result"] == "landed"
 
 
+def test_landed_record_carries_the_check(env, monkeypatch, capsys):
+    """A landed merge names the command, a zero exit, a duration and
+    an output file under the desk session that holds the check's output."""
+    repo, _origin = make_repo(env)
+    make_branch(repo, "feat", "feat.txt")
+    write_check(env, "printf 'check-output\\n'; sleep 0.05")
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "flow"))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "flow"),
+                session_record(DESK, "merge-desk"))
+    first = build_task(monkeypatch, capsys, "flow", "first")
+    mid = request_id(monkeypatch, capsys, "feat", "flow", [first],
+                     "main", cwd=repo)
+    assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo) == 0
+    capsys.readouterr()
+    record = merges_by_id()[mid]
+    assert record["result"] == "landed"
+    assert record["check_command"] == "printf 'check-output\\n'; sleep 0.05"
+    assert record["check_exit"] == 0
+    assert record["check_seconds"] > 0
+    ref = record["check_output_ref"]
+    log_path = Path(ref)
+    assert log_path.is_file()
+    assert log_path == paths.merge_check_log_path(DESK, mid)
+    assert log_path.parent == paths.session_dir(DESK) / "merges"
+    assert "check-output" in log_path.read_text(encoding="utf-8")
+
+
+def test_failed_check_records_exit_and_output(env, monkeypatch, capsys):
+    """A check that exits 7 leaves a merging line with that exit and
+    an output ref the refusal names."""
+    repo, _origin = make_repo(env)
+    make_branch(repo, "feat", "feat.txt")
+    write_check(env, "printf 'check-failed\\n'; exit 7")
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "flow"))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "flow"),
+                session_record(DESK, "merge-desk"))
+    first = build_task(monkeypatch, capsys, "flow", "first")
+    mid = request_id(monkeypatch, capsys, "feat", "flow", [first],
+                     "main", cwd=repo)
+    assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
+    capsys.readouterr()
+    before = len(store.read_ledger(paths.merges_path()))
+    assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo) == 1
+    err = capsys.readouterr().err
+    record = merges_by_id()[mid]
+    assert record["result"] == "merging"
+    assert record["check_command"] == "printf 'check-failed\\n'; exit 7"
+    assert record["check_exit"] == 7
+    assert record["check_seconds"] is not None
+    ref = record["check_output_ref"]
+    log_path = Path(ref)
+    assert log_path.is_file()
+    assert log_path == paths.merge_check_log_path(DESK, mid)
+    assert "check-failed" in log_path.read_text(encoding="utf-8")
+    assert str(log_path) in err
+    assert "exit 7" in err
+    assert len(store.read_ledger(paths.merges_path())) == before + 1
+    assert tasks_by_title("flow")["first"]["state"] == "built"
+
+
 def test_land_failing_check_leaves_the_tasks_built(env, monkeypatch, capsys):
     """A red check is a broken deliverable, not a race: the land
     refuses, the record stays taken, and nobody is woken."""

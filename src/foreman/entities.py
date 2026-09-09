@@ -161,6 +161,14 @@ class Merge(Entity):
     #: record back. Zero (or absent on an older line) means none;
     #: one is the retry; a second target-moved refusal fails it.
     land_attempts: int = 0
+    #: The check command the desk ran for this landing.
+    check_command: str = ""
+    #: The check's exit code, or None when no check has run yet.
+    check_exit: int | None = None
+    #: How long the check took, in seconds, or None when none has run.
+    check_seconds: float | None = None
+    #: Path of the check's combined output under the desk session.
+    check_output_ref: str = ""
 
 
 @dataclass(frozen=True)
