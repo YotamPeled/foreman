@@ -185,6 +185,13 @@ def merge_request_main(branch: str | None, front: str | None,
     if front_name and fronts.read_front_record(front_name) is not None:
         caller.check_front_supervisor(me, front_name, verb,
                                       violations=violations)
+        from .progress import _front_merge_mode
+        if _front_merge_mode(front_name) == "self":
+            violations.append(
+                "the front lands through its own supervisor "
+                "('merge = \"self\"'): mark the task landed yourself with "
+                "'foreman task landed <task> --head <sha>' rather than "
+                "requesting a merge")
     elif me is not None and me.role != OWNER and me.role != SUPERVISOR:
         violations.append(f"role '{me.role}' may not call '{verb}'")
     name = (branch or "").strip()

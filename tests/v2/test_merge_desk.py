@@ -21,7 +21,7 @@ from pathlib import Path
 
 import pytest
 
-from foreman import cli, paths, procs, store
+from foreman import cli, paths, procs, store, wake
 from foreman import launch as launch_module
 from foreman.caller import SESSION_ENV
 
@@ -371,6 +371,51 @@ def test_request_missing_fields_are_all_named(env, monkeypatch, capsys):
     assert "'--front'" in err
     assert "'--tasks'" in err
     assert "'--target'" in err
+
+
+def test_request_on_self_mode_front_is_refused(env, monkeypatch, capsys):
+    """A front whose record carries `merge = ""` is refused at request
+    time: the message names `task landed`, no merge record is minted,
+    and the desk's wake queue gains no event."""
+    repo, _origin = make_repo(env)
+    make_branch(repo, "feat", "feat.txt")
+    write_check(env, "true")
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "plain", merge=None))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "plain"),
+                session_record(DESK, "merge-desk"))
+    first = build_task(monkeypatch, capsys, "plain", "first")
+    before = len(store.read_ledger(paths.merges_path()))
+    rc = run(monkeypatch, ["merge", "request", "feat",
+                           "--front", "plain", "--tasks", first,
+                           "--target", "main"], SUP, cwd=repo)
+    assert rc == 1
+    _, err = capsys.readouterr()
+    assert "task landed" in err
+    assert len(store.read_ledger(paths.merges_path())) == before
+    assert wake.pending_events(DESK) == []
+
+
+def test_self_mode_refusal_arrives_with_other_violations(
+        env, monkeypatch, capsys):
+    """A self-mode front that is also missing a field is told both,
+    not the first alone."""
+    repo, _origin = make_repo(env)
+    make_branch(repo, "feat", "feat.txt")
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo, "plain", merge=None))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "plain"))
+    first = build_task(monkeypatch, capsys, "plain", "first")
+    rc = run(monkeypatch, ["merge", "request", "feat",
+                           "--front", "plain", "--tasks", first],
+             SUP, cwd=repo)
+    assert rc == 1
+    _, err = capsys.readouterr()
+    assert "task landed" in err
+    assert "'--target'" in err
+    assert store.read_ledger(paths.merges_path()) == []
 
 
 def test_request_refused_for_anyone_but_the_front_supervisor(
