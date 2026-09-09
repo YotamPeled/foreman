@@ -338,14 +338,16 @@ def test_a_launch_over_both_limits_is_told_both_of_them(env, capsys):
 
 
 def test_the_opus_cap_stops_an_opus_worker(env, capsys):
-    """The cap the owner sets on Opus governs the pool Opus workers run on.
+    """The cap the owner sets on the pool Opus workers run on governs them.
 
     The packaged default configured `[pool.opus]`, the adapter registers
     itself as `claude`, and a launch is checked against the pool it names,
     so `cap opus 0` wrote a table nothing ever read and the limit on the
-    most expensive model on the machine held nothing back.
+    most expensive model on the machine held nothing back. `cap opus`
+    is now the unknown-pool hint at `claude (claude-opus-5)`; the cap
+    that holds is the one on `claude`.
     """
-    assert cli.main(["cap", "opus", "0"]) == 0
+    assert cli.main(["cap", "claude", "0"]) == 0
     out = capsys.readouterr().out
 
     rc = cli.main(["launch", "opus", "claude", str(env / "spec.md"),

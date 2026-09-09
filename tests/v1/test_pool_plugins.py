@@ -502,3 +502,34 @@ def test_vendor_argv_grokish_is_a_foreman_worker(env):
     adapter = get_pool("fable")
     assert adapter.binary == "grokish"
     assert adapter.binary_is_foreman_worker is True
+
+
+def test_unknown_pool_hints_the_matching_manifest(env, capsys):
+    """`launch astra` names the pool whose model holds astra, and cap
+    prints the same sentence. A name no manifest contains stays the
+    unknown-pool refusal it was."""
+    repo = make_repo(env / "repo")
+    spec = env / "spec.md"
+    spec.write_text(SPEC_OK, encoding="utf-8")
+
+    rc = cli.main(["launch", "astra", "astra", str(spec),
+                   "--repo", str(repo),
+                   "--worktree", str(env / "wt-astra"),
+                   "--dry-run"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "unknown pool 'astra'; did you mean codex (gpt-6-astra)?" in err
+
+    rc = cli.main(["launch", "grok", "nosuch", str(spec),
+                   "--repo", str(repo),
+                   "--worktree", str(env / "wt-nosuch"),
+                   "--dry-run"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "unknown pool 'nosuch'" in err
+    assert "did you mean" not in err
+
+    rc = cli.main(["cap", "astra", "1"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "unknown pool 'astra'; did you mean codex (gpt-6-astra)?" in err

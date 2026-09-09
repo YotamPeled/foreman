@@ -98,12 +98,17 @@ def pool_clone_main(name: str | None) -> int:
     dest = plugins.user_dir(name) if name else None
     if name is not None:
         if packaged is None or not (packaged / plugins.MANIFEST_FILENAME).is_file():
-            known = ", ".join(p for p in pool_names()
-                              if (plugins.packaged_dir(p)
-                                  / plugins.MANIFEST_FILENAME).is_file())
-            violations.append(
-                f"unknown packaged pool '{name}'; packaged pools: "
-                + (known or "(none)"))
+            from .pools import suggest_pool, unknown_pool_message
+
+            if suggest_pool(name) is not None:
+                violations.append(unknown_pool_message(name))
+            else:
+                known = ", ".join(p for p in pool_names()
+                                  if (plugins.packaged_dir(p)
+                                      / plugins.MANIFEST_FILENAME).is_file())
+                violations.append(
+                    f"unknown packaged pool '{name}'; packaged pools: "
+                    + (known or "(none)"))
         elif dest is not None and dest.exists():
             violations.append(
                 f"user pool '{name}' already exists at {dest}; "

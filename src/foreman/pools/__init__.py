@@ -127,6 +127,67 @@ def unregister(name: str) -> None:
     REGISTRY.pop(name, None)
 
 
+def _identity(name: str) -> tuple[str, tuple[str, ...]]:
+    """The model and roles a registered pool answers to, from its manifest.
+
+    A user directory wins; a packaged directory answers when there is no
+    user copy. An adapter registered only in memory (a test fake) has no
+    directory, so its ``model`` and optional ``roles`` attribute stand in.
+    """
+    from . import plugins as _plugins
+
+    manifest, _source = _plugins.describe(name)
+    if manifest is not None:
+        return manifest.model, tuple(manifest.roles)
+    adapter = REGISTRY.get(name)
+    if adapter is None:
+        return "", ()
+    model = adapter.model if isinstance(adapter.model, str) else ""
+    roles = getattr(adapter, "roles", ())
+    if isinstance(roles, str):
+        return model, (roles,)
+    if isinstance(roles, (list, tuple)):
+        return model, tuple(role for role in roles if isinstance(role, str))
+    return model, ()
+
+
+def suggest_pool(name: str) -> tuple[str, str] | None:
+    """The registered pool whose model or roles contain ``name``.
+
+    Case-insensitive substring. The first match in sorted pool-name
+    order wins, so two pools sharing a fragment do not flip between
+    runs. No match is ``None``: the unknown-pool message then stays
+    what it was.
+    """
+    needle = (name or "").strip().lower()
+    if not needle:
+        return None
+    for pool in names():
+        model, roles = _identity(pool)
+        haystacks = (model, *roles)
+        if any(needle in piece.lower() for piece in haystacks if piece):
+            return pool, model
+    return None
+
+
+def unknown_pool_message(name: str, *, otherwise: str | None = None) -> str:
+    """The one unknown-pool refusal, with a hint when a manifest matches.
+
+    Launch, cap and the pool verbs all print this: the hint is made
+    here so they cannot drift. ``otherwise`` is the suffix today's
+    message used when nothing matches (``known pools: …`` from
+    ``get``, ``pools with a cap: …`` from cap).
+    """
+    suggestion = suggest_pool(name)
+    if suggestion is not None:
+        pool, model = suggestion
+        return f"unknown pool {name!r}; did you mean {pool} ({model})?"
+    if otherwise is None:
+        known = ", ".join(names()) or "(none)"
+        otherwise = f"known pools: {known}"
+    return f"unknown pool {name!r}; {otherwise}"
+
+
 def get(name: str) -> PoolAdapter:
     # A user pool directory replaces the packaged pool of the same name
     # entirely; a broken one warns once and falls through to the
@@ -141,8 +202,7 @@ def get(name: str) -> PoolAdapter:
     try:
         return REGISTRY[name]
     except KeyError:
-        known = ", ".join(names()) or "(none)"
-        raise ValueError(f"unknown pool {name!r}; known pools: {known}") from None
+        raise ValueError(unknown_pool_message(name)) from None
 
 
 def names() -> list[str]:

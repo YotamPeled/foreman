@@ -484,11 +484,24 @@ def cap_main(pool: str, count: str | int) -> int:
     target: str | None = None
     if not name:
         violations.append("field 'pool' is required")
+    elif name in known:
+        target = name
     else:
-        target = resolve_cap_name(name)
-        if target is None:
-            violations.append(f"unknown pool '{name}'; pools with a cap: "
-                              + (", ".join(known) or "(none)"))
+        from .pools import suggest_pool, unknown_pool_message
+
+        # The hint is the same sentence launch prints: a name that
+        # lives in a manifest's model or roles is "did you mean", not
+        # a silent write. resolve_cap_name still maps a role that no
+        # manifest contains.
+        if suggest_pool(name) is not None:
+            violations.append(unknown_pool_message(name))
+        else:
+            target = resolve_cap_name(name)
+            if target is None:
+                violations.append(unknown_pool_message(
+                    name,
+                    otherwise="pools with a cap: "
+                    + (", ".join(known) or "(none)")))
     number: int | None = None
     try:
         number = int(str(count).strip())
