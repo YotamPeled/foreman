@@ -1,0 +1,1416 @@
+#!/usr/bin/env python3
+"""Front proof: the trial-frictions done-when, clause by clause.
+
+    PYTHONPATH=src python bin/foreman-proof trial-frictions
+
+Drives this checkout's CLI against an isolated state directory, a fake
+worker, and two fixture repositories. Prints one ``CLAUSE n PASS|FAIL``
+line per done-when clause (clause 9 may SKIP when grok is not on PATH)
+and exits non-zero if any fails.
+
+Standard library only. Never inherits FOREMAN_SESSION, FOREMAN_STATE or
+FOREMAN_CONFIG from the caller: it sets the world those verbs run in.
+"""
+
+from __future__ import annotations
+
+import argparse
+import atexit
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+FRONT = "trial-frictions"
+FAKE_VENDOR_ID = "11111111-2222-4333-8444-555555555555"
+FINISH_RE = re.compile(r"^### finished rc=(\d+)$", re.MULTILINE)
+
+STATE_ENV = "FOREMAN_STATE"
+CONFIG_ENV = "FOREMAN_CONFIG"
+SESSION_ENV = "FOREMAN_SESSION"
+
+GROK_SWITCHES = (
+    "GROK_CLAUDE_SKILLS_ENABLED",
+    "GROK_CURSOR_SKILLS_ENABLED",
+    "GROK_CLAUDE_AGENTS_ENABLED",
+    "GROK_CLAUDE_RULES_ENABLED",
+    "GROK_CLAUDE_MCPS_ENABLED",
+    "GROK_CLAUDE_HOOKS_ENABLED",
+)
+
+
+class Failure(Exception):
+    """A clause that did not hold: the one-line reason."""
+
+
+class Skip(Exception):
+    """A clause the machine cannot run: the one-line reason."""
+
+
+# --------------------------------------------------------------------------
+# Process-wide world (filled by main)
+# --------------------------------------------------------------------------
+
+_TEMP: Path | None = None
+_STATE: Path | None = None
+_CONFIG: Path | None = None
+_BIN: Path | None = None
+_ORIG_PATH = os.environ.get("PATH", "")
+_REAL_GROK: str | None = None
+_SHIM_CLAUDE: Path | None = None
+_SHIM_SAVED: str | None = None
+_SHIM_WAS_LINK = False
+_UNITS: set[str] = set()
+_HOLDS: list[subprocess.Popen] = []
+_REPOS: list[Path] = []
+_CLEANED = False
+
+
+def _die(message: str, code: int = 2) -> int:
+    print(f"foreman-proof: {message}", file=sys.stderr)
+    return code
+
+
+def assert_world() -> None:
+    """Refuse to run a verb unless STATE and CONFIG point inside the temp dir."""
+    if _TEMP is None or _STATE is None or _CONFIG is None:
+        raise Failure("proof world is not set")
+    for name, value, want in (
+            (STATE_ENV, os.environ.get(STATE_ENV), _STATE),
+            (CONFIG_ENV, os.environ.get(CONFIG_ENV), _CONFIG)):
+        if not value:
+            raise Failure(f"{name} is unset; the proof sets the world")
+        try:
+            got = Path(value).resolve()
+        except OSError as exc:
+            raise Failure(f"{name} {value!r} does not resolve: {exc}") from exc
+        if got != want.resolve() and want.resolve() not in got.parents \
+                and got != _TEMP.resolve() and _TEMP.resolve() not in got.parents:
+            raise Failure(
+                f"{name} points at {got}, not inside the proof temp dir")
+
+
+def env_for(*, session: str | None = None, extra: dict | None = None) -> dict:
+    """A child environment: this world, no inherited session unless named."""
+    assert_world()
+    env = dict(os.environ)
+    env[STATE_ENV] = str(_STATE)
+    env[CONFIG_ENV] = str(_CONFIG)
+    env["PYTHONPATH"] = str(REPO / "src") + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    env["PATH"] = str(_BIN) + os.pathsep + env.get("PATH", "")
+    if session:
+        env[SESSION_ENV] = session
+    else:
+        env.pop(SESSION_ENV, None)
+    if extra:
+        env.update(extra)
+    return env
+
+
+def run_foreman(args: list[str], *, session: str | None = None,
+                cwd: Path | str | None = None,
+                timeout: float = 120,
+                extra_env: dict | None = None) -> subprocess.CompletedProcess:
+    """One verb: ``python -m foreman …`` from this checkout."""
+    assert_world()
+    cmd = [sys.executable, "-m", "foreman", *args]
+    return subprocess.run(
+        cmd, cwd=cwd or str(REPO), env=env_for(session=session, extra=extra_env),
+        capture_output=True, text=True, timeout=timeout)
+
+
+def field(out: str, prefix: str) -> str:
+    needle = prefix if prefix.endswith(" ") else prefix + " "
+    for line in out.splitlines():
+        if line.startswith(needle):
+            return line[len(needle):].strip()
+    raise Failure(f"no {prefix!r} line in output:\n{out[-2000:]}")
+
+
+def read_json(path: Path, default: object = None) -> object:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, ValueError):
+        return default
+
+
+def read_jsonl(path: Path) -> list[dict]:
+    if not path.is_file():
+        return []
+    rows: list[dict] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(row, dict):
+            rows.append(row)
+    return rows
+
+
+def fold_by_id(rows: list[dict]) -> list[dict]:
+    latest: dict[str, dict] = {}
+    order: list[str] = []
+    for row in rows:
+        key = row.get("id")
+        if not isinstance(key, str) or not key:
+            continue
+        if key not in latest:
+            order.append(key)
+        latest[key] = row
+    return [latest[key] for key in order]
+
+
+def git(repo: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    proc = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        capture_output=True, text=True)
+    if check and proc.returncode != 0:
+        raise Failure(
+            f"git {' '.join(args)} in {repo} failed: "
+            f"{(proc.stderr or proc.stdout).strip()[-500:]}")
+    return proc
+
+
+# --------------------------------------------------------------------------
+# Cleanup
+# --------------------------------------------------------------------------
+
+def _stop_unit(name: str) -> None:
+    unit = name if name.endswith(".service") else name
+    subprocess.run(
+        ["systemctl", "--user", "stop", unit],
+        capture_output=True, text=True, timeout=20)
+    subprocess.run(
+        ["systemctl", "--user", "reset-failed", unit],
+        capture_output=True, text=True, timeout=20)
+
+
+def _units_for_session(sid: str) -> list[str]:
+    found = []
+    for name in _list_foreman_units():
+        if sid in name:
+            found.append(name)
+    return found
+
+
+def _list_foreman_units() -> list[str]:
+    proc = subprocess.run(
+        ["systemctl", "--user", "list-units", "--all", "--type=service",
+         "--no-legend", "--plain", "foreman-*"],
+        capture_output=True, text=True, timeout=20)
+    names = []
+    for line in (proc.stdout or "").splitlines():
+        parts = line.split()
+        if parts:
+            names.append(parts[0].removesuffix(".service"))
+    return names
+
+
+def _remove_worktrees() -> None:
+    for repo in list(_REPOS):
+        if not repo.is_dir():
+            continue
+        proc = git(repo, "worktree", "list", "--porcelain", check=False)
+        if proc.returncode != 0:
+            continue
+        paths = [line[len("worktree "):] for line in proc.stdout.splitlines()
+                 if line.startswith("worktree ")]
+        main = str(repo.resolve())
+        for raw in paths:
+            path = Path(raw)
+            if str(path.resolve()) == main:
+                continue
+            git(repo, "worktree", "remove", "--force", str(path), check=False)
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+
+
+def restore_claude_shim() -> None:
+    global _SHIM_CLAUDE, _SHIM_SAVED, _SHIM_WAS_LINK
+    if _SHIM_CLAUDE is None or _SHIM_SAVED is None:
+        return
+    try:
+        if _SHIM_CLAUDE.exists() or _SHIM_CLAUDE.is_symlink():
+            _SHIM_CLAUDE.unlink()
+        _SHIM_CLAUDE.symlink_to(_SHIM_SAVED)
+    except OSError:
+        pass
+    _SHIM_SAVED = None
+
+
+def cleanup() -> None:
+    global _CLEANED
+    if _CLEANED:
+        return
+    _CLEANED = True
+    for proc in _HOLDS:
+        if proc.poll() is None:
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                pass
+    _HOLDS.clear()
+    for sid in list(_UNITS):
+        _stop_unit(f"foreman-{sid}")
+        for attempt in range(1, 6):
+            _stop_unit(f"foreman-turn-{sid}-{attempt}")
+        for name in _units_for_session(sid):
+            _stop_unit(name)
+    _remove_worktrees()
+    restore_claude_shim()
+    if _TEMP is not None and _TEMP.is_dir():
+        shutil.rmtree(_TEMP, ignore_errors=True)
+
+
+def note_unit(session_id: str) -> None:
+    if session_id:
+        _UNITS.add(session_id)
+
+
+# --------------------------------------------------------------------------
+# Isolated world
+# --------------------------------------------------------------------------
+
+def systemd_user_path() -> str:
+    proc = subprocess.run(
+        ["systemctl", "--user", "show-environment"],
+        capture_output=True, text=True, timeout=10)
+    for line in (proc.stdout or "").splitlines():
+        if line.startswith("PATH="):
+            return line.split("=", 1)[1]
+    return os.environ.get("PATH", "")
+
+
+def systemd_which(name: str) -> Path | None:
+    for directory in systemd_user_path().split(os.pathsep):
+        if not directory:
+            continue
+        candidate = Path(directory) / name
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def install_claude_dispatcher(fake: Path) -> None:
+    """Send units whose FOREMAN_STATE is this world to the fake claude.
+
+    systemd-run --user does not inherit the proof's PATH. The worker
+    script does export FOREMAN_STATE, so a dispatcher in front of the
+    user-manager ``claude`` can divert only this world's units and pass
+    every other invocation through. Restored in cleanup.
+    """
+    global _SHIM_CLAUDE, _SHIM_SAVED, _SHIM_WAS_LINK
+    found = systemd_which("claude")
+    if found is None:
+        return
+    _SHIM_CLAUDE = found
+    _SHIM_WAS_LINK = found.is_symlink()
+    _SHIM_SAVED = os.readlink(found) if found.is_symlink() else None
+    if _SHIM_SAVED is None:
+        # Do not replace a real binary. Dry-run still covers --model.
+        _SHIM_CLAUDE = None
+        return
+    # Pass-through is the next ``claude`` after this shim so live units
+    # still reach the real vendor. The dispatcher file is named ``claude``.
+    pass_through = ""
+    saw_us = False
+    for directory in systemd_user_path().split(os.pathsep):
+        candidate = Path(directory) / "claude"
+        if candidate.resolve() == found.resolve():
+            saw_us = True
+            continue
+        if saw_us and candidate.exists():
+            pass_through = str(candidate)
+            break
+    if not pass_through:
+        pass_through = str(Path.home() / ".local" / "bin" / "claude")
+    dispatcher = (
+        "#!/bin/sh\n"
+        f'if [ "${STATE_ENV}" = "{_STATE}" ]; then\n'
+        f'  exec {json.dumps(str(fake))} "$@"\n'
+        "fi\n"
+        f'exec {json.dumps(pass_through)} "$@"\n'
+    )
+    tmp = found.with_name(found.name + ".proof-new")
+    tmp.write_text(dispatcher, encoding="utf-8")
+    tmp.chmod(0o755)
+    found.unlink()
+    tmp.rename(found)
+
+
+def write_fake_binaries(bin_dir: Path) -> None:
+    assert _STATE is not None
+    argv_log = bin_dir / "vendor-argv.log"
+    argv_log.write_text("", encoding="utf-8")
+    claude = bin_dir / "claude"
+    claude.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"--hold\" ]; then\n"
+        "  exec sleep 3600\n"
+        "fi\n"
+        f'echo "===TURN===" >> {json.dumps(str(argv_log))}\n'
+        f'printf "%s\\n" "$@" >> {json.dumps(str(argv_log))}\n'
+        "echo \"===ENV===\" >> "
+        f"{json.dumps(str(argv_log))}\n"
+        "env | grep -E '^(FOREMAN_|GROK_|CLAUDE_)' >> "
+        f"{json.dumps(str(argv_log))} || true\n"
+        'echo "{\\"type\\":\\"system\\",\\"subtype\\":\\"init\\",'
+        f'\\"session_id\\":\\"{FAKE_VENDOR_ID}\\"}}"\n'
+        'echo "{\\"type\\":\\"result\\",\\"subtype\\":\\"success\\",'
+        '\\"is_error\\":false,\\"num_turns\\":1,'
+        '\\"usage\\":{\\"input_tokens\\":1,\\"output_tokens\\":1}}"\n'
+        "exit 0\n",
+        encoding="utf-8")
+    claude.chmod(0o755)
+    grok = bin_dir / "grok"
+    grok.write_text(
+        "#!/bin/sh\n"
+        f'echo "===GROK===" >> {json.dumps(str(argv_log))}\n'
+        f'printf "%s\\n" "$@" >> {json.dumps(str(argv_log))}\n'
+        'echo "{\\"type\\":\\"assistant\\",\\"content\\":\\"hello\\"}"\n'
+        "exit 0\n",
+        encoding="utf-8")
+    grok.chmod(0o755)
+    inner = bin_dir / "fake-worker.py"
+    inner.write_text(
+        "import pathlib, re, subprocess, sys\n"
+        "job = pathlib.Path('FOREMAN-JOB.md')\n"
+        "text = job.read_text(encoding='utf-8') if job.is_file() else ''\n"
+        "code_m = re.search(r'^exit-code:\\s*(\\d+)\\s*$', text, re.M)\n"
+        "art_m = re.search(r'^artifact:\\s*(\\S+)\\s*$', text, re.M)\n"
+        "code = int(code_m.group(1)) if code_m else 0\n"
+        "artifact = art_m.group(1) if art_m else 'built.txt'\n"
+        "pathlib.Path(artifact).write_text('from-fake-worker\\n', encoding='utf-8')\n"
+        "subprocess.run(['git', 'add', artifact], check=True)\n"
+        "subprocess.run(['git', 'commit', '-qm', 'fake worker ' + artifact],\n"
+        "               check=True)\n"
+        "raise SystemExit(code)\n",
+        encoding="utf-8")
+    worker = bin_dir / "fake-worker"
+    # A shell argv0 of fake-worker is what the box count matches. A
+    # python shebang would count as python3. --hold must not exec away
+    # from that name.
+    worker.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"--hold\" ]; then\n"
+        "  sleep 3600\n"
+        "  exit 0\n"
+        "fi\n"
+        f"exec {json.dumps(sys.executable)} {json.dumps(str(inner))} \"$@\"\n",
+        encoding="utf-8")
+    worker.chmod(0o755)
+
+
+def make_repo(root: Path, name: str) -> tuple[Path, Path]:
+    repo = root / name
+    repo.mkdir(parents=True)
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "proof@example.invalid")
+    git(repo, "config", "user.name", "proof")
+    (repo / "seed.txt").write_text(f"{name}\n", encoding="utf-8")
+    git(repo, "add", "seed.txt")
+    git(repo, "commit", "-qm", "seed")
+    origin = root / f"{name}.git"
+    git(root, "init", "-q", "--bare", "-b", "main", str(origin))
+    git(repo, "remote", "add", "origin", str(origin))
+    git(repo, "push", "-q", "origin", "HEAD:refs/heads/main")
+    git(repo, "checkout", "-qb", "review-me")
+    (repo / "review.txt").write_text("review\n", encoding="utf-8")
+    git(repo, "add", "review.txt")
+    git(repo, "commit", "-qm", "review-me")
+    git(repo, "checkout", "-q", "main")
+    _REPOS.append(repo)
+    _REPOS.append(origin)
+    return repo, origin
+
+
+BRIEF = """name      = "{name}"
+order     = {order}
+want      = "Prove landings on fixture repository {name}."
+done-when = "The delivered file exists on main."
+land-on   = "main"
+merge     = "desk"
+reviews   = "on request"
+after     = []
+prefer    = 0
+
+[allocation]
+muse = 4
+
+[[task]]
+title = "{title}"
+scope = \"\"\"
+WHAT: write delivered.txt.
+INPUTS: the repository.
+OUTPUTS: delivered.txt.
+OUT OF SCOPE: everything else.
+\"\"\"
+verify = "test -f delivered.txt"
+size = 1
+after = []
+"""
+
+
+def write_brief(repo: Path, name: str, order: int, title: str) -> Path:
+    directory = repo / f"brief-{name}"
+    directory.mkdir()
+    (directory / "brief.toml").write_text(
+        BRIEF.format(name=name, order=order, title=title), encoding="utf-8")
+    return directory
+
+
+def write_user_pool(name: str, body: str) -> Path:
+    assert _CONFIG is not None
+    dest = _CONFIG / "pools" / name
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "manifest.toml").write_text(body, encoding="utf-8")
+    (dest / "SKILL.md").write_text(f"# {name}\n\nProof pool.\n", encoding="utf-8")
+    return dest
+
+
+def write_config(repo_a: Path, repo_b: Path, worker: Path) -> None:
+    assert _CONFIG is not None
+    _CONFIG.mkdir(parents=True, exist_ok=True)
+    a = os.path.realpath(str(repo_a))
+    b = os.path.realpath(str(repo_b))
+    text = (
+        "[launch]\n"
+        "default_workspace = 6\n"
+        "headless = false\n"
+        'turn_timeout = "2m"\n'
+        "\n"
+        "[merge]\n"
+        'check = "true"\n'
+        "\n"
+        f"[merge.{json.dumps(a)}]\n"
+        'check = "test -f delivered.txt && echo CHECK-A"\n'
+        "\n"
+        f"[merge.{json.dumps(b)}]\n"
+        'check = "test -f delivered.txt && echo CHECK-B"\n'
+        "\n"
+        "[pool.muse]\n"
+        "cap = 8\n"
+        'roles = ["muse"]\n'
+        "\n"
+        "[pool.claude]\n"
+        "cap = 8\n"
+        "supervisor_cap = 8\n"
+        'roles = ["opus", "supervisor", "foreman"]\n'
+        "\n"
+        "[pool.codex]\n"
+        "cap = 8\n"
+        'roles = ["astra"]\n'
+        "\n"
+        "[pool.grok]\n"
+        "cap = 99\n"
+        'roles = ["grok"]\n'
+        "\n"
+        "[pool.fake]\n"
+        "cap = 8\n"
+        'roles = ["muse"]\n'
+        "\n"
+        "[pool.wrap]\n"
+        "cap = 1\n"
+        'roles = ["opus"]\n'
+    )
+    (_CONFIG / "foreman.toml").write_text(text, encoding="utf-8")
+    write_user_pool(
+        "fake",
+        "name = \"fake\"\n"
+        "model = \"fake-test-model\"\n"
+        "timeout_default = \"5m\"\n"
+        "interactive = false\n"
+        "roles = [\"muse\"]\n"
+        "\n"
+        "[vendor]\n"
+        f"argv = [{json.dumps(str(worker))}]\n"
+        "stdin = \"none\"\n",
+    )
+    write_user_pool(
+        "wrap",
+        "name = \"wrap\"\n"
+        "model = \"claude-x\"\n"
+        "timeout_default = \"5m\"\n"
+        "interactive = false\n"
+        "roles = [\"opus\"]\n"
+        "adapter = \"claude\"\n",
+    )
+
+
+def write_spec(path: Path, *, exit_code: int, artifact: str,
+               extra: str = "") -> Path:
+    path.write_text(
+        "WHAT: run the fake worker.\n"
+        "INPUTS: the worktree.\n"
+        f"OUTPUTS: {artifact}.\n"
+        "OUT OF SCOPE: everything else.\n"
+        "Run the check with: test -f delivered.txt\n"
+        f"exit-code: {exit_code}\n"
+        f"artifact: {artifact}\n"
+        + extra,
+        encoding="utf-8")
+    return path
+
+
+def build_world(root: Path) -> dict:
+    global _TEMP, _STATE, _CONFIG, _BIN
+    _TEMP = root
+    _STATE = root / "state"
+    _CONFIG = root / "config"
+    _BIN = root / "bin"
+    _STATE.mkdir()
+    _CONFIG.mkdir()
+    _BIN.mkdir()
+    (root / "home").mkdir()
+
+    os.environ[STATE_ENV] = str(_STATE)
+    os.environ[CONFIG_ENV] = str(_CONFIG)
+    os.environ.pop(SESSION_ENV, None)
+    os.environ["PATH"] = str(_BIN) + os.pathsep + _ORIG_PATH
+    assert_world()
+
+    write_fake_binaries(_BIN)
+    install_claude_dispatcher(_BIN / "claude")
+
+    repo_a, origin_a = make_repo(root, "repo-a")
+    repo_b, origin_b = make_repo(root, "repo-b")
+    write_config(repo_a, repo_b, _BIN / "fake-worker")
+
+    brief_a = write_brief(repo_a, "alpha", 1, "deliver-a")
+    brief_b = write_brief(repo_b, "beta", 2, "deliver-b")
+    added_a = run_foreman(["front", "add", str(brief_a)])
+    if added_a.returncode != 0:
+        raise Failure(f"front add alpha failed: {added_a.stderr[-800:]}")
+    added_b = run_foreman(["front", "add", str(brief_b)])
+    if added_b.returncode != 0:
+        raise Failure(f"front add beta failed: {added_b.stderr[-800:]}")
+
+    started = (datetime.now(timezone.utc) - timedelta(hours=1)).isoformat()
+    (_STATE / "collector.json").write_text(json.dumps({
+        "sessions": {}, "relaunches": [], "parents": {},
+        "turn_attempts": {}, "started_at": started,
+    }), encoding="utf-8")
+
+    specs = root / "specs"
+    specs.mkdir()
+    return {
+        "repo_a": repo_a, "repo_b": repo_b,
+        "origin_a": origin_a, "origin_b": origin_b,
+        "specs": specs,
+        "started_at": started,
+        "argv_log": _BIN / "vendor-argv.log",
+    }
+
+
+# --------------------------------------------------------------------------
+# Launch / wait helpers
+# --------------------------------------------------------------------------
+
+def launch_fake(world: dict, repo: Path, front: str, spec: Path,
+                extra: list[str] | None = None,
+                task: str | None = None) -> dict:
+    title = task or {"alpha": "deliver-a", "beta": "deliver-b"}.get(front, "deliver")
+    argv = ["launch", "muse", "fake", str(spec),
+            "--repo", str(repo), "--front", front, "--task", title,
+            "--units", "1"]
+    if extra:
+        argv.extend(extra)
+    proc = run_foreman(argv, timeout=60)
+    if proc.returncode != 0:
+        raise Failure(
+            f"launch fake failed (exit {proc.returncode}): "
+            f"{(proc.stderr or proc.stdout)[-1200:]}")
+    sid = field(proc.stdout, "session:")
+    note_unit(sid)
+    log = field(proc.stdout, "log:")
+    worktree = field(proc.stdout, "worktree:")
+    return {"session": sid, "log": log, "worktree": worktree,
+            "stdout": proc.stdout, "command": field(proc.stdout, "command:")}
+
+
+def wait_finish_marker(log: str, timeout: float = 30) -> str:
+    deadline = time.monotonic() + timeout
+    path = Path(log)
+    while time.monotonic() < deadline:
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        if FINISH_RE.search(text):
+            return text
+        time.sleep(0.1)
+    raise Failure(f"no finish marker in {log} within {timeout:g}s")
+
+
+def collector_once() -> subprocess.CompletedProcess:
+    proc = run_foreman(["collector", "once"], timeout=60)
+    if proc.returncode != 0:
+        raise Failure(f"collector once failed: {proc.stderr[-800:]}")
+    return proc
+
+
+def launch_and_wait(world: dict, repo: Path, front: str, spec: Path) -> dict:
+    launched = launch_fake(world, repo, front, spec)
+    waiter = subprocess.Popen(
+        [sys.executable, "-m", "foreman", "wait", launched["session"],
+         "--timeout", "45s"],
+        cwd=str(REPO), env=env_for(),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    wait_finish_marker(launched["log"])
+    collector_once()
+    try:
+        stdout, stderr = waiter.communicate(timeout=30)
+    except subprocess.TimeoutExpired:
+        waiter.kill()
+        stdout, stderr = waiter.communicate()
+        raise Failure(
+            f"wait did not finish after collector once: {stderr[-800:]}")
+    launched["wait_out"] = stdout
+    launched["wait_err"] = stderr
+    launched["wait_rc"] = waiter.returncode
+    roster = read_json(_STATE / "roster.json", {"sessions": {}}) or {}
+    sessions = roster.get("sessions") if isinstance(roster, dict) else {}
+    record = (sessions or {}).get(launched["session"]) or {}
+    launched["job"] = record.get("job")
+    launched["branch"] = record.get("branch") or ""
+    return launched
+
+
+def jobs(front: str) -> dict[str, dict]:
+    rows = fold_by_id(read_jsonl(_STATE / "fronts" / front / "jobs.jsonl"))
+    return {row["id"]: row for row in rows if "id" in row}
+
+
+def tasks(front: str) -> dict[str, dict]:
+    rows = fold_by_id(read_jsonl(_STATE / "fronts" / front / "tasks.jsonl"))
+    by: dict[str, dict] = {}
+    for row in rows:
+        if row.get("title"):
+            by[row["title"]] = row
+        if row.get("id"):
+            by[row["id"]] = row
+    return by
+
+
+def merges() -> dict[str, dict]:
+    rows = fold_by_id(read_jsonl(_STATE / "merges.jsonl"))
+    return {row["id"]: row for row in rows if "id" in row}
+
+
+def findings(front: str) -> list[dict]:
+    return fold_by_id(read_jsonl(_STATE / "fronts" / front / "findings.jsonl"))
+
+
+def evidence(front: str) -> list[dict]:
+    # Evidence rows have no id; folding would drop them.
+    return read_jsonl(_STATE / "fronts" / front / "evidence.jsonl")
+
+
+# --------------------------------------------------------------------------
+# Clauses
+# --------------------------------------------------------------------------
+
+def clause_1(world: dict) -> str:
+    spec_fail = write_spec(world["specs"] / "fail.md",
+                           exit_code=3, artifact="failed.txt")
+    spec_ok = write_spec(world["specs"] / "ok.md",
+                         exit_code=0, artifact="delivered.txt")
+    failed = launch_and_wait(world, world["repo_a"], "alpha", spec_fail)
+    if failed["wait_rc"] != 3:
+        raise Failure(
+            f"wait on exit-3 worker returned {failed['wait_rc']}, "
+            f"out={failed['wait_out']!r}")
+    if "failed exit=3" not in failed["wait_out"]:
+        raise Failure(
+            f"wait on exit-3 worker printed {failed['wait_out']!r}")
+    ok = launch_and_wait(world, world["repo_a"], "alpha", spec_ok)
+    if ok["wait_rc"] != 0:
+        raise Failure(
+            f"wait on exit-0 worker returned {ok['wait_rc']}, "
+            f"out={ok['wait_out']!r} err={ok['wait_err']!r}")
+    if "returned exit=0" not in ok["wait_out"]:
+        raise Failure(
+            f"wait on exit-0 worker printed {ok['wait_out']!r}")
+    world["job_fail"] = failed
+    world["job_ok"] = ok
+    return (
+        f"wait {failed['session']} failed exit=3 status=3; "
+        f"wait {ok['session']} returned exit=0 status=0"
+    )
+
+
+def clause_2(world: dict) -> str:
+    spec_red = write_spec(world["specs"] / "red.md",
+                          exit_code=0, artifact="other.txt")
+    spec_green = write_spec(world["specs"] / "green.md",
+                            exit_code=0, artifact="delivered.txt")
+    red = launch_and_wait(world, world["repo_b"], "beta", spec_red)
+    before = tasks("beta")["deliver-b"].get("units_done") or 0
+    red_job = red["job"]
+    ran = run_foreman(["job", "verify", red_job, "--run"])
+    if ran.returncode == 0:
+        raise Failure("verify --run on a missing delivered.txt exited 0")
+    after_red = tasks("beta")["deliver-b"].get("units_done") or 0
+    if after_red != before:
+        raise Failure(
+            f"failed --run credited units ({before} -> {after_red})")
+    job = jobs("beta")[red_job]
+    if job.get("state") == "verified":
+        raise Failure("failed --run marked the job verified")
+    if job.get("verify_exit") in (0, None) and ran.returncode != 0:
+        # verify_exit should be non-zero
+        if job.get("verify_exit") == 0:
+            raise Failure("failed --run recorded verify_exit 0")
+    dest = job.get("verify_output_ref") or ""
+    if not dest or not Path(dest).is_file():
+        raise Failure("failed --run wrote no output file")
+    if Path(dest).parent != (_STATE / "sessions" / red["session"] / "verify"):
+        raise Failure(f"output file {dest} is not under the job session verify/")
+    listed = git(world["repo_b"], "worktree", "list", "--porcelain").stdout
+    if red["worktree"] in listed and "verify" in listed:
+        # the verify worktree must be gone; the job worktree may remain
+        for line in listed.splitlines():
+            if line.startswith("worktree ") and "verify" in line.lower():
+                raise Failure(f"verify worktree still listed: {line}")
+
+    green = launch_and_wait(world, world["repo_b"], "beta", spec_green)
+    world["job_beta"] = green
+    ran_ok = run_foreman(["job", "verify", green["job"], "--run"])
+    if ran_ok.returncode != 0:
+        raise Failure(
+            f"green --run failed: {ran_ok.stdout[-400:]} {ran_ok.stderr[-400:]}")
+    job_ok = jobs("beta")[green["job"]]
+    if job_ok.get("state") != "verified":
+        raise Failure(f"green --run left state {job_ok.get('state')!r}")
+    if job_ok.get("verify_exit") != 0:
+        raise Failure(f"green --run verify_exit={job_ok.get('verify_exit')!r}")
+    if not job_ok.get("verify_command"):
+        raise Failure("green --run recorded no verify_command")
+    if not isinstance(job_ok.get("verify_seconds"), int):
+        raise Failure("green --run recorded no verify_seconds")
+    out_ref = job_ok.get("verify_output_ref") or ""
+    if not out_ref or not Path(out_ref).is_file():
+        raise Failure("green --run wrote no output file")
+    after_green = tasks("beta")["deliver-b"].get("units_done") or 0
+    if after_green != before + 1:
+        raise Failure(
+            f"green --run did not credit the unit "
+            f"({before} -> {after_green})")
+    originals = git(world["repo_b"], "worktree", "list", "--porcelain").stdout
+    if any("foreman-verify" in line or "/verify-" in line
+           for line in originals.splitlines()):
+        raise Failure("verify worktree still present after --run")
+    world["job_red"] = red
+    return (
+        f"{red_job} verify_exit={job.get('verify_exit')} units unchanged; "
+        f"{green['job']} verified exit 0 in {job_ok.get('verify_seconds')}s "
+        f"units {after_green}"
+    )
+
+
+def clause_3(world: dict) -> str:
+    spec = write_spec(world["specs"] / "filejob.md",
+                      exit_code=0, artifact="filejob.txt")
+    launched = launch_and_wait(world, world["repo_a"], "alpha", spec)
+    src = _TEMP / "suite.out"
+    content = b"line one\nline two\n"
+    src.write_bytes(content)
+    verified = run_foreman([
+        "job", "verify", launched["job"], "--confirmed",
+        "--command", "test -f filejob.txt",
+        "--output-file", str(src),
+    ])
+    if verified.returncode != 0:
+        raise Failure(
+            f"job verify --output-file failed: {verified.stderr[-600:]}")
+    job = jobs("alpha")[launched["job"]]
+    # evidence last line
+    ev = evidence("alpha")
+    if not ev:
+        raise Failure("no evidence after verify --output-file")
+    ref = ev[-1].get("output_ref") or ""
+    dest = Path(ref)
+    if not dest.is_file() or dest.read_bytes() != content:
+        raise Failure(f"verify output_ref {ref} does not hold the file")
+    if dest.parent != (_STATE / "sessions" / launched["session"] / "verify"):
+        raise Failure(f"verify copy {dest} is not under the job session")
+
+    finding_src = _TEMP / "verdict.txt"
+    finding_src.write_bytes(b"the long verdict\n")
+    found = run_foreman([
+        "finding", "--on", "deliver-a", "--class", "scope",
+        "--title", "The draft needs a bound.",
+        "--detail", "See the attached verdict.",
+        "--output-file", str(finding_src),
+    ])
+    if found.returncode != 0:
+        raise Failure(f"finding --output-file failed: {found.stderr[-600:]}")
+    recs = findings("alpha")
+    if not recs:
+        raise Failure("no finding record")
+    fref = recs[-1].get("evidence_ref") or ""
+    fdest = Path(fref)
+    if not fdest.is_file() or fdest.read_bytes() != b"the long verdict\n":
+        raise Failure(f"finding evidence_ref {fref} does not hold the file")
+    world["filejob"] = launched
+    return (
+        f"verify copy {dest.name} under job session; "
+        f"finding copy {fdest.name} under caller session"
+    )
+
+
+def clause_4(world: dict) -> str:
+    ok = world["job_ok"]
+    job = jobs("alpha")[ok["job"]]
+    branch = job.get("branch") or ""
+    head = job.get("head") or ""
+    if not branch or not head:
+        raise Failure(
+            f"job line missing branch/head after marker: "
+            f"branch={branch!r} head={head!r}")
+    status = run_foreman(["status"])
+    if status.returncode != 0:
+        raise Failure(f"status failed: {status.stderr[-400:]}")
+    short = head[:7]
+    if branch not in status.stdout or short not in status.stdout:
+        raise Failure(
+            f"status job row missing {branch} @ {short}:\n"
+            + status.stdout[-1500:])
+    return f"status shows {branch} @ {short}"
+
+
+def _built(front: str, title: str | None = None) -> None:
+    if title is None:
+        title = {"alpha": "deliver-a", "beta": "deliver-b"}.get(front, "deliver")
+    proc = run_foreman(["task", "built", title])
+    if proc.returncode != 0:
+        # maybe already built
+        if "already" not in (proc.stderr or ""):
+            raise Failure(
+                f"task built {title} on {front} failed: {proc.stderr[-500:]}")
+
+
+def _land(world: dict, repo: Path, front: str, launched: dict,
+          desk: str) -> dict:
+    _built(front)
+    job = jobs(front)[launched["job"]]
+    branch = job.get("branch") or launched.get("branch")
+    if not branch:
+        raise Failure(f"job {launched['job']} has no branch")
+    title = {"alpha": "deliver-a", "beta": "deliver-b"}.get(front, "deliver")
+    req = run_foreman(
+        ["merge", "request", branch, "--front", front,
+         "--tasks", title, "--target", "main"],
+        cwd=repo)
+    if req.returncode != 0:
+        raise Failure(f"merge request failed: {req.stderr[-800:]}")
+    mid = req.stdout.split()[0]
+    take = run_foreman(["merge", "take", mid], session=desk, cwd=repo)
+    if take.returncode != 0:
+        raise Failure(f"merge take failed: {take.stderr[-800:]}")
+    land = run_foreman(["merge", "land", mid], session=desk, cwd=repo,
+                       timeout=60)
+    if land.returncode != 0:
+        raise Failure(
+            f"merge land failed: {land.stdout[-400:]} {land.stderr[-800:]}")
+    record = merges()[mid]
+    return record
+
+
+def clause_5(world: dict) -> str:
+    # Headless desk: first turn runs fake claude via the dispatcher.
+    desk_launch = run_foreman(
+        ["launch", "merge-desk", "--headless",
+         "--repo", str(world["repo_a"])],
+        timeout=90)
+    if desk_launch.returncode != 0:
+        raise Failure(
+            f"launch merge-desk --headless failed: "
+            f"{desk_launch.stderr[-1200:]}")
+    desk = field(desk_launch.stdout, "session:")
+    note_unit(desk)
+    world["desk"] = desk
+
+    rec_a = _land(world, world["repo_a"], "alpha", world["job_ok"], desk)
+    rec_b = _land(world, world["repo_b"], "beta", world["job_beta"], desk)
+    for rec, label, token in (
+            (rec_a, "A", "CHECK-A"),
+            (rec_b, "B", "CHECK-B")):
+        if rec.get("result") != "landed":
+            raise Failure(f"repo {label} merge result {rec.get('result')!r}")
+        cmd = rec.get("check_command") or ""
+        if token.replace("CHECK-", "") not in cmd and token not in cmd \
+                and "delivered.txt" not in cmd:
+            raise Failure(
+                f"repo {label} check_command {cmd!r} is not that repo's check")
+        if rec.get("check_exit") != 0:
+            raise Failure(
+                f"repo {label} check_exit={rec.get('check_exit')!r}")
+        if not isinstance(rec.get("check_seconds"), (int, float)):
+            raise Failure(f"repo {label} missing check_seconds")
+        ref = rec.get("check_output_ref") or ""
+        if not ref or not Path(ref).is_file():
+            raise Failure(f"repo {label} missing check_output_ref")
+        body = Path(ref).read_text(encoding="utf-8", errors="replace")
+        if token not in body and "CHECK-" not in body:
+            # the check echoes CHECK-A / CHECK-B
+            if token not in body:
+                raise Failure(
+                    f"repo {label} check output {body!r} missing {token}")
+        if os.path.realpath(str(world["repo_a" if label == "A" else "repo_b"])) \
+                not in (cmd or "") and "delivered.txt" not in cmd:
+            pass
+    if rec_a.get("check_command") == rec_b.get("check_command"):
+        # both are `test -f delivered.txt && echo CHECK-X` — they differ
+        if rec_a.get("check_command") == rec_b.get("check_command"):
+            raise Failure("both landings recorded the same check command")
+    return (
+        f"A check {rec_a.get('check_command')!r} exit "
+        f"{rec_a.get('check_exit')}; B check {rec_b.get('check_command')!r} "
+        f"exit {rec_b.get('check_exit')}"
+    )
+
+
+def clause_6(world: dict) -> str:
+    spec = write_spec(world["specs"] / "wrap.md",
+                      exit_code=0, artifact="wrap.txt")
+    proc = run_foreman([
+        "launch", "opus", "wrap", str(spec),
+        "--repo", str(world["repo_a"]),
+        "--worktree", str(_TEMP / "wt-wrap"),
+        "--dry-run",
+    ])
+    if proc.returncode != 0:
+        raise Failure(f"wrap dry-run failed: {proc.stderr[-600:]}")
+    if "--model claude-x" not in proc.stdout:
+        raise Failure(
+            f"wrap launch did not pass --model claude-x:\n{proc.stdout[-1500:]}")
+    if "--model claude-opus-5" in proc.stdout:
+        raise Failure("wrap launch still passed the packaged role pin")
+    return "wrap dry-run launched fake claude with --model claude-x"
+
+
+def clause_7(world: dict) -> str:
+    dry = run_foreman([
+        "launch", "supervisor", "alpha",
+        "--model", "claude-y", "--dry-run",
+        "--repo", str(world["repo_a"]),
+    ])
+    if dry.returncode != 0:
+        raise Failure(f"supervisor --dry-run failed: {dry.stderr[-800:]}")
+    if "claude-y" not in dry.stdout:
+        raise Failure(
+            f"dry-run did not print claude-y:\n{dry.stdout[-1500:]}")
+
+    launched = run_foreman([
+        "launch", "supervisor", "beta",
+        "--model", "claude-y", "--headless",
+        "--repo", str(world["repo_b"]),
+    ], timeout=90)
+    if launched.returncode != 0:
+        raise Failure(
+            f"headless supervisor launch failed: {launched.stderr[-1200:]}")
+    sid = field(launched.stdout, "session:")
+    note_unit(sid)
+    world["supervisor"] = sid
+    roster = read_json(_STATE / "roster.json", {"sessions": {}}) or {}
+    record = ((roster.get("sessions") or {}).get(sid) or {})
+    if record.get("model") != "claude-y":
+        raise Failure(f"roster model is {record.get('model')!r}, not claude-y")
+
+    log = world["argv_log"].read_text(encoding="utf-8", errors="replace")
+    if "--model" not in log or "claude-y" not in log:
+        raise Failure(
+            f"first turn did not run fake claude with --model claude-y:\n"
+            f"{log[-1500:]}")
+    first_blocks = log.count("===TURN===")
+
+    told = run_foreman(["tell", sid, "Read your checkpoint and continue."])
+    if told.returncode != 0:
+        raise Failure(f"tell failed: {told.stderr[-400:]}")
+    turned = run_foreman(["turn", sid], timeout=90)
+    if turned.returncode != 0:
+        raise Failure(f"turn failed: {turned.stderr[-800:]}")
+    log2 = world["argv_log"].read_text(encoding="utf-8", errors="replace")
+    if log2.count("===TURN===") < first_blocks + 1:
+        raise Failure("resumed turn did not invoke fake claude")
+    if "--resume" not in log2 or "claude-y" not in log2:
+        raise Failure(
+            f"resumed turn missing --resume/--model claude-y:\n{log2[-1500:]}")
+    return (
+        f"dry-run printed claude-y; headless {sid} rostered claude-y; "
+        f"first and resumed turns ran fake claude with --model claude-y"
+    )
+
+
+def clause_8(world: dict) -> str:
+    assert _BIN is not None
+    sleeper = shutil.which("sleep") or "/bin/sleep"
+    # argv[0] is what the box count matches. A shebang script's /proc
+    # cmdline is the interpreter, so hold processes are sleep with the
+    # vendor name as argv0.
+    for name in ("claude", "claude"):
+        proc = subprocess.Popen(
+            [name, "3600"], executable=sleeper,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            start_new_session=True)
+        _HOLDS.append(proc)
+    held = subprocess.Popen(
+        ["fake-worker", "3600"], executable=sleeper,
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True)
+    _HOLDS.append(held)
+    deadline = time.monotonic() + 2
+    while time.monotonic() < deadline:
+        snap = subprocess.run(
+            ["ps", "-eo", "args"], capture_output=True, text=True)
+        lines = snap.stdout.splitlines() if snap.stdout else []
+        if any(line.startswith("fake-worker") for line in lines):
+            break
+        time.sleep(0.05)
+    cap = run_foreman(["cap", "fake", "1"])
+    if cap.returncode != 0:
+        raise Failure(f"cap fake 1 failed: {cap.stderr[-400:]}")
+    spec = write_spec(world["specs"] / "box.md",
+                      exit_code=0, artifact="box.txt")
+    wrap = run_foreman([
+        "launch", "opus", "wrap", str(spec),
+        "--repo", str(world["repo_a"]),
+        "--worktree", str(_TEMP / "wt-box-wrap"),
+        "--dry-run",
+    ])
+    if wrap.returncode != 0:
+        raise Failure(
+            f"wrap launch refused with two claude processes: "
+            f"{wrap.stderr[-800:]}")
+    if "processes on the box" in wrap.stderr:
+        raise Failure(
+            "wrap (claude-family) was refused on the box count")
+    fake = run_foreman([
+        "launch", "muse", "fake", str(spec),
+        "--repo", str(world["repo_a"]),
+        "--worktree", str(_TEMP / "wt-box-fake"),
+        "--dry-run",
+    ])
+    if fake.returncode == 0:
+        raise Failure("fake pool at cap 1 was admitted")
+    if "processes on the box" not in fake.stderr:
+        raise Failure(
+            f"fake refusal did not name the box: {fake.stderr[-800:]}")
+    for proc in list(_HOLDS):
+        if proc.poll() is None:
+            try:
+                proc.kill()
+                proc.wait(timeout=5)
+            except (OSError, subprocess.SubprocessError):
+                pass
+    _HOLDS.clear()
+    restored = run_foreman(["cap", "fake", "8"])
+    if restored.returncode != 0:
+        raise Failure(f"cap fake 8 failed: {restored.stderr[-400:]}")
+    return (
+        "wrap admitted with two claude processes at cap 1; "
+        "fake refused with processes on the box"
+    )
+
+
+def clause_9(world: dict) -> str:
+    if not _REAL_GROK:
+        raise Skip("no grok on PATH")
+    spec = world["specs"] / "hello.md"
+    spec.write_text(
+        "WHAT: print hello and stop.\n"
+        "INPUTS: none.\n"
+        "OUTPUTS: the word hello.\n"
+        "OUT OF SCOPE: everything else.\n"
+        "Run the check with: test -f FOREMAN-JOB.md\n"
+        "Print hello and stop.\n",
+        encoding="utf-8")
+    # Dry-run first: the printed command must carry the six switches.
+    dry = run_foreman([
+        "launch", "grok", "grok", str(spec),
+        "--repo", str(world["repo_a"]),
+        "--worktree", str(_TEMP / "wt-grok-dry"),
+        "--dry-run",
+    ])
+    if dry.returncode != 0:
+        raise Failure(f"grok dry-run failed: {dry.stderr[-800:]}")
+    missing = [name for name in GROK_SWITCHES
+               if f"{name}=false" not in dry.stdout]
+    if missing:
+        raise Failure(
+            f"printed grok command missing {missing}:\n{dry.stdout[-1500:]}")
+    # Real launch: systemd PATH finds the real grok. Kill once a log line
+    # appears so the vendor does not run on.
+    launched = run_foreman([
+        "launch", "grok", "grok", str(spec),
+        "--repo", str(world["repo_a"]),
+        "--worktree", str(_TEMP / "wt-grok"),
+        "--timeout", "1m",
+    ], timeout=60)
+    if launched.returncode != 0:
+        raise Failure(f"real grok launch failed: {launched.stderr[-800:]}")
+    sid = field(launched.stdout, "session:")
+    note_unit(sid)
+    log = Path(field(launched.stdout, "log:"))
+    deadline = time.monotonic() + 30
+    line = ""
+    while time.monotonic() < deadline:
+        try:
+            text = log.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            text = ""
+        for candidate in text.splitlines():
+            if candidate.strip():
+                line = candidate.strip()
+                break
+        if line:
+            break
+        time.sleep(0.2)
+    _stop_unit(sid)
+    if not line:
+        raise Failure("real grok log showed no line within 30 s of start")
+    cmd = launched.stdout
+    missing = [name for name in GROK_SWITCHES
+               if f"{name}=false" not in cmd and name not in cmd]
+    if missing:
+        # the printed command line of the real launch
+        if any(name not in cmd for name in GROK_SWITCHES):
+            raise Failure(
+                f"real grok launch command missing {missing}")
+    return (
+        f"log line {line[:60]!r} within 30s; "
+        f"six GROK_*_ENABLED=false in the printed command"
+    )
+
+
+def clause_10(world: dict) -> str:
+    spec = write_spec(world["specs"] / "review.md",
+                      exit_code=0, artifact="review-out.txt")
+    before_branches = set(
+        git(world["repo_a"], "branch", "--list").stdout.split())
+    want = git(world["repo_a"], "rev-parse", "review-me").stdout.strip()
+    launched = run_foreman([
+        "launch", "muse", "fake", str(spec),
+        "--repo", str(world["repo_a"]),
+        "--kind", "review",
+        "--branch", "review-me",
+        "--worktree", str(_TEMP / "wt-review"),
+    ], timeout=60)
+    if launched.returncode != 0:
+        raise Failure(f"review launch failed: {launched.stderr[-800:]}")
+    sid = field(launched.stdout, "session:")
+    note_unit(sid)
+    worktree = Path(field(launched.stdout, "worktree:"))
+    symbolic = git(worktree, "symbolic-ref", "-q", "HEAD", check=False)
+    if symbolic.returncode == 0:
+        raise Failure(
+            f"review worktree has symbolic-ref {symbolic.stdout.strip()}, "
+            "not detached")
+    ancestor = git(worktree, "merge-base", "--is-ancestor", want, "HEAD",
+                   check=False)
+    if ancestor.returncode != 0:
+        raise Failure(
+            f"review worktree HEAD is not based on review-me {want[:12]}")
+    after_branches = set(
+        git(world["repo_a"], "branch", "--list").stdout.split())
+    created = after_branches - before_branches
+    created = {name.lstrip("*").strip() for name in created}
+    created.discard("review-me")
+    if created:
+        raise Failure(f"review launch created branches {sorted(created)}")
+    wait_finish_marker(field(launched.stdout, "log:"), timeout=20)
+    collector_once()
+    return (
+        f"detached worktree based on review-me {want[:12]}; no new branch"
+    )
+
+
+def clause_11(world: dict) -> str:
+    on_proc = run_foreman([
+        "finding", "--on", "deliver-a", "--class", "scope",
+        "--title", "On-flag finding about deliver.",
+        "--detail", "Filed with --on.",
+    ])
+    if on_proc.returncode != 0:
+        raise Failure(f"finding --on failed: {on_proc.stderr[-400:]}")
+    task_proc = run_foreman([
+        "finding", "--task", "deliver-a", "--class", "scope",
+        "--title", "Task-flag finding about deliver.",
+        "--detail", "Filed with --task.",
+    ])
+    if task_proc.returncode != 0:
+        raise Failure(f"finding --task failed: {task_proc.stderr[-400:]}")
+    recs = findings("alpha")
+    if len(recs) < 2:
+        recs = findings("alpha") + findings("beta")
+    # last two with our titles
+    by_title = {row.get("title"): row for row in recs}
+    a = by_title.get("On-flag finding about deliver.")
+    b = by_title.get("Task-flag finding about deliver.")
+    if a is None or b is None:
+        # they may have landed on beta if deliver is ambiguous? title is unique
+        raise Failure(
+            f"did not find both finding records; titles "
+            f"{[r.get('title') for r in recs]}")
+    if a.get("on") != b.get("on"):
+        raise Failure(
+            f"--on stored on={a.get('on')!r}, --task stored on={b.get('on')!r}")
+    if a.get("class") != b.get("class"):
+        raise Failure("finding class differed between --on and --task")
+    return f"--task and --on both stored on={a.get('on')}"
+
+
+def clause_12(world: dict, *, break_it: bool = False) -> str:
+    spec = write_spec(world["specs"] / "astra.md",
+                      exit_code=0, artifact="astra.txt")
+    pool = "fake" if break_it else "astra"
+    proc = run_foreman([
+        "launch", "x", pool, str(spec),
+        "--repo", str(world["repo_a"]),
+        "--worktree", str(_TEMP / "wt-astra"),
+        "--dry-run",
+    ])
+    if break_it:
+        # a pool that exists should not produce the astra/codex hint
+        if proc.returncode == 0 or "codex" in proc.stderr:
+            raise Failure("break-mode: astra hint still present")
+        raise Failure("pointed clause 12 at a pool that exists")
+    if proc.returncode == 0:
+        raise Failure("launch x astra was admitted")
+    err = proc.stderr
+    if "unknown pool 'astra'" not in err and 'unknown pool "astra"' not in err \
+            and "unknown pool 'astra'" not in err:
+        if "astra" not in err:
+            raise Failure(f"refusal did not name astra: {err[-800:]}")
+    if "codex" not in err or "gpt-6-astra" not in err:
+        raise Failure(
+            f"unknown pool astra did not hint codex: {err[-800:]}")
+    return "launch x astra refused with the codex (gpt-6-astra) hint"
+
+
+def clause_13(world: dict) -> str:
+    config = _CONFIG / "foreman.toml"
+    # started_at is an hour ago; bump the config mtime to now
+    os.utime(config, None)
+    proc = run_foreman(["pool", "list"])
+    if proc.returncode != 0:
+        raise Failure(f"pool list failed: {proc.stderr[-400:]}")
+    err = proc.stderr
+    if "run foreman collector restart" not in err:
+        raise Failure(
+            f"pool list printed no reload notice: out={proc.stdout[-400:]!r} "
+            f"err={err[-800:]!r}")
+    return "pool list printed the collector restart notice after config touch"
+
+
+def clause_14(world: dict) -> str:
+    spec = write_spec(world["specs"] / "marker.md",
+                      exit_code=0, artifact="marker.txt")
+    launched = launch_fake(world, world["repo_a"], "alpha", spec)
+    job_file = Path(launched["worktree"]) / "FOREMAN-JOB.md"
+    text = job_file.read_text(encoding="utf-8")
+    if "### finished" in text:
+        raise Failure("FOREMAN-JOB.md contains ### finished")
+    wait_finish_marker(launched["log"], timeout=20)
+    collector_once()
+    return "launched FOREMAN-JOB.md does not contain ### finished"
+
+
+CLAUSES = (
+    (1, clause_1),
+    (2, clause_2),
+    (3, clause_3),
+    (4, clause_4),
+    (5, clause_5),
+    (6, clause_6),
+    (7, clause_7),
+    (8, clause_8),
+    (9, clause_9),
+    (10, clause_10),
+    (11, clause_11),
+    (12, clause_12),
+    (13, clause_13),
+    (14, clause_14),
+)
+
+
+def report(n: int, status: str, text: str) -> None:
+    line = " ".join(text.split())
+    print(f"CLAUSE {n} {status} {line}", flush=True)
+
+
+def main(argv: list[str] | None = None) -> int:
+    global _REAL_GROK
+    parser = argparse.ArgumentParser(
+        description="Run the trial-frictions done-when on an isolated world.")
+    parser.add_argument("front", help="front name (must be trial-frictions)")
+    parser.add_argument(
+        "--break", dest="break_clause", type=int, default=0,
+        help="deliberately fail this clause (supervisor evidence that FAIL works)")
+    args = parser.parse_args(argv)
+    if args.front != FRONT:
+        return _die(f"unknown front {args.front!r}; only {FRONT} is implemented")
+
+    # Never inherit the caller's world. The harness sets its own.
+    for name in (SESSION_ENV, STATE_ENV, CONFIG_ENV):
+        os.environ.pop(name, None)
+    _REAL_GROK = shutil.which("grok", path=_ORIG_PATH)
+
+    root = Path(tempfile.mkdtemp(prefix="foreman-proof-"))
+    atexit.register(cleanup)
+    failed = False
+    try:
+        world = build_world(root)
+        for n, fn in CLAUSES:
+            try:
+                if n == 12:
+                    msg = fn(world, break_it=(args.break_clause == 12))
+                elif args.break_clause == n:
+                    raise Failure(f"deliberately broken (clause {n})")
+                else:
+                    msg = fn(world)
+                report(n, "PASS", msg)
+            except Skip as exc:
+                report(n, "SKIP", str(exc))
+            except Failure as exc:
+                report(n, "FAIL", str(exc))
+                failed = True
+            except subprocess.TimeoutExpired as exc:
+                report(n, "FAIL", f"timed out: {exc}")
+                failed = True
+            except Exception as exc:  # noqa: BLE001 - one line of evidence
+                report(n, "FAIL", f"{type(exc).__name__}: {exc}")
+                failed = True
+    finally:
+        cleanup()
+
+    leftover_units = [
+        name for name in _list_foreman_units()
+        if any(sid in name for sid in _UNITS)
+    ]
+    if leftover_units:
+        print(f"foreman-proof: leftover units: {leftover_units}",
+              file=sys.stderr)
+        failed = True
+    if _TEMP is not None and _TEMP.exists():
+        print(f"foreman-proof: temp dir still present: {_TEMP}",
+              file=sys.stderr)
+        failed = True
+    return 1 if failed else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
