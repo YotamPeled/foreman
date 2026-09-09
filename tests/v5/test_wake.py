@@ -506,3 +506,25 @@ def test_an_unknown_reason_is_refused_rather_than_written(env):
     assert events_for(SUP) == []
     for reason in entities.WAKE_REASONS:
         assert wake_module.append_event(SUP, reason)["reason"] == reason
+
+
+def test_a_rule_wakes_the_live_supervisor_not_the_one_that_exited(
+        env, monkeypatch, capsys):
+    """A front that was handed over has two supervisors on the roster.
+
+    The relaunched one is the one that will run a turn; the exited one
+    sorts first by id, so a chooser that took the first match would
+    write the rule onto a queue nobody will ever read.
+    """
+    from foreman import verbs
+
+    dead, live = "ses-sup0000", "ses-sup9999"
+    seat({dead: session(dead, "supervisor", state="exited"),
+          live: session(live, "supervisor", state="running")})
+    assert wake_module.supervisor_for(FRONT) == live
+    run_as(monkeypatch, None)
+    assert verbs.rule_main(FRONT, ["hand", "over", "cleanly"]) == 0
+    rid = capsys.readouterr().out.strip()
+    assert [(event["reason"], event["rule"])
+            for event in events_for(live)] == [("rule landed", rid)]
+    assert events_for(dead) == []

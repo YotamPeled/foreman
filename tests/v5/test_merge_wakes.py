@@ -389,3 +389,78 @@ def test_unknown_reason_is_still_refused(env):
     for reason in ("merge requested", "merge landed", "merge failed"):
         assert reason in entities.WAKE_REASONS
         assert wake_module.append_event(SUP, reason)["reason"] == reason
+
+
+def test_a_desk_rostered_onto_another_front_is_not_woken(
+        env, turn_spawn, monkeypatch, capsys):
+    """A desk that holds a different front does not serve this one.
+
+    One desk with no front serves the swarm; a desk rostered onto a
+    front serves that front alone. A request on 'flow' with only an
+    'other' desk on the roster writes nothing, and the heartbeat
+    remains the only thing that will reach it.
+    """
+    repo = open_front(env, monkeypatch, capsys)
+    other = "ses-desk002"
+    seed_roster(session_record(SUP, "supervisor", "flow"),
+                session_record(other, "merge-desk", "other",
+                               headless=True))
+    first = build_task(monkeypatch, capsys, "flow", "first")
+    request_id(monkeypatch, capsys, "feat", "flow", [first],
+               "main", cwd=repo)
+    assert wake_module.desk_for("flow") is None
+    assert pending(other) == []
+    assert not paths.session_events_path(other).exists()
+    tick(now=NOW)
+    assert turn_spawn == []
+
+
+def test_a_live_desk_is_woken_ahead_of_an_exited_one(
+        env, turn_spawn, monkeypatch, capsys):
+    """Two desks on the roster, one exited: the running one is woken.
+
+    The exited desk sorts first by id, so a chooser that took the
+    first match would write to a session that will never turn again.
+    """
+    repo = open_front(env, monkeypatch, capsys)
+    dead, live = "ses-desk000", "ses-desk999"
+    seed_roster(session_record(SUP, "supervisor", "flow"),
+                session_record(dead, "merge-desk", headless=True,
+                               state="exited"),
+                session_record(live, "merge-desk", headless=True,
+                               state="running"))
+    first = build_task(monkeypatch, capsys, "flow", "first")
+    mid = request_id(monkeypatch, capsys, "feat", "flow", [first],
+                     "main", cwd=repo)
+    assert wake_module.desk_for("flow") == live
+    assert [event["merge"] for event in pending(live)] == [mid]
+    assert pending(dead) == []
+    tick(now=NOW)
+    assert [(call["sid"], call["attempt"]) for call in turn_spawn] == \
+        [(live, 1)]
+
+
+def test_a_requester_the_roster_forgot_is_never_written_to(
+        env, monkeypatch, capsys):
+    """A merge whose requester has left the roster wakes nobody.
+
+    The land still lands and the fail still fails: the seam is a
+    courtesy, and a session id nobody holds gets no ledger of its own.
+    """
+    repo = open_front(env, monkeypatch, capsys)
+    write_check(env, "test -f feat.txt")
+    seed_roster(session_record(SUP, "supervisor", "flow"),
+                session_record(DESK, "merge-desk", headless=True))
+    first = build_task(monkeypatch, capsys, "flow", "first")
+    mid = request_id(monkeypatch, capsys, "feat", "flow", [first],
+                     "main", cwd=repo)
+    gone = merges_by_id()[mid]["by"]
+    assert gone and gone != DESK
+    seed_roster(session_record(DESK, "merge-desk", headless=True))
+    assert wake_module._rostered_session(gone) is None
+    assert run(monkeypatch, ["merge", "fail", mid,
+                             "--reason", "the check went red"],
+               DESK, cwd=repo) == 0
+    capsys.readouterr()
+    assert merges_by_id()[mid]["result"] == "failed"
+    assert not paths.session_events_path(gone).exists()
