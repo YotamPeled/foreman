@@ -487,9 +487,26 @@ def render_role_template(role: str, mapping: dict[str, str]) -> str:
     return text
 
 
+def worker_template(role: str, kind: str | None) -> str:
+    """The template name for one worker launch: role, then job kind.
+
+    A role's template used to be its pool's name alone, which made the
+    prompt a property of who was cheap rather than of what the job was:
+    the same file was served whether the launcher asked for an
+    implementation or a review. A pool that does both names one template
+    per kind (``grok.implement.md``), and the bare ``grok.md`` answers
+    for every kind it does not name, so a pool that only ever does one
+    thing keeps the one file it has.
+    """
+    want = (kind or "").strip()
+    if want and (TEMPLATE_DIR / f"{role}.{want}.md").is_file():
+        return f"{role}.{want}"
+    return role
+
+
 def render_worker_prompt(*, role: str, front: str, supervisor: str,
                          session_id: str, verdict_path: str, rulings: str,
-                         environment: str) -> str:
+                         environment: str, kind: str | None = None) -> str:
     """The worker's role prompt, through the field contract.
 
     The only mapping a worker template takes: every key here is a
@@ -497,7 +514,7 @@ def render_worker_prompt(*, role: str, front: str, supervisor: str,
     those templates name is here. The worker path in ``launch_main``
     renders through this, never a hand-built mapping.
     """
-    return render_role_template(role, {
+    return render_role_template(worker_template(role, kind), {
         "role": role,
         "front": front,
         "supervisor": supervisor,
@@ -749,6 +766,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
         # and the worker is given the job file, so it is embedded there.
         role_text = render_worker_prompt(
             role=args.role,
+            kind=args.kind,
             front=front_label,
             supervisor=args.front or "(none)",
             session_id=session_id,

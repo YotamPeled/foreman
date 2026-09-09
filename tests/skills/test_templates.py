@@ -59,9 +59,10 @@ def worker_env_block() -> str:
     )
 
 
-def render_worker(role: str) -> str:
+def render_worker(role: str, kind: str | None = None) -> str:
     return launch.render_worker_prompt(
         role=role,
+        kind=kind,
         front=FRONT,
         supervisor=FRONT,
         session_id=SESSION,
@@ -263,3 +264,38 @@ def test_launch_foreman_refuses_a_second_live_foreman(env, tmp_path, capsys):
     rc = cli.main(["launch", "foreman", "--repo", str(repo), "--dry-run"])
     assert rc == 1
     assert "already live" in capsys.readouterr().err
+
+
+# A pool that both builds and reviews needs one template per job kind:
+# the prompt is a property of the job, not of which vendor was cheap.
+KIND_VOICE = {
+    ("grok", "implement"): "you write no verdict",
+    ("grok", "review"): "with a different model's eyes",
+    ("grok", None): "with a different model's eyes",
+}
+
+
+@pytest.mark.parametrize("role,kind", sorted(
+    KIND_VOICE, key=lambda pair: (pair[0], pair[1] or "")))
+def test_the_job_kind_chooses_the_worker_template(env, role, kind):
+    """An implement job reads as a builder and a review job as a reviewer.
+
+    The break this holds shut: the launcher served one file per pool, so
+    a builder launched on a reviewing pool was told to change no source
+    file and write a verdict. Two jobs died that way, green and empty.
+    """
+    text = render_worker(role, kind)
+    assert KIND_VOICE[(role, kind)] in text
+    for part in WORKER_PARTS:
+        assert part in text, f"{role}/{kind} prompt lost {part}"
+    assert "{{" not in text
+
+
+def test_a_kind_with_no_template_of_its_own_falls_back_to_the_role(env):
+    """muse names no per-kind template, so every kind reads the same."""
+    assert launch.worker_template("muse", "implement") == "muse"
+    assert launch.worker_template("muse", "review") == "muse"
+    assert launch.worker_template("grok", "implement") == "grok.implement"
+    assert launch.worker_template("grok", "review") == "grok"
+    assert launch.worker_template("grok", None) == "grok"
+    assert render_worker("muse", "review") == render_worker("muse")
