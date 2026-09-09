@@ -173,6 +173,11 @@ class Session(Entity):
     #: under the same Foreman session id, which is how the roster tells a
     #: relaunched supervisor from the one it replaced.
     vendor_session: str | None = None
+    #: Headless sessions run one turn per wake and hold no long-lived
+    #: process: no window, no workspace, pid None while running. The
+    #: collector's liveness branches all require a pid, so a headless
+    #: session is never read as dead, silent or stalled for having none.
+    headless: bool = False
     started_at: str | None = None
     last_declared_at: str | None = None
     last_observed_at: str | None = None

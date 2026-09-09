@@ -140,6 +140,11 @@ def session_turn_path(session_id: str) -> Path:
     return session_dir(session_id) / "turn.json"
 
 
+def session_turns_path(session_id: str) -> Path:
+    """One headless turn's result line per record, appended turn by turn."""
+    return session_dir(session_id) / "turns.jsonl"
+
+
 def session_scratch_dir(session_id: str) -> Path:
     return session_dir(session_id) / "scratch"
 
