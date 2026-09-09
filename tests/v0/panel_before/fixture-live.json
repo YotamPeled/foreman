@@ -1,0 +1,532 @@
+{
+ "capacity": {
+  "count": 2,
+  "rows": [
+   {
+    "avgS": 300,
+    "held": 1,
+    "meter": 0.1,
+    "p90S": 600,
+    "pool": "codex",
+    "resetsAt": "2026-06-02T19:00:00+00:00",
+    "total": 2,
+    "waiting": 1
+   },
+   {
+    "avgS": 840,
+    "held": 1,
+    "meter": null,
+    "p90S": 1620,
+    "pool": "muse",
+    "resetsAt": "",
+    "total": 3,
+    "waiting": 1
+   }
+  ]
+ },
+ "frontQueue": {
+  "count": 1,
+  "rows": [
+   {
+    "after": [
+     "harbor"
+    ],
+    "name": "quay",
+    "order": 2,
+    "prefer": 1,
+    "waitsFor": "after harbor",
+    "want": "One evening message that says what the harbor did today"
+   }
+  ]
+ },
+ "fronts": [
+  {
+   "blockedOnOwner": [
+    "Sound the north channel first or the south?",
+    "Buy one more night of survey boat time?"
+   ],
+   "built": 1,
+   "doingAgeS": null,
+   "doingNext": "Tide window once the soundings land",
+   "doingNow": "Second soundings running, 8 of 12 read",
+   "isHeadless": true,
+   "landOn": "main",
+   "landed": 1,
+   "lastTurnS": 1140,
+   "monitors": [
+    {
+     "measuredS": 3600,
+     "monitor": "berths sounded",
+     "of": 12,
+     "status": "CONFIRMED",
+     "trend": "up",
+     "value": 8
+    }
+   ],
+   "name": "harbor",
+   "projectedFinish": "2026-06-02T16:30:00.000Z",
+   "ratePerHour": 4.666666666666667,
+   "rateWindowH": 3,
+   "remaining": [
+    "second soundings",
+    "buoy labels",
+    "tide window"
+   ],
+   "state": "active",
+   "supervisor": "ses-hb0001",
+   "tasks": [
+    {
+     "after": [],
+     "id": "tas-hb-1",
+     "jobs": [
+      {
+       "branch": "harbor/manifest",
+       "elapsedS": null,
+       "id": "job-hb-1",
+       "kind": "implement",
+       "minutesSinceWrite": null,
+       "model": "muse",
+       "role": "muse",
+       "state": "verified",
+       "task": "tas-hb-1",
+       "timeoutS": null,
+       "waitedS": 17880,
+       "worktree": "/srv/swarm/wt/harbor-manifest"
+      }
+     ],
+     "state": "landed",
+     "title": "dredge manifest",
+     "unitsDone": 4,
+     "unitsTotal": 4
+    },
+    {
+     "after": [
+      "tas-hb-1"
+     ],
+     "id": "tas-hb-2",
+     "jobs": [
+      {
+       "branch": "harbor/soundings",
+       "elapsedS": 900,
+       "id": "job-hb-2",
+       "kind": "implement",
+       "minutesSinceWrite": 1,
+       "model": "muse",
+       "role": "muse",
+       "state": "running",
+       "task": "second soundings",
+       "timeoutS": 2100,
+       "waitedS": 3660,
+       "worktree": "/srv/swarm/wt/harbor-soundings"
+      }
+     ],
+     "state": "active",
+     "title": "second soundings",
+     "unitsDone": 8,
+     "unitsTotal": 12
+    },
+    {
+     "after": [
+      "tas-hb-1"
+     ],
+     "id": "tas-hb-3",
+     "jobs": [],
+     "state": "built",
+     "title": "buoy labels",
+     "unitsDone": 6,
+     "unitsTotal": 6
+    },
+    {
+     "after": [
+      "tas-hb-2"
+     ],
+     "id": "tas-hb-4",
+     "jobs": [
+      {
+       "branch": "",
+       "elapsedS": null,
+       "id": "job-hb-3",
+       "kind": "implement",
+       "minutesSinceWrite": null,
+       "model": "unknown",
+       "role": "astra",
+       "state": "queued",
+       "task": "tas-hb-4",
+       "timeoutS": null,
+       "waitedS": 3360,
+       "worktree": ""
+      },
+      {
+       "branch": "",
+       "elapsedS": null,
+       "id": "job-hb-4",
+       "kind": "implement",
+       "minutesSinceWrite": null,
+       "model": "unknown",
+       "role": "muse",
+       "state": "planned",
+       "task": "tide window",
+       "timeoutS": null,
+       "waitedS": 3240,
+       "worktree": ""
+      }
+     ],
+     "state": "ready",
+     "title": "tide window",
+     "unitsDone": 0,
+     "unitsTotal": 3
+    }
+   ],
+   "total": 4,
+   "turnCount": 1,
+   "turnRunning": true,
+   "wakeAgeS": 1200,
+   "wakeReason": "job returned",
+   "want": "Every berth in the harbor sounded twice"
+  },
+  {
+   "blockedOnOwner": [],
+   "built": 0,
+   "doingAgeS": null,
+   "doingNext": "",
+   "doingNow": "",
+   "isHeadless": false,
+   "landOn": "main",
+   "landed": 0,
+   "lastTurnS": null,
+   "monitors": [],
+   "name": "quay",
+   "projectedFinish": "",
+   "ratePerHour": null,
+   "rateWindowH": null,
+   "remaining": [],
+   "state": "queued",
+   "supervisor": "",
+   "tasks": [],
+   "total": 0,
+   "turnCount": 0,
+   "turnRunning": false,
+   "wakeAgeS": null,
+   "wakeReason": "",
+   "want": "One evening message that says what the harbor did today"
+  }
+ ],
+ "frozen": false,
+ "header": {
+  "count": 3,
+  "frozen": false,
+  "inboxDepth": 2,
+  "observed": 3,
+  "openAnomalies": 1,
+  "registered": 3,
+  "rows": [
+   {
+    "label": "sessions",
+    "value": "3 registered, 3 observed"
+   },
+   {
+    "label": "frozen",
+    "value": "not frozen"
+   }
+  ]
+ },
+ "jobQueue": {
+  "count": 2,
+  "rows": [
+   {
+    "branch": "",
+    "elapsedS": null,
+    "front": "harbor",
+    "id": "job-hb-3",
+    "kind": "implement",
+    "minutesSinceWrite": null,
+    "model": "unknown",
+    "role": "astra",
+    "state": "queued",
+    "task": "tas-hb-4",
+    "timeoutS": null,
+    "title": "tide window",
+    "waitedS": 3360,
+    "worktree": ""
+   },
+   {
+    "branch": "",
+    "elapsedS": null,
+    "front": "harbor",
+    "id": "job-hb-4",
+    "kind": "implement",
+    "minutesSinceWrite": null,
+    "model": "unknown",
+    "role": "muse",
+    "state": "planned",
+    "task": "tide window",
+    "timeoutS": null,
+    "title": "tide window",
+    "waitedS": 3240,
+    "worktree": ""
+   }
+  ]
+ },
+ "mergeQueue": {
+  "count": 2,
+  "landed": [
+   {
+    "branch": "manifest",
+    "from": "harbor",
+    "id": "mrg-hb002",
+    "landedS": 12000,
+    "requestedS": 17700,
+    "reviews": [
+     "codex"
+    ],
+    "state": "landed",
+    "target": "main",
+    "tasks": [
+     "dredge manifest"
+    ]
+   }
+  ],
+  "merging": [
+   {
+    "branch": "soundings-batch",
+    "from": "harbor",
+    "id": "mrg-hb001",
+    "landedS": null,
+    "requestedS": 900,
+    "reviews": [
+     "codex"
+    ],
+    "state": "merging",
+    "target": "main",
+    "tasks": [
+     "second soundings"
+    ]
+   }
+  ],
+  "rows": [
+   {
+    "branch": "soundings-batch",
+    "from": "harbor",
+    "id": "mrg-hb001",
+    "landedS": null,
+    "requestedS": 900,
+    "reviews": [
+     "codex"
+    ],
+    "state": "merging",
+    "target": "main",
+    "tasks": [
+     "second soundings"
+    ]
+   },
+   {
+    "branch": "manifest",
+    "from": "harbor",
+    "id": "mrg-hb002",
+    "landedS": 12000,
+    "requestedS": 17700,
+    "reviews": [
+     "codex"
+    ],
+    "state": "landed",
+    "target": "main",
+    "tasks": [
+     "dredge manifest"
+    ]
+   }
+  ],
+  "waiting": []
+ },
+ "needsYou": {
+  "count": 2,
+  "rows": [
+   {
+    "from": "ses-hb0002",
+    "id": "inb-hb001",
+    "kind": "scope",
+    "options": [
+     "north",
+     "south"
+    ],
+    "question": "Sound the north channel first or the south?",
+    "recommendation": "North - the tide turns there an hour earlier.",
+    "waitedS": 1200
+   },
+   {
+    "from": "ses-hb0001",
+    "id": "inb-hb002",
+    "kind": "money",
+    "options": [
+     "yes",
+     "no"
+    ],
+    "question": "Buy one more night of survey boat time?",
+    "recommendation": "Yes - one tide covers the remaining soundings.",
+    "waitedS": 600
+   }
+  ]
+ },
+ "now": "2026-06-02T15:00:00+00:00",
+ "problems": {
+  "count": 1,
+  "rows": [
+   {
+    "action": "foreman kill pid-5521",
+    "detail": "A vendor process is running that Foreman did not launch",
+    "front": "",
+    "kind": "intruder",
+    "sinceS": 3360,
+    "subject": "pid-5521"
+   }
+  ]
+ },
+ "working": {
+  "count": 1,
+  "rows": [
+   {
+    "blockedOnOwner": [
+     "Sound the north channel first or the south?",
+     "Buy one more night of survey boat time?"
+    ],
+    "built": 1,
+    "doingAgeS": null,
+    "doingNext": "Tide window once the soundings land",
+    "doingNow": "Second soundings running, 8 of 12 read",
+    "isHeadless": true,
+    "landOn": "main",
+    "landed": 1,
+    "lastTurnS": 1140,
+    "monitors": [
+     {
+      "measuredS": 3600,
+      "monitor": "berths sounded",
+      "of": 12,
+      "status": "CONFIRMED",
+      "trend": "up",
+      "value": 8
+     }
+    ],
+    "name": "harbor",
+    "projectedFinish": "2026-06-02T16:30:00.000Z",
+    "ratePerHour": 4.666666666666667,
+    "rateWindowH": 3,
+    "remaining": [
+     "second soundings",
+     "buoy labels",
+     "tide window"
+    ],
+    "state": "active",
+    "supervisor": "ses-hb0001",
+    "tasks": [
+     {
+      "after": [],
+      "id": "tas-hb-1",
+      "jobs": [
+       {
+        "branch": "harbor/manifest",
+        "elapsedS": null,
+        "id": "job-hb-1",
+        "kind": "implement",
+        "minutesSinceWrite": null,
+        "model": "muse",
+        "role": "muse",
+        "state": "verified",
+        "task": "tas-hb-1",
+        "timeoutS": null,
+        "waitedS": 17880,
+        "worktree": "/srv/swarm/wt/harbor-manifest"
+       }
+      ],
+      "state": "landed",
+      "title": "dredge manifest",
+      "unitsDone": 4,
+      "unitsTotal": 4
+     },
+     {
+      "after": [
+       "tas-hb-1"
+      ],
+      "id": "tas-hb-2",
+      "jobs": [
+       {
+        "branch": "harbor/soundings",
+        "elapsedS": 900,
+        "id": "job-hb-2",
+        "kind": "implement",
+        "minutesSinceWrite": 1,
+        "model": "muse",
+        "role": "muse",
+        "state": "running",
+        "task": "second soundings",
+        "timeoutS": 2100,
+        "waitedS": 3660,
+        "worktree": "/srv/swarm/wt/harbor-soundings"
+       }
+      ],
+      "state": "active",
+      "title": "second soundings",
+      "unitsDone": 8,
+      "unitsTotal": 12
+     },
+     {
+      "after": [
+       "tas-hb-1"
+      ],
+      "id": "tas-hb-3",
+      "jobs": [],
+      "state": "built",
+      "title": "buoy labels",
+      "unitsDone": 6,
+      "unitsTotal": 6
+     },
+     {
+      "after": [
+       "tas-hb-2"
+      ],
+      "id": "tas-hb-4",
+      "jobs": [
+       {
+        "branch": "",
+        "elapsedS": null,
+        "id": "job-hb-3",
+        "kind": "implement",
+        "minutesSinceWrite": null,
+        "model": "unknown",
+        "role": "astra",
+        "state": "queued",
+        "task": "tas-hb-4",
+        "timeoutS": null,
+        "waitedS": 3360,
+        "worktree": ""
+       },
+       {
+        "branch": "",
+        "elapsedS": null,
+        "id": "job-hb-4",
+        "kind": "implement",
+        "minutesSinceWrite": null,
+        "model": "unknown",
+        "role": "muse",
+        "state": "planned",
+        "task": "tide window",
+        "timeoutS": null,
+        "waitedS": 3240,
+        "worktree": ""
+       }
+      ],
+      "state": "ready",
+      "title": "tide window",
+      "unitsDone": 0,
+      "unitsTotal": 3
+     }
+    ],
+    "total": 4,
+    "turnCount": 1,
+    "turnRunning": true,
+    "wakeAgeS": 1200,
+    "wakeReason": "job returned",
+    "want": "Every berth in the harbor sounded twice"
+   }
+  ]
+ }
+}

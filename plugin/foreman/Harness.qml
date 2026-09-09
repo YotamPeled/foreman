@@ -7,11 +7,11 @@ import "." as Foreman
 // fixture, and reads the block counts off stdout. Nothing here draws, so a
 // failure is a failure of the data layer and of nothing else.
 //
-// Front discovery is a directory scan and the file reads are watched, so the
-// counts arrive over the first few hundred milliseconds. Rather than sleep a
-// fixed time and hope, this settles: it prints once the eight counts and the
-// row facts have stopped moving, and gives up printing whatever it has at
-// the deadline.
+// The model reads one summary file the runtime wrote, on a watch with a
+// 2 second poll under it, so the first load can land a beat after startup.
+// Rather than sleep a fixed time and hope, this settles: it prints once the
+// eight counts and the row facts have stopped moving, and gives up printing
+// whatever it has at the deadline.
 ShellRoot {
   id: harness
 
@@ -38,9 +38,9 @@ ShellRoot {
   // front-joined questions, ledger rate with its window).
   function details() {
     var out = []
-    var fronts = Foreman.Model.buildFronts()
-    for (var f = 0; f < fronts.all.length; f++) {
-      var row = fronts.all[f]
+    var fronts = Foreman.Model.fronts
+    for (var f = 0; f < fronts.length; f++) {
+      var row = fronts[f]
       out.push("front." + row.name + ".doingNow " + row.doingNow)
       out.push("front." + row.name + ".headless " + row.isHeadless)
       out.push("front." + row.name + ".wakeReason " + row.wakeReason)
@@ -68,11 +68,11 @@ ShellRoot {
       out.push("job." + queue.rows[q].id + ".model " + queue.rows[q].model)
     // The queue holds only planned and queued jobs, so the models of
     // running and finished jobs are reported off their task rows instead.
-    for (var a = 0; a < fronts.all.length; a++)
-      for (var b = 0; b < fronts.all[a].tasks.length; b++)
-        for (var c2 = 0; c2 < fronts.all[a].tasks[b].jobs.length; c2++)
-          out.push("job." + fronts.all[a].tasks[b].jobs[c2].id + ".model "
-                   + fronts.all[a].tasks[b].jobs[c2].model)
+    for (var a = 0; a < fronts.length; a++)
+      for (var b = 0; b < fronts[a].tasks.length; b++)
+        for (var c2 = 0; c2 < fronts[a].tasks[b].jobs.length; c2++)
+          out.push("job." + fronts[a].tasks[b].jobs[c2].id + ".model "
+                   + fronts[a].tasks[b].jobs[c2].model)
     return out
   }
 
@@ -93,9 +93,9 @@ ShellRoot {
     repeat: true
     onTriggered: {
       harness.ticks += 1
-      // Settle on the counts AND the row facts: checkpoint files arrive on
-      // their own watch behind the front scan, and reporting on settled
-      // counts alone could print a doing-now that has not landed yet.
+      // Settle on the counts AND the row facts: the summary is replaced
+      // atomically while this runs, and reporting on settled counts alone
+      // could print a doing-now from a file that has since been rewritten.
       var current = harness.counts().join(",") + "\n" + harness.details().join("\n")
       if (current === harness.signature) harness.stable += 1
       else { harness.signature = current; harness.stable = 0 }

@@ -212,6 +212,7 @@ def _freeze_entry(args: argparse.Namespace) -> int:
     except OSError as exc:
         return Refusal([f"cannot freeze at {target}: "
                         f"{exc.strerror or exc}"]).report()
+    store.mark_written()
     print(f"frozen ({target})")
     fire("on-freeze", {"frozen": True, "by": who})
     return 0
@@ -233,6 +234,7 @@ def _thaw_entry(args: argparse.Namespace) -> int:
     except OSError as exc:
         return Refusal([f"cannot thaw ({target} stays): "
                         f"{exc.strerror or exc}"]).report()
+    store.mark_written()
     print("thawed")
     fire("on-freeze", {"frozen": False, "by": who})
     return 0

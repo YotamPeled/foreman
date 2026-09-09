@@ -62,11 +62,17 @@ def main(argv: list[str] | None = None) -> int:
     from . import wake as _wake  # noqa: F401
 
     args = build_parser().parse_args(argv)
+    from . import store as _store
+
+    # Anything a caller wrote before the verb started is not this verb's
+    # doing: the mark is cleared going in, so what is read on the way out
+    # is exactly what this verb wrote.
+    _store.take_written()
     code = args._handler(args)
     # The panel reads one summary file and no ledger, so a verb that moved
-    # the state must leave that file moved too. Cheaper than deciding which
-    # verbs write: fold once on the way out, and never let the summary
-    # change what the verb reported.
-    if args.verb != "panel-feed":
+    # the state must leave that file moved too. Once, on the way out, and
+    # only when something was actually written: a dry run and a refusal
+    # write nothing, and that has to stay true of the summary as well.
+    if args.verb != "panel-feed" and _store.take_written():
         _panel_feed.rewrite_quietly()
     return code

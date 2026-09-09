@@ -26,6 +26,7 @@ Standard library only, so this runs wherever the repository is checked out.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import re
@@ -368,7 +369,72 @@ def headless_env(state_dir: Path) -> dict:
     env["QT_QPA_PLATFORMTHEME"] = ""
     env["FOREMAN_STATE"] = str(state_dir)
     env["FOREMAN_CONFIG"] = str(state_dir / "harness-config")
+    env["PATH"] = str(repo_foreman()) + os.pathsep + env.get("PATH", "")
     return env
+
+
+#: The `foreman` every headless run resolves is this repository's, never
+#: whatever happens to be installed: the panel's keys run real verbs, and a
+#: check that judged the installed build would pass or fail on code that is
+#: not under review. The shim lives in a temporary directory for the life of
+#: the process and is put on PATH ahead of everything else.
+_SHIM: Path | None = None
+
+
+def repo_foreman() -> Path:
+    """A directory holding a `foreman` that runs this repository's source."""
+    global _SHIM
+    if _SHIM is not None:
+        return _SHIM
+    shim_dir = Path(tempfile.mkdtemp(prefix="foreman-verify-bin-"))
+    atexit.register(shutil.rmtree, str(shim_dir), True)
+    shim = shim_dir / "foreman"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'PYTHONPATH="%s${PYTHONPATH:+:$PYTHONPATH}"\n'
+        "export PYTHONPATH\n"
+        'exec "%s" -m foreman "$@"\n' % (REPO / "src", sys.executable))
+    shim.chmod(0o755)
+    _SHIM = shim_dir
+    return shim_dir
+
+
+def fold_panel(state_dir: Path) -> Path:
+    """Write panel.json into `state_dir` with the verb under test.
+
+    The panel reads that one file and no ledger, so every check feeds it the
+    same way the runtime does: the repository's own `foreman panel-feed`,
+    against the fixture state, with no ambient identity or world inherited.
+    """
+    env = dict(os.environ)
+    for name in ("FOREMAN_SESSION", "FOREMAN_STATE", "FOREMAN_CONFIG"):
+        env.pop(name, None)
+    env["PYTHONPATH"] = str(REPO / "src") + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    result = subprocess.run(
+        [sys.executable, "-m", "foreman", "panel-feed",
+         "--fixture", str(state_dir)],
+        capture_output=True, text=True, timeout=120, env=env)
+    if result.returncode != 0 or not (state_dir / "panel.json").is_file():
+        raise Failure("panel-feed: no panel.json for %s (exit %d)\n%s"
+                      % (state_dir, result.returncode,
+                         _clean(result.stdout + result.stderr)[-2000:]))
+    return state_dir
+
+
+def fed(state_dir: Path) -> Path:
+    """A throwaway copy of `state_dir` with panel.json folded into it.
+
+    The fixtures are read-only source: the summary the runtime writes is
+    derived, so it is written beside a copy and thrown away with it rather
+    than left in the tree.
+    """
+    if not state_dir.is_dir():
+        raise Failure("harness: no such state directory: " + str(state_dir))
+    tmp = Path(tempfile.mkdtemp(prefix="foreman-fed-"))
+    atexit.register(shutil.rmtree, str(tmp), True)
+    shutil.copytree(state_dir, tmp, dirs_exist_ok=True)
+    return fold_panel(tmp)
 
 
 def check_lint() -> list[str]:
@@ -560,10 +626,10 @@ def loads(state_dir: Path) -> int:
     # proves the fixture renders, the live shape proves the runtime's real
     # output does. An explicit --state replaces the mock fixture only; the
     # live shape is always checked at its own path.
-    mock = check_blocks(state_dir, EXPECTED, "mock")
+    mock = check_blocks(fed(state_dir), EXPECTED, "mock")
     for name in BLOCKS:
         print("mock %s %d" % (name, mock["counts"][name]))
-    live = check_blocks(FIXTURE_LIVE, EXPECTED_LIVE, "live-shape")
+    live = check_blocks(fed(FIXTURE_LIVE), EXPECTED_LIVE, "live-shape")
     for name in BLOCKS:
         print("live %s %d" % (name, live["counts"][name]))
     check_live_rows(live["details"])
@@ -575,7 +641,7 @@ def loads(state_dir: Path) -> int:
 
 
 def blocks_count(state_dir: Path) -> int:
-    print(run_harness(state_dir)["nonempty"])
+    print(run_harness(fed(state_dir))["nonempty"])
     return 0
 
 
@@ -676,7 +742,8 @@ def panel_blocks(state_dir: Path) -> int:
     so this stays meaningful as the other layout jobs arrive. The strict
     assertions hold the mock fixture; an explicit --state only reports
     what the render shows."""
-    result = run_panel_harness(state_dir)
+    strict = state_dir.resolve() == FIXTURE.resolve()
+    result = run_panel_harness(fed(state_dir))
     renders = result["renders"]
 
     missing = [name for name in ["header", *PANEL_SLOTS]
@@ -690,7 +757,6 @@ def panel_blocks(state_dir: Path) -> int:
         raise Failure("blocks: %d block file(s) failed to load:\n  %s"
                       % (len(broken), "\n  ".join(broken)))
 
-    strict = state_dir.resolve() == FIXTURE.resolve()
     if strict:
         check_panel_strict(renders)
 
@@ -1035,6 +1101,11 @@ def panel_keys(state_dir: Path) -> int:
         try:
             shutil.copytree(FIXTURE, tmp, dirs_exist_ok=True)
             _scrub_throwaway_pids(tmp)
+            # The panel reads the summary and no ledger, so the copy is fed
+            # once before the run. Every key then fires a real verb, and the
+            # verb writes the summary again on its way out: that is what
+            # makes the panel show the answer it just wrote.
+            fold_panel(tmp)
             proven[label] = check_keys_once(tmp, label, session)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)

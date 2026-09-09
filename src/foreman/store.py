@@ -23,8 +23,29 @@ def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+#: Set by every write below, read and cleared by the caller that refreshes
+#: the panel's summary on its way out (see :mod:`foreman.panel_feed`). A verb
+#: that only read — a dry run, a status, a refusal — leaves it false and
+#: writes nothing at all, which is the contract those verbs are held to.
+_wrote = False
+
+
+def mark_written() -> None:
+    """Record that the state directory changed under this process."""
+    global _wrote
+    _wrote = True
+
+
+def take_written() -> bool:
+    """True once per write, then false again until the next one."""
+    global _wrote
+    was, _wrote = _wrote, False
+    return was
+
+
 @contextmanager
 def _write_lock() -> Iterator[None]:
+    mark_written()
     lock = paths.lock_path()
     lock.parent.mkdir(parents=True, exist_ok=True)
     with open(lock, "a+b") as handle:
