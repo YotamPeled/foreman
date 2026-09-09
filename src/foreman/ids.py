@@ -34,6 +34,7 @@ KIND_PREFIXES = {
     "inbox": "inb",
     "anomaly": "anm",
     "event": "evt",
+    "wake": "wke",
 }
 
 _lock = threading.Lock()

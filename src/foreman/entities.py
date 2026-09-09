@@ -305,6 +305,52 @@ class Event(Entity):
     data: dict[str, Any] = field(default_factory=dict)
 
 
+#: Reasons a wake event names. Job reasons go to the job's launcher,
+#: ``inbox answered`` to the session that asked, ``rule landed`` to the
+#: supervisor of the rule's front, ``told`` to the named session, and
+#: ``heartbeat`` to any session with a live turn contract.
+WAKE_REASONS = (
+    "job returned",
+    "job returned-with-work",
+    "job failed",
+    "job killed",
+    "job timed out",
+    "inbox answered",
+    "rule landed",
+    "told",
+    "heartbeat",
+)
+
+
+@dataclass(frozen=True)
+class WakeEvent(Entity):
+    """One wake event for one session, in its own events.jsonl ledger.
+
+    The ledger is append-only and folds last-wins by id like every other
+    ledger. Delivery is a revised copy of the same line with
+    ``delivered_at`` set, so the fold is what proves an event woke its
+    session exactly once. Each reason names only the ids the next task
+    needs — never a prose blob — except ``told``, which carries the
+    foreman's one sentence.
+    """
+
+    _aliases: ClassVar[dict[str, str]] = {"from_": "from"}
+
+    id: str | None = None
+    session: str = ""
+    reason: str = ""
+    at: str | None = None
+    job: str | None = None
+    front: str | None = None
+    task: str | None = None
+    inbox: str | None = None
+    ruling: str | None = None
+    rule: str | None = None
+    from_: str | None = None
+    text: str | None = None
+    delivered_at: str | None = None
+
+
 @dataclass(frozen=True)
 class Digest(Entity):
     at: str | None = None

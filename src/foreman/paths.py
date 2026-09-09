@@ -132,6 +132,14 @@ def session_verdict_path(session_id: str) -> Path:
     return session_dir(session_id) / "verdict.json"
 
 
+def session_events_path(session_id: str) -> Path:
+    return session_dir(session_id) / "events.jsonl"
+
+
+def session_turn_path(session_id: str) -> Path:
+    return session_dir(session_id) / "turn.json"
+
+
 def session_scratch_dir(session_id: str) -> Path:
     return session_dir(session_id) / "scratch"
 
