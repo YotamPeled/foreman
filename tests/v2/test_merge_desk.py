@@ -152,10 +152,27 @@ def write_brief(repo: Path, name: str, merge: str | None = "desk") -> Path:
 
 
 def write_check(tmp_path: Path, command: str) -> None:
+    write_merge_config(tmp_path, fallback=command)
+
+
+def write_merge_config(tmp_path: Path, fallback: str | None = None,
+                       per_repo: dict[str | Path, str] | None = None) -> None:
+    """Write ``[merge]`` and any ``[merge."<path>"]`` check tables."""
     config = tmp_path / "config"
     config.mkdir(parents=True, exist_ok=True)
+    parts: list[str] = []
+    if fallback is not None:
+        parts.append("[merge]")
+        parts.append(f"check = {json.dumps(fallback)}")
+        parts.append("")
+    for repo_path, command in (per_repo or {}).items():
+        key = os.path.realpath(str(repo_path))
+        parts.append(f"[merge.{json.dumps(key)}]")
+        parts.append(f"check = {json.dumps(command)}")
+        parts.append("")
     (config / "foreman.toml").write_text(
-        f"[merge]\ncheck = {json.dumps(command)}\n", encoding="utf-8")
+        "\n".join(parts) if parts else "# no [merge] table here\n",
+        encoding="utf-8")
 
 
 def moving_target_check(origin: Path) -> str:
@@ -532,12 +549,10 @@ def test_land_requires_a_take_first(env, monkeypatch, capsys):
 
 
 def test_land_without_a_check_command_is_refused(env, monkeypatch, capsys):
-    """The desk lands nothing it cannot check."""
+    """The desk lands nothing it cannot check, and names the key to set."""
     repo, _origin = make_repo(env)
     make_branch(repo, "feat", "feat.txt")
-    (env / "config").mkdir(parents=True, exist_ok=True)
-    (env / "config" / "foreman.toml").write_text(
-        "# no [merge] table here\n", encoding="utf-8")
+    write_merge_config(env)
     assert run(monkeypatch, ["front", "add",
                              str(write_brief(repo, "flow"))]) == 0
     capsys.readouterr()
@@ -549,9 +564,96 @@ def test_land_without_a_check_command_is_refused(env, monkeypatch, capsys):
     assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
     capsys.readouterr()
     assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo) == 1
-    assert "[merge] check" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    resolved = os.path.realpath(repo)
+    assert f"no check for repository {resolved}" in err
+    assert str(paths.config_file()) in err
+    assert f'[merge."{resolved}"] check = "<cmd>"' in err
+    assert "[merge] check" in err
     assert tasks_by_title("flow")["first"]["state"] == "built"
     assert merges_by_id()[mid]["result"] == "merging"
+
+
+def test_land_runs_the_check_for_the_target_repository(
+        env, monkeypatch, capsys):
+    """Two repositories, two checks: each landing runs its own, never
+    the ``[merge] check`` fallback of ``false``."""
+    from foreman.merge import merge_check_command
+
+    repo_a, _origin_a = make_repo(env / "world-a")
+    repo_b, _origin_b = make_repo(env / "world-b")
+    marker_a = env / "checked-a"
+    marker_b = env / "checked-b"
+    write_merge_config(
+        env, fallback="false",
+        per_repo={
+            repo_a: f"touch {json.dumps(str(marker_a))}",
+            repo_b: f"touch {json.dumps(str(marker_b))}",
+        })
+    assert merge_check_command(str(repo_a)).startswith("touch ")
+    assert merge_check_command(str(repo_b)).startswith("touch ")
+    assert "checked-a" in merge_check_command(str(repo_a))
+    assert "checked-b" in merge_check_command(str(repo_b))
+    make_branch(repo_a, "feat", "feat.txt")
+    make_branch(repo_b, "feat", "feat.txt")
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo_a, "alpha"))]) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(repo_b, "beta"))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "alpha"),
+                session_record("ses-supbeta", "supervisor", "beta"),
+                session_record(DESK, "merge-desk"))
+    first_a = build_task(monkeypatch, capsys, "alpha", "first")
+    first_b = build_task(monkeypatch, capsys, "beta", "first",
+                         supervisor="ses-supbeta")
+    mid_a = request_id(monkeypatch, capsys, "feat", "alpha", [first_a],
+                       "main", cwd=repo_a)
+    mid_b = request_id(monkeypatch, capsys, "feat", "beta", [first_b],
+                       "main", cwd=repo_b, supervisor="ses-supbeta")
+    assert run(monkeypatch, ["merge", "take", mid_a], DESK) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["merge", "land", mid_a], DESK, cwd=repo_a) == 0
+    capsys.readouterr()
+    assert marker_a.is_file()
+    assert not marker_b.is_file()
+    assert run(monkeypatch, ["merge", "take", mid_b], DESK) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["merge", "land", mid_b], DESK, cwd=repo_b) == 0
+    capsys.readouterr()
+    assert marker_b.is_file()
+    assert merges_by_id()[mid_a]["result"] == "landed"
+    assert merges_by_id()[mid_b]["result"] == "landed"
+
+
+def test_land_uses_the_fallback_check_when_the_repository_has_no_table(
+        env, monkeypatch, capsys):
+    """A third repository with no table of its own runs ``[merge] check``."""
+    from foreman.merge import merge_check_command
+
+    other, _origin = make_repo(env / "world-c")
+    named, _named_origin = make_repo(env / "world-named")
+    marker = env / "checked-fallback"
+    write_merge_config(
+        env, fallback=f"touch {json.dumps(str(marker))}",
+        per_repo={named: "false"})
+    assert merge_check_command(str(other)) == f"touch {json.dumps(str(marker))}"
+    make_branch(other, "feat", "feat.txt")
+    assert run(monkeypatch, ["front", "add",
+                             str(write_brief(other, "gamma"))]) == 0
+    capsys.readouterr()
+    seed_roster(session_record(SUP, "supervisor", "gamma"),
+                session_record(DESK, "merge-desk"))
+    first = build_task(monkeypatch, capsys, "gamma", "first")
+    mid = request_id(monkeypatch, capsys, "feat", "gamma", [first],
+                     "main", cwd=other)
+    assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["merge", "land", mid], DESK, cwd=other) == 0
+    capsys.readouterr()
+    assert marker.is_file()
+    assert merges_by_id()[mid]["result"] == "landed"
 
 
 def test_land_failing_check_leaves_the_tasks_built(env, monkeypatch, capsys):

@@ -120,8 +120,20 @@ def _branch_exists(repo: str, branch: str) -> bool:
                 f"refs/heads/{branch}").returncode == 0
 
 
-def merge_check_command() -> str | None:
-    """The target's check command from ``foreman.toml``, if one is set."""
+def _check_from_entry(entry: object) -> str | None:
+    """A non-empty ``check`` string from a merge table, or None."""
+    if not isinstance(entry, dict):
+        return None
+    check = entry.get("check")
+    return check.strip() or None if isinstance(check, str) else None
+
+
+def merge_check_command(repo: str) -> str | None:
+    """The check command for this repository from ``foreman.toml``.
+
+    A ``[merge."<path>"]`` table whose key, realpath-resolved, equals
+    ``repo`` (also realpath-resolved) wins; otherwise ``[merge] check``.
+    """
     path = paths.config_file()
     try:
         raw = path.read_bytes()
@@ -134,6 +146,15 @@ def merge_check_command() -> str | None:
     table = data.get("merge") if isinstance(data, dict) else None
     if not isinstance(table, dict):
         return None
+    want = os.path.realpath(repo)
+    for key, entry in table.items():
+        if not isinstance(key, str) or not isinstance(entry, dict):
+            continue
+        if os.path.realpath(key) != want:
+            continue
+        found = _check_from_entry(entry)
+        if found is not None:
+            return found
     check = table.get("check")
     return check.strip() or None if isinstance(check, str) else None
 
@@ -361,11 +382,13 @@ def merge_land_main(ref: str | None) -> int:
                 f"(take it first with 'foreman merge take')")
     repo = os.getcwd()
     violations.extend(_repo_problems(repo))
-    check = merge_check_command()
+    check = merge_check_command(repo)
     if check is None:
+        resolved = os.path.realpath(repo)
         violations.append(
-            f"no check command in {paths.config_file()} "
-            f"('[merge] check'): the desk lands nothing it cannot check")
+            f"no check for repository {resolved} in {paths.config_file()}: "
+            f'set [merge."{resolved}"] check = "<cmd>" '
+            f"(or [merge] check as the fallback)")
     if violations:
         return _refuse(violations)
     assert record is not None and check is not None
