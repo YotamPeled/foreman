@@ -1,0 +1,9 @@
+{"pool":"opus","front":"corpus","role":"supervisor","job":null,"session":"ses-supcorp1","granted_at":"2026-05-11T09:10:00+00:00","released_at":null}
+{"pool":"opus","front":"api","role":"supervisor","job":null,"session":"ses-supapi01","granted_at":"2026-05-11T09:12:00+00:00","released_at":null}
+{"pool":"opus","front":"engine","role":"supervisor","job":null,"session":"ses-supeng01","granted_at":"2026-05-11T09:15:00+00:00","released_at":null}
+{"pool":"opus","front":"ingestion","role":"supervisor","job":null,"session":"ses-supingn1","granted_at":"2026-05-11T09:18:00+00:00","released_at":null}
+{"pool":"grok","front":"corpus","role":"grok","job":"job-cor-2","session":"ses-wcorp001","granted_at":"2026-05-11T13:49:00+00:00","released_at":null}
+{"pool":"muse","front":"corpus","role":"muse","job":"job-cor-3","session":"ses-wcorp002","granted_at":"2026-05-11T13:55:00+00:00","released_at":null}
+{"pool":"muse","front":"api","role":"muse","job":"job-api-2","session":"ses-wapi0001","granted_at":"2026-05-11T14:01:00+00:00","released_at":null}
+{"pool":"grok","front":"api","role":"grok","job":"job-api-3","session":"ses-wapi0002","granted_at":"2026-05-11T14:05:00+00:00","released_at":null}
+{"pool":"codex","front":"api","role":"astra","job":"job-api-1","session":"ses-wapi0009","granted_at":"2026-05-11T13:40:00+00:00","released_at":"2026-05-11T13:52:00+00:00"}

@@ -1,0 +1,1460 @@
+#!/usr/bin/env python3
+"""Front verification: the command that judges a front's work.
+
+    foreman-verify <front> <check>
+
+One front is implemented, `panel`, and two of its checks:
+
+  --loads          the plugin's QML lints clean and its model layer folds
+                   both fixtures (the mock and the live shape) into the
+                   eight blocks of DESIGN section 13, run headlessly with
+                   no Wayland display
+  --blocks-count   how many of those eight blocks came back non-empty, as one
+                   integer and nothing else
+  --blocks         the panel headlessly rendered against the fixture: the
+                   header numbers, and for each rendered block the number
+                   of cards and the title text of each
+
+`--keys` drives every key against a throwaway copy of the fixture and
+asserts the ledger line; `--install-roundtrip` runs the root `install`
+and `uninstall` against temporary homes and asserts the round trip is
+byte-exact.
+
+Standard library only, so this runs wherever the repository is checked out.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+PLUGIN = REPO / "plugin" / "foreman"
+HARNESS = PLUGIN / "Harness.qml"
+PANEL_HARNESS = PLUGIN / "PanelHarness.qml"
+KEYS_HARNESS = PLUGIN / "KeysHarness.qml"
+FIXTURE = PLUGIN / "test" / "fixture"
+FIXTURE_LIVE = PLUGIN / "test" / "fixture-live"
+
+#: Where Omarchy is installed. Read only, never written, never edited.
+OMARCHY = Path(os.environ.get("OMARCHY_PATH", "/usr/share/omarchy"))
+
+#: The eight blocks and the count each one must report against the fixture in
+#: plugin/foreman/test/fixture. These are derived by hand from the fixture
+#: files, never from a run of the parser under test:
+#:
+#:   header      10  observed.json swarm.sessions_registered; roster.json has
+#:                   the same ten sessions
+#:   needsYou     2  inbox.jsonl has 4 lines and 3 ids; inb-theme001 is
+#:                   written twice and the later line answers it, leaving
+#:                   inb-tokens01 and inb-reaper01 open
+#:   problems     3  anomalies.jsonl has 5 lines and 4 (kind, subject) pairs;
+#:                   the later "job stalled/ses-wcorp002" line resolves it,
+#:                   leaving supervisor silent, intruder, defect repeated
+#:   working      5  seven directories under fronts/; digest and dashboard are
+#:                   state "queued", so corpus, api, engine, ingestion, reaper
+#:   jobQueue     6  planned or queued jobs after folding: corpus job-cor-4,
+#:                   api job-api-4 and job-api-5, engine job-eng-1, ingestion
+#:                   job-ing-1, reaper job-rea-1. corpus job-cor-2 is written
+#:                   planned and then running, and the later line wins
+#:   frontQueue   2  digest and dashboard
+#:   mergeQueue   5  merges.jsonl has 6 lines and 5 ids; mrg-labelidx is
+#:                   written twice and the later line lands it
+#:   capacity     4  observed.json pools: opus, codex, grok, muse
+EXPECTED = {
+    "header": 10,
+    "needsYou": 2,
+    "problems": 3,
+    "working": 5,
+    "jobQueue": 6,
+    "frontQueue": 2,
+    "mergeQueue": 5,
+    "capacity": 4,
+}
+
+#: The eight blocks and the count each one must report against the
+#: live-shape fixture in plugin/foreman/test/fixture-live. Hand-derived the
+#: same way, never from a run of the parser under test. That fixture copies
+#: what the runtime actually writes: observed.json has no `fronts` key,
+#: doing-now lives in sessions/<id>/checkpoint.json, two jobs reference
+#: their task by title, and the astra role waits on the codex pool:
+#:
+#:   header       3  observed.json swarm.sessions_registered; roster.json has
+#:                   the same three sessions
+#:   needsYou     2  inbox.jsonl has 3 lines and 3 ids; inb-hb003 is answered,
+#:                   leaving inb-hb001 (asked by a worker, ses-hb0002) and
+#:                   inb-hb002 open
+#:   problems     1  anomalies.jsonl has 3 lines and 2 (kind, subject) pairs;
+#:                   the later "job stalled/ses-hb0002" line resolves it,
+#:                   leaving the intruder pid-5521
+#:   working      1  two directories under fronts/; quay is state "queued",
+#:                   so harbor alone
+#:   jobQueue     2  planned or queued jobs after folding: harbor job-hb-3
+#:                   (queued, task by id) and job-hb-4 (planned, task by
+#:                   title "tide window"); job-hb-1 is verified and job-hb-2
+#:                   is running
+#:   frontQueue   1  quay
+#:   mergeQueue   2  mrg-hb001 merging, mrg-hb002 landed
+#:   capacity     2  observed.json pools: codex, muse
+EXPECTED_LIVE = {
+    "header": 3,
+    "needsYou": 2,
+    "problems": 1,
+    "working": 1,
+    "jobQueue": 2,
+    "frontQueue": 1,
+    "mergeQueue": 2,
+    "capacity": 2,
+}
+
+#: Row-level facts the live-shape fixture must produce, hand-derived from
+#: its bytes the same way. Each one names the break it catches — the old
+#: model, written against the entity definitions, gets it wrong:
+#:
+#:   harbor.doingNow        the supervisor checkpoint's `doing`, not
+#:                          observed.fronts (which the live fixture omits)
+#:   harbor.remaining       the built task "buoy labels" stays listed:
+#:                          section 13 wants every task not landed
+#:   tas-hb-2.jobs          job-hb-2 references its task by title
+#:                          ("second soundings"), not by id
+#:   tas-hb-4.jobs          job-hb-3 by id plus job-hb-4 by title
+#:                          ("tide window"), in ledger order
+#:   codex.waiting          job-hb-3 waits as role astra on pool codex,
+#:                          via the slots ledger mapping
+#:   job-hb-N.model         projected from the roster row of the job's
+#:                          session (hb-1, hb-2); no session attached yet:
+#:                          honest "unknown" (hb-3, hb-4)
+#:   harbor.blockedOnOwner  inb-hb001 asked by worker ses-hb0002, joined
+#:                          through roster.front, in inbox order
+#:   harbor.rateWindowH     oldest unlanded creation stamp 12:00 to the
+#:                          15:00 collector clock: 3 hours. (A rewrite keeps
+#:                          its task's creation `at`, as the runtime does for
+#:                          tas-hb-2's second line, so the window is work age,
+#:                          not a progress span.)
+#:   harbor.ratePerHour     unlanded output so far, 8 + 6 + 0 = 14 units,
+#:                          over that window: 14 / 3, read back as a float
+#:   harbor.projectedFinish 7 units left at that rate from the 15:00
+#:                          collector clock: 15:00 + 1:30 = 16:30 UTC
+#:   quay.doingNow          no checkpoint and no observed.fronts: empty,
+#:                          not an error
+EXPECTED_LIVE_ROWS = {
+    "front.harbor.doingNow": "Second soundings running, 8 of 12 read",
+    "front.harbor.remaining": "second soundings|buoy labels|tide window",
+    "task.harbor.tas-hb-1.jobs": "job-hb-1",
+    "task.harbor.tas-hb-2.jobs": "job-hb-2",
+    "task.harbor.tas-hb-4.jobs": "job-hb-3|job-hb-4",
+    "capacity.codex.waiting": "1",
+    "capacity.muse.waiting": "1",
+    "job.job-hb-1.model": "muse",
+    "job.job-hb-2.model": "muse",
+    "job.job-hb-3.model": "unknown",
+    "job.job-hb-4.model": "unknown",
+    "front.harbor.blockedOnOwner":
+        "Sound the north channel first or the south?"
+        "|Buy one more night of survey boat time?",
+    "front.harbor.rateWindowH": "3",
+    "front.harbor.projectedFinish": "2026-06-02T16:30:00.000Z",
+    "front.quay.doingNow": "",
+}
+#: The one row fact read back as a float rather than compared as text.
+EXPECTED_LIVE_RATE = 14 / 3
+
+#: What `panel --blocks` must read off the headless render against the
+#: mock fixture in plugin/foreman/test/fixture. Hand-derived from the
+#: fixture bytes, never from a run of the panel under test:
+#:
+#:   header      the header row left to right: the word foreman, the
+#:               collector clock in UTC (observed.json `at`
+#:               2026-05-11T14:07:00+00:00, a Monday), "10 sessions, all
+#:               registered" (10 registered and 10 observed), "not
+#:               frozen" (no `frozen` file), and the collector state.
+#:               The collector age is measured against the wall clock,
+#:               so the May fixture always reads stale, where the mock
+#:               shows alive.
+#:   needsYou    inbox.jsonl sorted by asked_at, answered rows dropped:
+#:               inb-tokens01 then inb-reaper01 (inb-theme001 is answered
+#:               by the later line)
+#:   problems    anomalies.jsonl in ledger order, resolved rows dropped:
+#:               supervisor silent, intruder, defect repeated (the "job
+#:               stalled" pair is resolved by the later line); the title
+#:               on screen is each row's detail sentence
+EXPECTED_PANEL_HEADER = [
+    "foreman",
+    "Monday 14:07",
+    "10 sessions, all registered",
+    "not frozen",
+    "collector stale",
+]
+EXPECTED_PANEL_NEEDSYOU = [
+    "Buy 2M extra Codex tokens so the review pool keeps two reviewers overnight?",
+    "Ship the reaper without the dead-worktree sweep?",
+]
+EXPECTED_PANEL_PROBLEMS = [
+    "Engine supervisor has been silent for 14 minutes with no jobs running,"
+    " still holding an Opus slot",
+    "A Codex process is running that Foreman did not launch:"
+    " workspace 9, no session id",
+    "Ingestion is halted: the webhook destination defect came back a third"
+    " time, the supervisor must write what changed before dispatching again",
+]
+
+#: The queue blocks, hand-derived from the mock fixture the same way. Each
+#: queue row reads as a (left, body) pair off the render: the wait or state
+#: word and the row sentence with markup stripped. The job queue follows
+#: the model's oldest-first order; the merge queue reads merging, waiting,
+#: landed out of the model's own group arrays. Capacity reads per pool the
+#: name, the busy-of-total and the third line (average, supervisors-only,
+#: or the queued-only waiting count).
+EXPECTED_PANEL_JOBQUEUE = [
+    ("14 min", "frozen-state restart · engine · needs a muse slot"
+               " · blocked: supervisor silent"),
+    ("12 min", "sweep on collector clock · reaper · needs a muse slot"
+               " · blocked: Ship the reaper without the dead-worktree sweep?"),
+    ("7 min", "sampling plan · corpus · needs a grok slot (8 of 8 busy)"),
+    ("planned", "webhook destination fix · ingestion"
+                " · spec written, front halted"),
+    ("3 min", "freeze refuses launches · api · needs a muse slot"
+              " (3 of 3 busy)"),
+    ("planned", "digest endpoint · api · spec written, not yet queued"),
+]
+EXPECTED_PANEL_JOBQUEUE_SUMMARY = \
+    "6 waiting · oldest 14 min · muse is the bottleneck (3 waiting on it)"
+EXPECTED_PANEL_FRONTQUEUE = [
+    ("after api", "digest · One evening message that says what the swarm"
+                  " did today and what it wants"),
+    ("capacity", "dashboard · The same one screen in a browser for the days"
+                 " the owner is away from this machine"),
+]
+EXPECTED_PANEL_MERGEQUEUE = [
+    ("merging", "session-registry-read · from api → dev · reviewed by codex"
+                " · started 1 min ago"),
+    ("waiting", "dump-export-shape · from corpus → feat/corpus-export"
+                " · no review requested · waited 4 min"),
+    ("landed", "label-index-rebuild · corpus → main · 14:03"
+               " · reviewed by codex"),
+    ("landed", "routes-from-ledger · api → dev · 13:58 · reviewed by grok"),
+    ("landed", "reader-id-guard · ingestion → main · 13:51 · no review"),
+]
+EXPECTED_PANEL_MERGEQUEUE_SUMMARY = \
+    "1 merging · 1 waiting · avg 6 min from handoff to landed"
+EXPECTED_PANEL_CAPACITY = [
+    ("■ opus", "4 of 4 slots busy", "supervisors only"),
+    ("■ codex", "1 of 2 slots busy", "avg review 6 min"),
+    ("■ grok", "8 of 8 slots busy", "1 job waiting for a slot"),
+    ("■ muse", "3 of 3 slots busy", "3 jobs waiting for a slot"),
+]
+
+TAG = re.compile(r"<[^>]*>")
+
+#: The Working block against the mock fixture, in the model's order (the
+#: front directories sort alphabetically, so api comes before corpus).
+#: One card per working front plus the merge desk card; each entry is the
+#: card title, its tone, its task-row count, and its monitors line.
+#: Hand-derived from the fixture bytes: tones from the front condition
+#: (moving / stalled-supervisor / halted / idle), task counts from
+#: tasks.jsonl (every task gets a row; fronts with nothing running show
+#: the muted sentence instead, so zero rows), monitors from
+#: measurements.jsonl (last line per monitor, in first-seen order).
+EXPECTED_PANEL_WORKING = [
+    ("api", "green", 6,
+     "metrics: routes served from the ledger 11/14 · schema drift 0"),
+    ("corpus", "green", 7,
+     "metrics: apps collected 412/600 · labels double-read 184/600"
+     " · label agreement 0.91"),
+    ("engine", "red", 0,
+     "metrics: slots returned after a restart 0/4"),
+    ("ingestion", "red", 0,
+     "metrics: duplicate landings 3"),
+    ("reaper", "dim", 0,
+     "metrics: processes left behind 0"),
+    ("merge desk", "plain", 0, ""),
+]
+
+#: The slots the panel renders, in Panel.qml's order. needsYou and
+#: problems arrived with the shell job; the rest land with the other
+#: layout jobs and are reported, not asserted, until they do.
+PANEL_SLOTS = ["needsYou", "problems", "working", "jobQueue",
+               "frontQueue", "mergeQueue", "capacity"]
+
+BLOCKS = list(EXPECTED)
+
+ANSI = re.compile(r"\x1b\[[0-9;]*m")
+
+#: The plugin's surfaces import qs.Commons, which only resolves inside the
+#: Omarchy shell's own config root. Running the model on its own leaves that
+#: import dangling, and Quickshell says so. Every other unresolvable import is
+#: a real failure.
+EXPECTED_DANGLING_IMPORT = "/Commons"
+
+#: qmllint reports everything as a warning with a category in brackets, so the
+#: category is what decides. These fail the check: the file does not parse, an
+#: import does not resolve, a type does not exist. The categories left out are
+#: the ones qmllint also raises against Omarchy's own shipped plugins:
+#: `missing-property`, because it cannot see through the shell's nested token
+#: objects, and `uncreatable-type`, which it says about every PanelWindow.
+FATAL_CATEGORIES = ("[syntax]", "[import]", "[unresolved-type]",
+                    "[missing-type]", "[incompatible-type]",
+                    "[invalid-lint-directive]")
+
+
+class Failure(Exception):
+    """A named check that did not pass."""
+
+
+def _clean(text: str) -> str:
+    return ANSI.sub("", text)
+
+
+def find_qmllint() -> str:
+    """qmllint ships with qt6-declarative but is not on PATH on this machine."""
+    for candidate in ("qmllint", "qmllint6"):
+        found = shutil.which(candidate)
+        if found:
+            return found
+    for candidate in ("/usr/lib/qt6/bin/qmllint", "/usr/lib/qt6/bin/qmllint6"):
+        if Path(candidate).is_file():
+            return candidate
+    raise Failure("qmllint: not found on PATH or under /usr/lib/qt6/bin")
+
+
+def find_quickshell() -> str:
+    for candidate in ("qs", "quickshell"):
+        found = shutil.which(candidate)
+        if found:
+            return found
+    raise Failure("quickshell: neither `qs` nor `quickshell` is on PATH")
+
+
+def headless_env(state_dir: Path) -> dict:
+    """No Wayland display, no GPU, no theme plugin, and the fixture as the
+    only state directory the model can see. Ambient FOREMAN_SESSION,
+    FOREMAN_STATE and FOREMAN_CONFIG are never inherited: the harness
+    names the world and the caller itself, rather than whoever holds
+    the terminal. FOREMAN_CONFIG points at a path the fixture does not
+    create, so a freeze during --keys cannot fire the owner's hooks."""
+    env = dict(os.environ)
+    env.pop("WAYLAND_DISPLAY", None)
+    env.pop("DISPLAY", None)
+    env.pop("FOREMAN_SESSION", None)
+    env.pop("FOREMAN_STATE", None)
+    env.pop("FOREMAN_CONFIG", None)
+    env["QT_QPA_PLATFORM"] = "offscreen"
+    env["QT_QPA_PLATFORMTHEME"] = ""
+    env["FOREMAN_STATE"] = str(state_dir)
+    env["FOREMAN_CONFIG"] = str(state_dir / "harness-config")
+    return env
+
+
+def check_lint() -> list[str]:
+    """Every QML file in the plugin, linted. An error or an import that does
+    not resolve fails; the property warnings qmllint raises against the
+    shell's nested token objects do not, because it raises the same ones
+    against Omarchy's own shipped plugins."""
+    qmllint = find_qmllint()
+    files = sorted(str(path) for path in PLUGIN.rglob("*.qml"))
+    if not files:
+        raise Failure("qmllint: no QML files found under " + str(PLUGIN))
+
+    # qs.Commons is declared by /usr/share/omarchy/shell/Commons/qmldir as a
+    # module named qs.Commons, so it resolves under an import path holding a
+    # `qs` entry that points at the shell.
+    imports = REPO / ".foreman-verify-imports"
+    imports.mkdir(exist_ok=True)
+    link = imports / "qs"
+    shell = OMARCHY / "shell"
+    try:
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        if shell.is_dir():
+            link.symlink_to(shell)
+
+        result = subprocess.run(
+            [qmllint, "-I", str(imports), *files],
+            capture_output=True, text=True, timeout=180)
+    finally:
+        if link.is_symlink():
+            link.unlink()
+        try:
+            imports.rmdir()
+        except OSError:
+            pass
+
+    output = _clean(result.stdout + result.stderr)
+    problems = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("Error:"):
+            problems.append(stripped)
+            continue
+        fatal = any(category in stripped for category in FATAL_CATEGORIES)
+        if fatal or "is not installed" in stripped:
+            if EXPECTED_DANGLING_IMPORT not in stripped:
+                problems.append(stripped)
+    if problems:
+        raise Failure("qmllint: " + str(len(problems)) + " problem(s):\n  "
+                      + "\n  ".join(problems))
+    return files
+
+
+#: Quickshell crashes intermittently at startup in headless sandboxes
+#: (SIGSEGV inside Qt's own startup code, before any QML runs: about one
+#: run in three here, confirmed by coredump backtrace), so a run that dies
+#: before reporting is retried. A run that reports is judged on its output
+#: exactly once, and a failure that persists across every attempt still
+#: fails: retries never turn a broken model into a pass, they only outlast
+#: a dying runner.
+HARNESS_ATTEMPTS = 3
+
+
+def run_quickshell(args: list[str], env: dict) -> str:
+    """Run quickshell until it reports (HARNESS-DONE in the output) or the
+    attempts run out. Returns the last run's cleaned output; a run that
+    times out is retried, and the final timeout propagates."""
+    output = ""
+    for attempt in range(HARNESS_ATTEMPTS):
+        try:
+            result = subprocess.run(
+                args, capture_output=True, text=True, timeout=120, env=env)
+        except subprocess.TimeoutExpired:
+            if attempt == HARNESS_ATTEMPTS - 1:
+                raise
+            continue
+        output = _clean(result.stdout + result.stderr)
+        if "HARNESS-DONE" in output:
+            return output
+    return output
+
+
+def run_harness(state_dir: Path) -> dict:
+    """The model layer with no window on it, against `state_dir`.
+
+    Quickshell exits 0 on a configuration that failed to load, so the pass or
+    fail decision is made from the output, never from the status."""
+    quickshell = find_quickshell()
+    if not HARNESS.is_file():
+        raise Failure("harness: missing " + str(HARNESS))
+    if not state_dir.is_dir():
+        raise Failure("harness: no such state directory: " + str(state_dir))
+
+    output = run_quickshell(
+        [quickshell, "-p", str(HARNESS)], headless_env(state_dir))
+
+    trouble = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("ERROR"):
+            # Host-runtime noise, never the model layer: quickshell failing
+            # to create its /run directory or bind its IPC socket (as in a
+            # sandbox without AF_UNIX) says nothing about the panel.
+            if re.match(r"ERROR quickshell\.(paths|ipc|logging|tooling):",
+                        stripped):
+                continue
+            trouble.append(stripped)
+        elif "unresolvable import" in stripped:
+            if EXPECTED_DANGLING_IMPORT not in stripped:
+                trouble.append(stripped)
+        elif "TypeError" in stripped or "ReferenceError" in stripped:
+            trouble.append(stripped)
+    if trouble:
+        raise Failure("harness: the model layer reported errors:\n  "
+                      + "\n  ".join(trouble[:10]))
+
+    counts = {}
+    details = {}
+    nonempty = None
+    for line in output.splitlines():
+        cleaned = _clean(line)
+        match = re.search(r"BLOCK ([A-Za-z]+) (-?\d+)\s*$", cleaned)
+        if match:
+            counts[match.group(1)] = int(match.group(2))
+            continue
+        match = re.search(r"DETAIL (\S+?)(?: (.*))?\s*$", cleaned)
+        if match:
+            details[match.group(1)] = match.group(2) or ""
+            continue
+        match = re.search(r"NONEMPTY (-?\d+)\s*$", cleaned)
+        if match:
+            nonempty = int(match.group(1))
+    if "HARNESS-DONE" not in output:
+        raise Failure("harness: did not finish; output was:\n" + output[-2000:])
+    if nonempty is None:
+        raise Failure("harness: printed no NONEMPTY line")
+    return {"counts": counts, "details": details, "nonempty": nonempty}
+
+
+def check_blocks(state_dir: Path, expected: dict, label: str) -> dict:
+    result = run_harness(state_dir)
+    counts = result["counts"]
+    missing = [name for name in BLOCKS if name not in counts]
+    if missing:
+        raise Failure("blocks (%s): the model never reported %s"
+                      % (label, ", ".join(missing)))
+    wrong = ["%s: got %d, the fixture holds %d"
+             % (name, counts[name], expected[name])
+             for name in BLOCKS if counts[name] != expected[name]]
+    if wrong:
+        raise Failure("blocks (%s): %d count(s) wrong:\n  %s"
+                      % (label, len(wrong), "\n  ".join(wrong)))
+    return result
+
+
+def check_live_rows(details: dict) -> None:
+    """The live-shape rows each fix owns, against hand-derived literals."""
+    missing = [key for key in EXPECTED_LIVE_ROWS if key not in details]
+    if missing:
+        raise Failure("rows (live-shape): the model never reported "
+                      + ", ".join(missing))
+    if "front.harbor.ratePerHour" not in details:
+        raise Failure("rows (live-shape): the model never reported "
+                      "front.harbor.ratePerHour")
+    wrong = ["%s: got %r, the fixture holds %r"
+             % (key, details[key], EXPECTED_LIVE_ROWS[key])
+             for key in EXPECTED_LIVE_ROWS
+             if details[key] != EXPECTED_LIVE_ROWS[key]]
+    try:
+        rate = float(details["front.harbor.ratePerHour"])
+    except ValueError:
+        raise Failure("rows (live-shape): front.harbor.ratePerHour: got %r, "
+                      "the fixture holds %r"
+                      % (details["front.harbor.ratePerHour"],
+                         EXPECTED_LIVE_RATE))
+    if abs(rate - EXPECTED_LIVE_RATE) > 1e-9:
+        wrong.append("front.harbor.ratePerHour: got %r, the fixture holds %r"
+                     % (details["front.harbor.ratePerHour"],
+                        EXPECTED_LIVE_RATE))
+    if wrong:
+        raise Failure("rows (live-shape): %d row(s) wrong:\n  %s"
+                      % (len(wrong), "\n  ".join(wrong)))
+
+
+def loads(state_dir: Path) -> int:
+    files = check_lint()
+    print("qmllint: %d QML file(s) clean" % len(files))
+    # Both fixtures, each against its own hand-derived counts: the mock
+    # proves the fixture renders, the live shape proves the runtime's real
+    # output does. An explicit --state replaces the mock fixture only; the
+    # live shape is always checked at its own path.
+    mock = check_blocks(state_dir, EXPECTED, "mock")
+    for name in BLOCKS:
+        print("mock %s %d" % (name, mock["counts"][name]))
+    live = check_blocks(FIXTURE_LIVE, EXPECTED_LIVE, "live-shape")
+    for name in BLOCKS:
+        print("live %s %d" % (name, live["counts"][name]))
+    check_live_rows(live["details"])
+    print("live rows: %d row fact(s) as the fixture holds them"
+          % (len(EXPECTED_LIVE_ROWS) + 1))
+    print("loads: the plugin lints and its model folds both fixtures "
+          "into all eight blocks")
+    return 0
+
+
+def blocks_count(state_dir: Path) -> int:
+    print(run_harness(state_dir)["nonempty"])
+    return 0
+
+
+def run_panel_harness(state_dir: Path) -> dict:
+    """The panel's header and blocks with a window on them, against
+    `state_dir`.
+
+    The panel binds qs.Commons, which only resolves inside the Omarchy
+    shell's own config root, so the run gets a QML import path holding a
+    `qs` entry that points at the shell — the same arrangement check_lint
+    uses. Pass or fail comes from the output, never from the status."""
+    quickshell = find_quickshell()
+    if not PANEL_HARNESS.is_file():
+        raise Failure("harness: missing " + str(PANEL_HARNESS))
+    if not state_dir.is_dir():
+        raise Failure("harness: no such state directory: " + str(state_dir))
+
+    imports = REPO / ".foreman-verify-imports"
+    imports.mkdir(exist_ok=True)
+    link = imports / "qs"
+    shell = OMARCHY / "shell"
+    try:
+        if link.is_symlink() or link.exists():
+            link.unlink()
+        if shell.is_dir():
+            link.symlink_to(shell)
+
+        env = headless_env(state_dir)
+        existing = env.get("QML2_IMPORT_PATH", "")
+        env["QML2_IMPORT_PATH"] = (str(imports) + (os.pathsep + existing
+                                                   if existing else ""))
+        output = run_quickshell(
+            [quickshell, "-p", str(PANEL_HARNESS)], env)
+    finally:
+        if link.is_symlink():
+            link.unlink()
+        try:
+            imports.rmdir()
+        except OSError:
+            pass
+
+    trouble = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("ERROR"):
+            if re.match(r"ERROR quickshell\.(paths|ipc|logging|tooling):",
+                        stripped):
+                continue
+            trouble.append(stripped)
+        elif "unresolvable import" in stripped:
+            # The static scanner does not see the runtime qs -> shell
+            # mapping, so it warns about qs.Commons while the engine
+            # resolves it. Any other unresolvable import is a real failure.
+            if EXPECTED_DANGLING_IMPORT not in stripped:
+                trouble.append(stripped)
+        elif "TypeError" in stripped or "ReferenceError" in stripped:
+            trouble.append(stripped)
+        elif stripped.startswith("SLOT-ERROR"):
+            trouble.append("harness: " + stripped)
+    if trouble:
+        raise Failure("panel harness: the render reported errors:\n  "
+                      + "\n  ".join(trouble[:10]))
+
+    counts: dict = {}
+    renders: dict = {}
+    for line in output.splitlines():
+        cleaned = _clean(line)
+        match = re.search(r"BLOCK ([A-Za-z]+) (-?\d+)\s*$", cleaned)
+        if match:
+            counts[match.group(1)] = int(match.group(2))
+            continue
+        match = re.search(r"RENDER (\S+) (\S+) (\d+) (\{.*\})\s*$", cleaned)
+        if match:
+            try:
+                shown = json.loads(match.group(4))
+                titles = shown["titles"]
+                empty = shown["empty"]
+            except (ValueError, KeyError, TypeError):
+                raise Failure("panel harness: unparsable render: %r"
+                              % match.group(4))
+            renders[match.group(1)] = {
+                "status": match.group(2),
+                "cards": int(match.group(3)),
+                "titles": titles,
+                "empty": empty,
+                "details": shown.get("details", []),
+            }
+    if "HARNESS-DONE" not in output:
+        raise Failure("panel harness: did not finish; output was:\n"
+                      + output[-2000:])
+    return {"counts": counts, "renders": renders}
+
+
+def panel_blocks(state_dir: Path) -> int:
+    """Header numbers and, for each block of this job's scope, the card
+    count and title text of every card, read off the headless render.
+    Slots whose files have not landed yet are reported, never asserted,
+    so this stays meaningful as the other layout jobs arrive. The strict
+    assertions hold the mock fixture; an explicit --state only reports
+    what the render shows."""
+    result = run_panel_harness(state_dir)
+    renders = result["renders"]
+
+    missing = [name for name in ["header", *PANEL_SLOTS]
+               if name not in renders]
+    if missing:
+        raise Failure("blocks: the panel never rendered %s"
+                      % ", ".join(missing))
+    broken = ["%s (%s)" % (name, renders[name]["status"])
+              for name in renders if renders[name]["status"] == "error"]
+    if broken:
+        raise Failure("blocks: %d block file(s) failed to load:\n  %s"
+                      % (len(broken), "\n  ".join(broken)))
+
+    strict = state_dir.resolve() == FIXTURE.resolve()
+    if strict:
+        check_panel_strict(renders)
+
+    header = renders["header"]
+    print("header: %s" % " · ".join(header["titles"]))
+    for name in PANEL_SLOTS:
+        slot = renders[name]
+        if slot["status"] != "ready":
+            print("%s: not yet rendered (%s)" % (name, slot["status"]))
+            continue
+        print("%s: %d card(s)" % (name, slot["cards"]))
+        for title in slot["titles"]:
+            print("  %s" % title)
+        for voice in slot["empty"]:
+            print("  empty: %s" % voice)
+    if strict:
+        print("blocks: the header and this job's blocks render as the"
+              " fixture holds them")
+    else:
+        print("blocks: reported without assertions (not the mock fixture)")
+    return 0
+
+
+def check_panel_strict(renders: dict) -> None:
+    """The mock-fixture assertions: header numbers, and for each block of
+    this job's scope the card count, every title, and a silent empty
+    voice."""
+    header = renders["header"]
+    if header["titles"] != EXPECTED_PANEL_HEADER:
+        raise Failure("blocks: header: got %r, the fixture holds %r"
+                      % (header["titles"], EXPECTED_PANEL_HEADER))
+
+    for name, expected in (("needsYou", EXPECTED_PANEL_NEEDSYOU),
+                           ("problems", EXPECTED_PANEL_PROBLEMS)):
+        slot = renders[name]
+        if slot["status"] != "ready":
+            raise Failure("blocks: %s: not rendered (%s)"
+                          % (name, slot["status"]))
+        if slot["cards"] != len(expected) or slot["titles"] != expected:
+            raise Failure("blocks: %s: got %d card(s) %r, the fixture holds"
+                          " %d with %r"
+                          % (name, slot["cards"], slot["titles"],
+                             len(expected), expected))
+        if slot["empty"]:
+            raise Failure("blocks: %s: empty voice shows beside %d card(s)"
+                          % (name, slot["cards"]))
+
+    slot = renders["jobQueue"]
+    if slot["status"] != "ready":
+        raise Failure("blocks: jobQueue: not rendered (%s)"
+                      % slot["status"])
+    if slot["cards"] != 1:
+        raise Failure("blocks: jobQueue: got %d card(s),"
+                      " the fixture holds 1" % slot["cards"])
+    shown = [TAG.sub("", title) for title in slot["titles"]]
+    if not shown:
+        raise Failure("blocks: jobQueue: rendered no titles")
+    rows = [(shown[i], shown[i + 1])
+            for i in range(0, len(shown) - 1, 2)]
+    if rows != EXPECTED_PANEL_JOBQUEUE \
+            or shown[-1] != EXPECTED_PANEL_JOBQUEUE_SUMMARY:
+        raise Failure("blocks: jobQueue: got %d row(s) %r with summary %r,"
+                      " the fixture holds %d with %r"
+                      % (len(rows), rows, shown[-1],
+                         len(EXPECTED_PANEL_JOBQUEUE),
+                         EXPECTED_PANEL_JOBQUEUE_SUMMARY))
+    if slot["empty"]:
+        raise Failure("blocks: jobQueue: empty voice shows beside %d row(s)"
+                      % len(rows))
+
+    # The merge body is a flow of three fragments per row (the bold target
+    # cannot go through RichText offscreen), so a row joins back out of
+    # its left word and three fragments.
+    slot = renders["mergeQueue"]
+    if slot["status"] != "ready":
+        raise Failure("blocks: mergeQueue: not rendered (%s)"
+                      % slot["status"])
+    if slot["cards"] != 1:
+        raise Failure("blocks: mergeQueue: got %d card(s),"
+                      " the fixture holds 1" % slot["cards"])
+    shown = [TAG.sub("", title) for title in slot["titles"]]
+    if not shown:
+        raise Failure("blocks: mergeQueue: rendered no titles")
+    rows = [(shown[i], shown[i + 1] + shown[i + 2] + shown[i + 3])
+            for i in range(0, len(shown) - 1, 4)]
+    if rows != EXPECTED_PANEL_MERGEQUEUE \
+            or shown[-1] != EXPECTED_PANEL_MERGEQUEUE_SUMMARY:
+        raise Failure("blocks: mergeQueue: got %d row(s) %r with summary"
+                      " %r, the fixture holds %d with %r"
+                      % (len(rows), rows, shown[-1],
+                         len(EXPECTED_PANEL_MERGEQUEUE),
+                         EXPECTED_PANEL_MERGEQUEUE_SUMMARY))
+    if slot["empty"]:
+        raise Failure("blocks: mergeQueue: empty voice shows beside %d"
+                      " row(s)" % len(rows))
+
+    slot = renders["frontQueue"]
+    if slot["status"] != "ready":
+        raise Failure("blocks: frontQueue: not rendered (%s)"
+                      % slot["status"])
+    if slot["cards"] != 1:
+        raise Failure("blocks: frontQueue: got %d card(s),"
+                      " the fixture holds 1" % slot["cards"])
+    shown = [TAG.sub("", title) for title in slot["titles"]]
+    rows = [(shown[i], shown[i + 1]) for i in range(0, len(shown), 2)]
+    if rows != EXPECTED_PANEL_FRONTQUEUE:
+        raise Failure("blocks: frontQueue: got %d row(s) %r, the fixture"
+                      " holds %d with %r"
+                      % (len(rows), rows, len(EXPECTED_PANEL_FRONTQUEUE),
+                         EXPECTED_PANEL_FRONTQUEUE))
+    if slot["empty"]:
+        raise Failure("blocks: frontQueue: empty voice shows beside %d"
+                      " row(s)" % len(rows))
+
+    slot = renders["capacity"]
+    if slot["status"] != "ready":
+        raise Failure("blocks: capacity: not rendered (%s)" % slot["status"])
+    if slot["cards"] != len(EXPECTED_PANEL_CAPACITY):
+        raise Failure("blocks: capacity: got %d card(s), the fixture holds"
+                      " %d" % (slot["cards"], len(EXPECTED_PANEL_CAPACITY)))
+    shown = [TAG.sub("", title) for title in slot["titles"]]
+    pools = [(shown[i], shown[i + 1], shown[i + 2])
+             for i in range(0, len(shown), 3)]
+    if pools != EXPECTED_PANEL_CAPACITY:
+        raise Failure("blocks: capacity: got %r, the fixture holds %r"
+                      % (pools, EXPECTED_PANEL_CAPACITY))
+    if slot["empty"]:
+        raise Failure("blocks: capacity: empty voice shows beside %d"
+                      " card(s)" % slot["cards"])
+    slot = renders["working"]
+    if slot["status"] != "ready":
+        raise Failure("blocks: working: not rendered (%s)" % slot["status"])
+    expected_titles = [title for title, _, _, _ in EXPECTED_PANEL_WORKING]
+    if slot["cards"] != len(expected_titles) or slot["titles"] != expected_titles:
+        raise Failure("blocks: working: got %d card(s) %r, the fixture holds"
+                      " %d with %r"
+                      % (slot["cards"], slot["titles"],
+                         len(expected_titles), expected_titles))
+    if slot["empty"]:
+        raise Failure("blocks: working: empty voice shows beside %d card(s)"
+                      % slot["cards"])
+    details = slot.get("details", [])
+    got = [(card.get("title", ""), card.get("tone", ""),
+            card.get("tasks", -1), card.get("monitors", ""))
+           for card in details]
+    if got != EXPECTED_PANEL_WORKING:
+        raise Failure("blocks: working: got %r, the fixture holds %r"
+                      % (got, EXPECTED_PANEL_WORKING))
+
+
+#: What `panel --keys` must see on the headless run against a throwaway
+#: copy of the mock fixture. Hand-derived from the fixture bytes, never
+#: from a run of the panel under test:
+#:
+#:   needsYou  inbox.jsonl sorted by asked_at, answered rows dropped:
+#:             inb-tokens01 (options yes/no) then inb-reaper01 (yes/no)
+#:   approve   the row's first option ("yes" for both fixture items)
+#:   decline   the row's second option ("no" for both fixture items)
+#:   problems  anomalies.jsonl in ledger order, resolved rows dropped;
+#:             the defect-repeated row carries no action and gets no hint:
+#:             supervisor silent ("foreman relaunch ses-supeng01") then
+#:             intruder ("foreman kill pid-41180")
+#:   hints     assigned on appearance in model order (needsYou approve
+#:             then decline per item, then problems), aa down the alphabet
+#:             without f: aa ab ac ad ae ag
+#:   queue     freeze, then one answer per inbox item (approve the first,
+#:             decline the second, so both answer variants fire without
+#:             answering one item twice), then each Problem verbatim
+EXPECTED_KEYS = [
+    ("aa", "answer:inb-tokens01:approve",
+     ["answer", "inb-tokens01", "yes"]),
+    ("ab", "answer:inb-tokens01:decline",
+     ["answer", "inb-tokens01", "no"]),
+    ("ac", "answer:inb-reaper01:approve",
+     ["answer", "inb-reaper01", "yes"]),
+    ("ad", "answer:inb-reaper01:decline",
+     ["answer", "inb-reaper01", "no"]),
+    ("ae", "problem:supervisor silent:ses-supeng01",
+     ["relaunch", "ses-supeng01"]),
+    ("ag", "problem:intruder:pid-41180",
+     ["kill", "pid-41180"]),
+]
+EXPECTED_KEYS_QUEUE = [
+    "static:freeze",
+    "answer:inb-tokens01:approve",
+    "answer:inb-reaper01:decline",
+    "problem:supervisor silent:ses-supeng01",
+    "problem:intruder:pid-41180",
+]
+#: The answers the ledger must hold after the run, derived by hand from
+#: the fixture's own options arrays (approve = first option, decline =
+#: second), not from a run of the panel's code.
+EXPECTED_KEYS_ANSWERS = {
+    "inb-tokens01": "yes",
+    "inb-reaper01": "no",
+}
+
+HINT_RE = re.compile(r"^[a-e,g-z][a-e,g-z]$")
+
+
+def fold_ledger(path: Path) -> dict:
+    """Last line wins over a JSONL ledger, first appearance keeps order."""
+    by_id: dict = {}
+    try:
+        text = path.read_text()
+    except OSError:
+        return by_id
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(record, dict) and record.get("id"):
+            by_id[record["id"]] = record
+    return by_id
+
+
+def run_keys_harness(state_dir: Path, session: str | None = None) -> list[str]:
+    """The panel's own Keys singleton against `state_dir`, driven through
+    the same entry points Panel.qml's key handler calls. Every fire runs
+    the real `foreman` verb through Keys' Process (FOREMAN_STATE points at
+    the throwaway copy). The driven run is attributed to `session`: None
+    leaves FOREMAN_SESSION unset, anything else names it outright, so the
+    ambient value can never leak in."""
+    quickshell = find_quickshell()
+    if not KEYS_HARNESS.is_file():
+        raise Failure("harness: missing " + str(KEYS_HARNESS))
+    if not state_dir.is_dir():
+        raise Failure("harness: no such state directory: " + str(state_dir))
+
+    env = headless_env(state_dir)
+    if session is not None:
+        env["FOREMAN_SESSION"] = session
+    # A run that never settles (HARNESS-DONE deadline) or never answers
+    # (120s of silence) is retried like a runner that dies before
+    # reporting: the harness quits by its own hard deadline, so either
+    # silence is the headless runner stalling on its own, never the code
+    # under test. A run that reports is judged on its output exactly
+    # once, and a failure that persists across every attempt still fails.
+    output = ""
+    for attempt in range(HARNESS_ATTEMPTS):
+        try:
+            output = run_quickshell(
+                [quickshell, "-p", str(KEYS_HARNESS)], env)
+        except subprocess.TimeoutExpired:
+            if attempt == HARNESS_ATTEMPTS - 1:
+                raise
+            output = ""
+            continue
+        if "HARNESS-DONE settled" in _clean(output):
+            break
+
+    trouble = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("ERROR"):
+            if re.match(r"ERROR quickshell\.(paths|ipc|logging|tooling):",
+                        stripped):
+                continue
+            trouble.append(stripped)
+        elif "unresolvable import" in stripped:
+            if EXPECTED_DANGLING_IMPORT not in stripped:
+                trouble.append(stripped)
+        elif "TypeError" in stripped or "ReferenceError" in stripped:
+            trouble.append(stripped)
+        elif "KEY-SKIP" in stripped:
+            trouble.append("harness: " + stripped)
+    if trouble:
+        raise Failure("keys harness: the run reported errors:\n  "
+                      + "\n  ".join(trouble[:10]))
+    if "HARNESS-DONE" not in output:
+        raise Failure("keys harness: did not finish; output was:\n"
+                      + output[-2000:])
+    return output.splitlines()
+
+
+#: The caller identities --keys must be immune to, each run against a
+#: fresh copy of the fixture with the full assertions: no session (the
+#: owner's own desktop), a supervisor-shaped id the fixture never
+#: registered, and outright nonsense. The panel's Process names its own
+#: caller, so all three pass identically; if it ever inherits the ambient
+#: value again, the hostile two fail.
+KEYS_SESSIONS = [
+    ("unset", None),
+    ("stray-supervisor", "ses-faez2af"),
+    ("nonsense", "not-a-session"),
+]
+
+
+def panel_keys(state_dir: Path) -> int:
+    """Every key against a throwaway copy of the fixture, asserting the
+    ledger line the verb wrote, once per caller in KEYS_SESSIONS. The
+    mock fixture is copied to a temporary directory and FOREMAN_STATE
+    points at the copy; the real state directory is never touched.
+    Answers and the freeze are proven against the ledgers; the cheat
+    sheet, Esc and the panel's reflection of the change are proven
+    against the harness report; the Problems verbs the CLI cannot run
+    are attempted verbatim and reported unproven. A wrong-row probe
+    types a first letter, lands a new row underneath, and proves the
+    pending letter cancels and the second letter fires nothing."""
+    if not FIXTURE.is_dir():
+        raise Failure("keys: no such fixture: " + str(FIXTURE))
+    proven: dict = {}
+    for label, session in KEYS_SESSIONS:
+        tmp = Path(tempfile.mkdtemp(prefix="foreman-keys-"))
+        try:
+            shutil.copytree(FIXTURE, tmp, dirs_exist_ok=True)
+            proven[label] = check_keys_once(tmp, label, session)
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+    done = proven["unset"]
+    print("keys: UNPROVEN relaunch ses-supeng01 "
+          "(exit %s: the fixture carries no vendor session and no repo, "
+          "so the verb refuses)"
+          % done["problem:supervisor silent:ses-supeng01"])
+    print("keys: UNPROVEN kill pid-41180 "
+          "(exit %s: the CLI has no `kill` verb and `foreman job` has "
+          "no `kill` either, so the row's verb cannot run)"
+          % done["problem:intruder:pid-41180"])
+    print("keys: every provable key did its verb against the "
+          "throwaway copy, under every caller (%s)"
+          % ", ".join(label for label, _ in KEYS_SESSIONS))
+    return 0
+
+
+def check_keys_once(tmp: Path, label: str, session: str | None) -> dict:
+    """One caller scenario of --keys: drive every key, assert the ledger
+    lines, and return the exit codes by action id. A Failure names the
+    scenario that broke."""
+    try:
+        lines = run_keys_harness(tmp, session)
+
+        hints: dict = {}
+        verbs: dict = {}
+        done: dict = {}
+        queue: list = []
+        report: dict = {}
+        wrongrow: dict = {}
+        noverb: set = set()
+        # console.log lines arrive with quickshell's own "DEBUG qml: "
+        # prefix, so every marker is searched, never startswith-matched.
+        for line in lines:
+            cleaned = _clean(line).strip()
+            match = re.search(r"HINT ([A-Za-z]+) (.+?) (\[.*?\])\s*$",
+                              cleaned)
+            if match:
+                hint, aid, argv_json = match.groups()
+                try:
+                    argv = json.loads(argv_json)
+                except ValueError:
+                    raise Failure("keys: unparsable HINT argv: %r" % cleaned)
+                hints[aid] = hint
+                verbs[aid] = argv
+                continue
+            match = re.search(r"KEY-DONE (.+) (\d+)\s*$", cleaned)
+            if match:
+                done[match.group(1)] = match.group(2)
+                continue
+            match = re.search(r"KEY-NOVERB (\S+)", cleaned)
+            if match:
+                noverb.add(match.group(1))
+                continue
+            match = re.search(r"QUEUE (.+?)\s*$", cleaned)
+            if match:
+                queue = match.group(1).split(",")
+                continue
+            # The lookbehind keeps WRONGROW-PENDING from matching as
+            # PENDING: the probe's markers are parsed below, never here.
+            match = re.search(r"(?<![A-Z-])(CHEAT-OPEN|CHEAT-ESC|PENDING|PENDING-ESC|"
+                              r"NEEDSYOU-BEFORE|NEEDSYOU-AFTER|"
+                              r"FROZEN-BEFORE|FROZEN-AFTER) (\S+)\s*$",
+                              cleaned)
+            if match:
+                report[match.group(1)] = match.group(2)
+                continue
+            match = re.search(r"WRONGROW-(PENDING|CANCELLED|NOFIRE|FIRED) (\S+)\s*$",
+                              cleaned)
+            if match:
+                wrongrow[match.group(1)] = match.group(2)
+
+        # The six dynamic hints, exactly as the fixture holds them.
+        want_hints = {aid: hint for hint, aid, _ in EXPECTED_KEYS}
+        if hints != want_hints:
+            raise Failure("keys: hints: got %r, the fixture holds %r"
+                          % (hints, want_hints))
+        for hint in hints.values():
+            if not HINT_RE.match(hint):
+                raise Failure("keys: hint %r is not two letters outside f"
+                              % hint)
+        if len(set(hints.values())) != len(hints):
+            raise Failure("keys: hints are not unique: %r" % hints)
+        want_verbs = {aid: argv for _, aid, argv in EXPECTED_KEYS}
+        if verbs != want_verbs:
+            raise Failure("keys: verbs: got %r, the fixture holds %r"
+                          % (verbs, want_verbs))
+        if queue != EXPECTED_KEYS_QUEUE:
+            raise Failure("keys: queue: got %r, the fixture holds %r"
+                          % (queue, EXPECTED_KEYS_QUEUE))
+
+        # Static keys through the same entry points the panel uses.
+        if report.get("CHEAT-OPEN") != "true":
+            raise Failure("keys: ? did not open the cheat sheet: %r"
+                          % report.get("CHEAT-OPEN"))
+        if report.get("CHEAT-ESC") != "cheat-closed":
+            raise Failure("keys: Esc did not close the cheat sheet: %r"
+                          % report.get("CHEAT-ESC"))
+        if report.get("PENDING") != "a":
+            raise Failure("keys: first letter did not narrow: %r"
+                          % report.get("PENDING"))
+        if report.get("PENDING-ESC") != "pending-cleared":
+            raise Failure("keys: Esc did not back out of the pending "
+                          "letter: %r" % report.get("PENDING-ESC"))
+        if report.get("NEEDSYOU-BEFORE") != "2":
+            raise Failure("keys: Needs you held %s before, the fixture "
+                          "holds 2" % report.get("NEEDSYOU-BEFORE"))
+        if report.get("FROZEN-BEFORE") != "false":
+            raise Failure("keys: swarm was already frozen before F")
+
+        # Every fire the panel ran, by exit code: the freeze and both
+        # answers must succeed; the Problems verbs are attempted verbatim
+        # and their failures are unproven work, not test failures.
+        for aid in EXPECTED_KEYS_QUEUE:
+            if aid not in done:
+                raise Failure("keys: %s never ran" % aid)
+        if done["static:freeze"] != "0":
+            raise Failure("keys: F did not freeze: exit %s"
+                          % done["static:freeze"])
+        for aid in ("answer:inb-tokens01:approve",
+                    "answer:inb-reaper01:decline"):
+            if done[aid] != "0":
+                raise Failure("keys: %s did not answer: exit %s"
+                              % (aid, done[aid]))
+
+        # The ledger lines the verbs should have written, read off the
+        # throwaway copy and compared against hand-derived literals.
+        inbox = fold_ledger(tmp / "inbox.jsonl")
+        for iid, answer in EXPECTED_KEYS_ANSWERS.items():
+            row = inbox.get(iid, {})
+            if row.get("answered_at") in (None, "") \
+                    or row.get("answer") != answer:
+                raise Failure("keys: %s: got answer %r, the verb should "
+                              "have written %r"
+                              % (iid, row.get("answer"), answer))
+        frozen = tmp / "frozen"
+        try:
+            frozen_text = frozen.read_text()
+        except OSError:
+            raise Failure("keys: F: no frozen file after `foreman freeze`")
+        if not frozen_text.startswith("frozen"):
+            raise Failure("keys: F: frozen file holds %r" % frozen_text)
+
+        # The panel reflects the change on its next tick: both answers
+        # landed, so nothing is left in Needs you, and the swarm is frozen.
+        if report.get("NEEDSYOU-AFTER") != "0":
+            raise Failure("keys: answered questions still in Needs you: "
+                          "%s" % report.get("NEEDSYOU-AFTER"))
+        if report.get("FROZEN-AFTER") != "true":
+            raise Failure("keys: panel does not show the freeze: %s"
+                          % report.get("FROZEN-AFTER"))
+
+        # The wrong-row probe: a first letter pending while a row lands
+        # underneath must cancel, the second letter must fire nothing,
+        # and the new row's full hint must fire the new row. The probe
+        # question is answered on the way out, so NEEDSYOU-AFTER above
+        # already counts it.
+        if wrongrow.get("PENDING") != "pending":
+            raise Failure("keys: probe first letter did not narrow: %r"
+                          % wrongrow.get("PENDING"))
+        if wrongrow.get("CANCELLED") != "true":
+            raise Failure("keys: half-typed hint survived the model "
+                          "change; the second letter would fire the "
+                          "new row: %r" % wrongrow.get("CANCELLED"))
+        if wrongrow.get("NOFIRE") != "true":
+            raise Failure("keys: the second letter fired after the map "
+                          "changed: %r" % wrongrow.get("NOFIRE"))
+        fired = wrongrow.get("FIRED", "")
+        probe_match = re.match(r"fired:answer:(.+):approve$", fired)
+        if not probe_match:
+            raise Failure("keys: the new row's hint did not fire the "
+                          "new row: %r" % fired)
+        probe_row = inbox.get(probe_match.group(1), {})
+        if probe_row.get("answered_at") in (None, "") \
+                or probe_row.get("answer") != "yes":
+            raise Failure("keys: probe %r: got answer %r, the verb "
+                          "should have written 'yes'"
+                          % (probe_match.group(1),
+                             probe_row.get("answer")))
+
+        # The kill pill attempts its verb verbatim and says the verb is
+        # absent instead of failing silently.
+        if "problem:intruder:pid-41180" not in noverb:
+            raise Failure("keys: the kill key never reported the "
+                          "absent verb: %r" % sorted(noverb))
+
+        print("keys [%s]: F runs `foreman freeze` (frozen file %r)"
+              % (label, frozen_text.splitlines()[0]))
+        for iid, answer in EXPECTED_KEYS_ANSWERS.items():
+            print("keys [%s]: %s runs `foreman answer %s %s` "
+                  "(ledger holds %r)"
+                  % (label, hints["answer:%s:%s" % (
+                      iid, "approve" if iid == "inb-tokens01" else "decline")],
+                      iid, answer, answer))
+        print("keys [%s]: ? opens the cheat sheet, Esc backs out one level"
+              % label)
+        print("keys [%s]: answered questions leave Needs you on the next "
+              "tick" % label)
+        print("keys [%s]: half-typed hint cancels when rows change (%s); "
+              "the new hint fires the new row (%s); the kill key reports "
+              "its absent verb" % (label, wrongrow.get("CANCELLED"),
+                                   wrongrow.get("FIRED")))
+        return done
+    except Failure as failure:
+        raise Failure("keys [%s]: %s" % (label, failure))
+
+
+#: The managed bindings block install writes, hand-derived from
+#: src/foreman/panel_binding.py (the source of truth), never imported from
+#: it: this check must fail aloud when the block text changes, the way the
+#: block-count literals fail when a fixture changes.
+EXPECTED_BINDING_BLOCK = """-- >>> foreman-panel
+-- Managed by the Foreman panel. Edits inside this block are lost on reinstall.
+-- Summon and dismiss the Foreman panel.
+o.bind("SUPER + M", "Foreman panel", "omarchy-shell shell toggle foreman")
+-- <<< foreman-panel"""
+
+#: The seeded shell.json: stock-shaped, deliberately not in the writer's
+#: own canonical form (four-space indent, an extra top-level key), so the
+#: round trip proves byte restoration rather than reformatting luck.
+SHELL_SEED = b"""{
+    "version": 1,
+    "idle": {"screensaver": 600},
+    "bar": {
+        "layout": {
+            "right": [
+                {"id": "omarchy.tray"}
+            ]
+        }
+    },
+    "plugins": []
+}
+"""
+
+#: The seeded bindings file ends in three newlines: the Astra-found case.
+BINDINGS_SEED = b'-- stock hyprland bindings\nbind = SUPER, Q, killactive\n\n\n'
+
+#: A bindings file that already binds Super+M outside any managed block.
+BINDINGS_TAKEN = b'o.bind("SUPER + M", "mine", "something else")\n'
+
+
+def _tree_snapshot(root: Path) -> dict:
+    """Every file and link under root: exact bytes or link target."""
+    out = {}
+    for path in sorted(root.rglob("*")):
+        rel = str(path.relative_to(root))
+        if path.is_symlink():
+            out[rel] = ("link", os.readlink(path))
+        elif path.is_file():
+            out[rel] = ("file", path.read_bytes())
+    return out
+
+
+def _install_env(home: Path) -> dict:
+    """The temporary home as the whole world: HOME points at it, the
+    shell is never reloaded, and no ambient Foreman identity leaks in."""
+    env = dict(os.environ)
+    env["HOME"] = str(home)
+    env["FOREMAN_NO_RELOAD"] = "1"
+    env.pop("FOREMAN_SESSION", None)
+    env.pop("FOREMAN_STATE", None)
+    env.pop("FOREMAN_CONFIG", None)
+    return env
+
+
+def _run_install_script(home: Path, verb: str) -> subprocess.CompletedProcess:
+    script = REPO / ("install" if verb == "install" else "uninstall")
+    if not script.is_file():
+        raise Failure("install-roundtrip: missing executable: %s" % script)
+    return subprocess.run([str(script)], capture_output=True, text=True,
+                          timeout=120, env=_install_env(home))
+
+
+def _assert_three_things(home: Path, label: str) -> None:
+    """The symlink, the registration, the binding block — each asserted
+    structurally, never via the installer's own helpers."""
+    link = (home / ".config" / "omarchy" / "plugins" / "foreman")
+    if not link.is_symlink():
+        raise Failure("install-roundtrip [%s]: no plugin symlink at %s"
+                      % (label, link))
+    if link.resolve() != (REPO / "plugin" / "foreman").resolve():
+        raise Failure("install-roundtrip [%s]: the symlink points at %s"
+                      % (label, link.resolve()))
+    shell_json = home / ".config" / "omarchy" / "shell.json"
+    try:
+        doc = json.loads(shell_json.read_text())
+    except (OSError, ValueError):
+        raise Failure("install-roundtrip [%s]: %s is missing or not JSON"
+                      % (label, shell_json))
+    try:
+        right = doc["bar"]["layout"]["right"]
+    except (KeyError, TypeError):
+        raise Failure("install-roundtrip [%s]: no bar.layout.right in %s"
+                      % (label, shell_json))
+    if {"id": "foreman"} not in right:
+        raise Failure("install-roundtrip [%s]: no foreman entry in "
+                      "bar.layout.right" % label)
+    if any((w.get("id") if isinstance(w, dict) else w) == "foreman"
+           for w in doc.get("plugins", [])):
+        raise Failure("install-roundtrip [%s]: foreman does not belong in "
+                      "plugins[]; the bar entry enables the panel too"
+                      % label)
+    bindings = home / ".config" / "hypr" / "bindings.lua"
+    try:
+        text = bindings.read_text()
+    except OSError:
+        raise Failure("install-roundtrip [%s]: no bindings file at %s"
+                      % (label, bindings))
+    if EXPECTED_BINDING_BLOCK not in text:
+        raise Failure("install-roundtrip [%s]: the managed block is not "
+                      "what panel_binding.py writes" % label)
+
+
+def _roundtrip_once(home: Path, label: str) -> None:
+    """Install, install again, uninstall: exact at every step."""
+    before = _tree_snapshot(home)
+    first = _run_install_script(home, "install")
+    if first.returncode != 0:
+        raise Failure("install-roundtrip [%s]: install exited %d:\n%s"
+                      % (label, first.returncode,
+                         first.stdout + first.stderr))
+    _assert_three_things(home, label)
+    print("install-roundtrip [%s]: symlink, registration and binding "
+          "block in place" % label)
+    installed = _tree_snapshot(home)
+    if installed == before:
+        raise Failure("install-roundtrip [%s]: install changed nothing"
+                      % label)
+    second = _run_install_script(home, "install")
+    if second.returncode != 0:
+        raise Failure("install-roundtrip [%s]: second install exited %d"
+                      % (label, second.returncode))
+    if _tree_snapshot(home) != installed:
+        raise Failure("install-roundtrip [%s]: the second install was "
+                      "not a no-op" % label)
+    print("install-roundtrip [%s]: second install changed nothing "
+          "further" % label)
+    third = _run_install_script(home, "uninstall")
+    if third.returncode != 0:
+        raise Failure("install-roundtrip [%s]: uninstall exited %d:\n%s"
+                      % (label, third.returncode,
+                         third.stdout + third.stderr))
+    after = _tree_snapshot(home)
+    if after != before:
+        missing = [k for k in before if k not in after]
+        extra = [k for k in after if k not in before]
+        changed = [k for k in before if k in after
+                   and before[k] != after[k]]
+        raise Failure("install-roundtrip [%s]: the tree did not come "
+                      "back: missing %r, added %r, changed %r"
+                      % (label, missing, extra, changed))
+    print("install-roundtrip [%s]: uninstall restored every byte" % label)
+
+
+def _refusal(home: Path) -> None:
+    """Super+M already taken: install refuses and the file is untouched."""
+    bindings = home / ".config" / "hypr" / "bindings.lua"
+    bindings.parent.mkdir(parents=True, exist_ok=True)
+    bindings.write_bytes(BINDINGS_TAKEN)
+    before = _tree_snapshot(home)
+    result = _run_install_script(home, "install")
+    if "refused" not in (result.stdout + result.stderr):
+        raise Failure("install-roundtrip [refused]: install did not say "
+                      "it refused the taken Super+M")
+    if bindings.read_bytes() != BINDINGS_TAKEN:
+        raise Failure("install-roundtrip [refused]: install rewrote the "
+                      "file it refused")
+    print("install-roundtrip [refused]: install refused, file untouched")
+    gone = _run_install_script(home, "uninstall")
+    if gone.returncode != 0:
+        raise Failure("install-roundtrip [refused]: uninstall exited %d"
+                      % gone.returncode)
+    if _tree_snapshot(home) != before:
+        raise Failure("install-roundtrip [refused]: uninstall did not "
+                      "restore the tree around the refused file")
+    print("install-roundtrip [refused]: uninstall restored the rest")
+
+
+def install_roundtrip(state_dir: Path) -> int:
+    """The whole plugin, installed and uninstalled inside temporary homes.
+
+    Two round trips (a seeded home and a bare one) plus the taken-key
+    refusal. --state does not apply: the homes are always thrown away.
+    """
+    del state_dir
+    for label, shell, binds in (("seeded", SHELL_SEED, BINDINGS_SEED),
+                                ("bare", None, None)):
+        home = Path(tempfile.mkdtemp(prefix="foreman-install-"))
+        try:
+            if shell is not None:
+                target = home / ".config" / "omarchy" / "shell.json"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(shell)
+            if binds is not None:
+                target = home / ".config" / "hypr" / "bindings.lua"
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_bytes(binds)
+            _roundtrip_once(home, label)
+        finally:
+            shutil.rmtree(home, ignore_errors=True)
+    home = Path(tempfile.mkdtemp(prefix="foreman-install-"))
+    try:
+        target = home / ".config" / "omarchy" / "shell.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(SHELL_SEED)
+        _refusal(home)
+    finally:
+        shutil.rmtree(home, ignore_errors=True)
+    print("install-roundtrip: install, reinstall and uninstall reverse "
+          "exactly; a taken Super+M refuses with the file untouched")
+    return 0
+
+
+NOT_IMPLEMENTED: dict = {
+}
+
+
+def main(argv: list[str]) -> int:
+    # The check is spelled as a flag (`panel --loads`), so it is pulled out of
+    # argv before argparse sees it and treats it as an option of its own.
+    parser = argparse.ArgumentParser(
+        prog="foreman-verify",
+        usage="foreman-verify <front> <check> [--state DIR]",
+        description="Verify one front's work, one check at a time.")
+    parser.add_argument("front", help="the front to verify (panel)")
+    parser.add_argument("--state", default=str(FIXTURE),
+                        help="state directory to read (default: the fixture)")
+
+    known = set(NOT_IMPLEMENTED) | {"--loads", "--blocks-count", "--blocks",
+                                         "--keys", "--install-roundtrip"}
+    rest, check = [], None
+    for token in argv:
+        if token in known and check is None:
+            check = token
+        else:
+            rest.append(token)
+    if check is None:
+        parser.print_usage(sys.stderr)
+        print("foreman-verify: no check named; one of "
+              + ", ".join(sorted(known)), file=sys.stderr)
+        return 2
+    args = parser.parse_args(rest)
+    args.check = check
+
+    if args.front != "panel":
+        print("foreman-verify: not implemented yet: front %r" % args.front,
+              file=sys.stderr)
+        return 2
+    if args.check in NOT_IMPLEMENTED:
+        print("foreman-verify: not implemented yet: %s (%s)"
+              % (args.check, NOT_IMPLEMENTED[args.check]), file=sys.stderr)
+        return 2
+
+    checks = {"--loads": loads, "--blocks-count": blocks_count,
+              "--blocks": panel_blocks, "--keys": panel_keys,
+              "--install-roundtrip": install_roundtrip}
+    if args.check not in checks:
+        print("foreman-verify: unknown check %r for front panel" % args.check,
+              file=sys.stderr)
+        return 2
+
+    try:
+        return checks[args.check](Path(args.state).expanduser())
+    except Failure as failure:
+        print("foreman-verify panel %s FAILED\n%s" % (args.check, failure),
+              file=sys.stderr)
+        return 1
+    except subprocess.TimeoutExpired as expired:
+        print("foreman-verify panel %s FAILED\ntimed out running %s"
+              % (args.check, expired.cmd), file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

@@ -1,0 +1,1 @@
+{"on":"tas-api-2","claim":"Every read route answers from the ledgers and none from a cache","status":"CONFIRMED","command":"make check api-routes","output_ref":"evidence/api-routes-1358","at":"2026-05-11T13:58:00+00:00"}
