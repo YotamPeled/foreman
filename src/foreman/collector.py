@@ -33,9 +33,10 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from . import capacity, paths, procs, store
-from .caller import OWNER
+from .caller import OWNER, SESSION_ENV
 from .cli import subcommand
 from .entities import Session
 
@@ -339,9 +340,10 @@ def record_startup_version() -> None:
 def _load_state() -> dict:
     state = store.read_snapshot(paths.collector_path(), default=None)
     if not isinstance(state, dict):
-        return {"sessions": {}, "relaunches": [], "parents": {}}
+        return {"sessions": {}, "relaunches": [], "parents": {},
+                "turn_attempts": {}}
     for key, default in (("sessions", {}), ("relaunches", []),
-                         ("parents", {})):
+                         ("parents", {}), ("turn_attempts", {})):
         if not isinstance(state.get(key), (dict, list)):
             state[key] = default
     if not isinstance(state["sessions"], dict):
@@ -678,6 +680,113 @@ def _live_supervisor_for(front: str | None, sessions: dict,
             continue
         return True
     return False
+
+
+#: Prefix of the transient unit one spawned ``foreman turn`` runs as.
+#: Per session *and* per attempt: a failed carrier stays loaded in its
+#: failed state, and systemd refuses a new unit under a loaded name, so
+#: reusing the name would wedge the clock behind one corpse.
+TURN_CARRIER_UNIT_PREFIX = "foreman-turn-"
+
+
+def turn_carrier_unit(session_id: str, attempt: int) -> str:
+    """The transient unit one spawned turn carrier runs as.
+
+    A different unit from the turn's own (``foreman-<session>``, the
+    stable name ``foreman kill`` stops and ``headless.free_unit_name``
+    clears before each turn): the carrier is the daemon's process, the
+    turn is the session's, and only the per-attempt name keeps a failed
+    carrier from blocking the next wake.
+    """
+    return f"{TURN_CARRIER_UNIT_PREFIX}{session_id}-{attempt}"
+
+
+def turn_carrier_argv(session_id: str) -> list[str]:
+    """``foreman turn <session>`` as this checkout's interpreter runs it.
+
+    The absolute interpreter, never a bare ``foreman`` off PATH: a
+    collector running from a branch checkout carries the wake with that
+    branch's verbs.
+    """
+    return [str(Path(sys.executable).resolve()), "-m", "foreman",
+            "turn", session_id]
+
+
+def turn_carrier_env() -> dict[str, str]:
+    """The world a turn carrier runs in: this process's, minus a session.
+
+    The state and config directories travel the way every other launch
+    carries them, and this checkout's ``src`` rides first on
+    ``PYTHONPATH`` so the carrier runs this branch's verbs. The calling
+    session does not travel: the carrier is the clock's own act, and it
+    arrives as the owner, never as whatever summoned the daemon.
+    """
+    from . import mcp as mcp_module
+
+    env = dict(os.environ)
+    env.pop(SESSION_ENV, None)
+    src = mcp_module.checkout_src()
+    if src is not None:
+        inherited = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = str(src) + (
+            os.pathsep + inherited if inherited else "")
+    return env
+
+
+def _default_turn_spawn(argv: list[str], *,
+                        env: dict[str, str]) -> Any:
+    """Start one turn carrier detached and return at once.
+
+    Nothing here waits on the carrier: a turn takes up to the turn
+    timeout, and a daemon that blocked on one would stop observing the
+    swarm. Detached the way every other fire-and-forget spawn in this
+    runtime goes: no pipe, its own session, nothing inherited but the
+    world it was handed.
+    """
+    return subprocess.Popen(
+        argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+        env=env)
+
+
+def _carry_wakes(sessions: dict, cstate: dict) -> int:
+    """Start one detached ``foreman turn`` per queued, uncarried wake.
+
+    Every session with a queued wake and no running turn gets a carrier;
+    a session already running a turn is skipped — ``wake.turn_running``
+    is the check, and it is also what ``run_wake`` itself refuses on, so
+    a double start cannot produce two turns — and a session with an empty
+    queue is skipped. A skip touches no ledger byte: a held wake waits
+    unstamped and in order for the first tick after the turn ends.
+    Returns how many carriers went out.
+    """
+    from . import wake as _wake
+
+    attempts = cstate.get("turn_attempts")
+    if not isinstance(attempts, dict):
+        attempts = cstate["turn_attempts"] = {}
+    carried = 0
+    for sid in sorted(sessions):
+        if not isinstance(sid, str) or not sid:
+            continue
+        if not isinstance(sessions.get(sid), dict):
+            continue
+        if not _wake.pending_events(sid):
+            continue
+        if _wake.turn_running(sid):
+            continue
+        try:
+            attempt = int(attempts.get(sid) or 0) + 1
+        except (TypeError, ValueError):
+            attempt = 1
+        attempts[sid] = attempt
+        try:
+            _default_turn_spawn(turn_carrier_argv(sid),
+                                env=turn_carrier_env())
+        except Exception:  # noqa: BLE001 - a failed spawn never stops
+            continue  # the clock; the wake stays queued for the next tick
+        carried += 1
+    return carried
 
 
 def _tick_inner(moment: datetime, now_iso: str,
@@ -1079,6 +1188,12 @@ def _tick_inner(moment: datetime, now_iso: str,
     from . import wake as _wake
 
     _wake.heartbeat_tick(moment, config)
+
+    # The clock's hands: every queued wake no turn is carrying gets a
+    # detached `foreman turn` carrier. It only starts processes, so it
+    # cannot move a roster or job state; the resolve pass below is
+    # untouched by it.
+    _carry_wakes(sessions, cstate)
 
     # Resolve what this tick no longer asserts. Unregistered-writer lines
     # clear only when the roster learns the id: the ledger line itself is

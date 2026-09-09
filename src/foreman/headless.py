@@ -38,13 +38,14 @@ starts a real vendor process.
 
 from __future__ import annotations
 
+import argparse
 import json
 import shlex
 import subprocess
 from pathlib import Path
 from typing import Any
 
-from . import caller, entities, ids, paths, store, wake
+from . import caller, cli, entities, ids, paths, store, wake
 from . import mcp as mcp_module
 from .pools import _common
 
@@ -698,3 +699,75 @@ def run_wake(session_id: str, *, spawn: Any = None,
         }
     finally:
         wake.turn_ended(session_id)
+
+
+# --------------------------------------------------------------------------
+# The `foreman turn` verb: one wake, carried.
+# --------------------------------------------------------------------------
+
+
+def _refuse(violations: list[str]) -> int:
+    return caller.Refusal(violations).report()
+
+
+def _check_turn_access(me: caller.Caller | None, target: str,
+                       verb: str, violations: list[str]) -> None:
+    """Who may carry whose wake: the wake queue's own gate.
+
+    A session carries its own wake; the owner and the foreman carry any.
+    The collector spawns the carrier with no session in the environment,
+    so it arrives as the owner. A supervisor carrying another session's
+    wake would burn events out of a vendor conversation it does not hold.
+    """
+    caller.check_role(me, verb, caller.SUPERVISOR, caller.FOREMAN,
+                      caller.MERGE_DESK, violations=violations)
+    if me is None:
+        return
+    if me.role == caller.OWNER or me.role == caller.FOREMAN:
+        return
+    if me.session_id != target:
+        violations.append(
+            f"session '{me.session_id}' may not carry "
+            f"session '{target}'"
+        )
+
+
+def turn_main(target: str | None) -> int:
+    """Carry one session's queued wake as a turn, then exit.
+
+    One verb, one wake: :func:`run_wake` decides what it is about and
+    records what it did, so this prints the status and exits 0 however
+    the carry went — deferred, no wake and failed are all recorded
+    outcomes, not carrier failures. Only a call wrong on its face
+    (no session, unknown session, another session's queue) is refused.
+    """
+    verb = "turn"
+    me, violations = caller.resolve(verb)
+    name = (target or "").strip()
+    if not name:
+        violations.append("field 'session' is required")
+    else:
+        _check_turn_access(me, name, verb, violations)
+        try:
+            sessions = caller.read_roster().get("sessions", {})
+        except OSError:
+            sessions = {}
+        if not isinstance(sessions, dict) or name not in sessions:
+            violations.append(f"unknown session '{name}'")
+    if violations:
+        return _refuse(violations)
+    result = run_wake(name)
+    print(f"turn {name}: {result.get('status')}")
+    return 0
+
+
+def add_turn_arguments(sub: argparse.ArgumentParser) -> None:
+    sub.add_argument("session", help="session whose queued wake to carry")
+
+
+@cli.subcommand("turn", help="Carry one session's queued wake as a turn.")
+def _turn_entry(args: argparse.Namespace) -> int:
+    return turn_main(args.session)
+
+
+_turn_entry.add_arguments = add_turn_arguments  # type: ignore[attr-defined]

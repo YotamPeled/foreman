@@ -54,6 +54,7 @@ def _ensure_verbs() -> None:
     from . import config as _config  # noqa: F401
     from . import doctor as _doctor  # noqa: F401
     from . import fronts as _fronts  # noqa: F401
+    from . import headless as _headless  # noqa: F401
     from . import hooks as _hooks  # noqa: F401
     from . import launch as _launch  # noqa: F401
     from . import migrate as _migrate  # noqa: F401
