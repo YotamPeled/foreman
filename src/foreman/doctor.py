@@ -11,7 +11,9 @@ Six cross-checks, each naming the command that repairs it:
 4. ``foreman.toml`` pool tables naming pools no adapter registers;
 5. the collector running code older than this checkout;
 6. front records from before the merge mode existed (``foreman migrate``
-   backfills them).
+   backfills them);
+7. the installed ``foreman`` command running from a checkout with a
+   branch out instead of the main-only checkout it must run from.
 
 Exit 0 with ``doctor: clean`` when everything agrees, 1 with the count
 when anything does not, so it reads as a shell condition. Doctor only
@@ -22,6 +24,8 @@ from __future__ import annotations
 
 import argparse
 import os
+import subprocess
+import sys
 import tomllib
 from pathlib import Path
 
@@ -61,6 +65,7 @@ def _problems() -> list[tuple[str, str]]:
     found.extend(_check_config())
     found.extend(_check_collector_staleness())
     found.extend(_check_front_records())
+    found.extend(_check_cli_branch())
     return found
 
 
@@ -308,6 +313,84 @@ def _check_front_records() -> list[tuple[str, str]]:
             f"front '{name}' has no merge mode (predates the merge desk)",
             "foreman migrate"))
     return out
+
+
+#: The branch the installed command runs from. A checkout with any other
+#: branch out is a half-built runtime for the whole swarm, so the install
+#: is a main-only checkout the post-merge hook fast-forwards (see README
+#: "The installed command").
+MAIN_BRANCH = "main"
+
+
+def _invoked_as_installed_cli() -> bool:
+    """True when this process is the installed `foreman` command itself.
+
+    Anything else — `python -m foreman`, a test calling the entry point in
+    process, a script importing it — runs whatever checkout it runs from
+    by choice, and has no branch to be on the wrong one of.
+    """
+    return Path(sys.argv[0]).name in ("foreman", "foreman.exe")
+
+
+def _package_checkout() -> Path | None:
+    """The checkout this package runs from, or None for an installed copy.
+
+    A checkout is the first directory above this file holding a `.git`
+    entry; an installed wheel or a copied tree answers None, never an
+    error.
+    """
+    here = Path(__file__).resolve()
+    for parent in (here.parent, *here.parents):
+        try:
+            if (parent / ".git").exists():
+                return parent
+        except OSError:
+            continue
+    return None
+
+
+def _checkout_branch(root: Path) -> str | None:
+    """The branch checked out at ``root``, or None where there is none.
+
+    Detached, unborn, missing git and not-a-checkout all answer None: no
+    branch out is nothing to report, and doctor only reads.
+    """
+    try:
+        proc = subprocess.run(
+            ["git", "-C", str(root), "symbolic-ref", "--short", "HEAD"],
+            capture_output=True, text=True, timeout=10)
+    except (OSError, ValueError):
+        return None
+    if proc.returncode != 0:
+        return None
+    return proc.stdout.strip() or None
+
+
+def _installed_cli_branch() -> tuple[str, str] | None:
+    """(checkout, branch) for the installed CLI, or None where unknowable."""
+    if not _invoked_as_installed_cli():
+        return None
+    root = _package_checkout()
+    if root is None:
+        return None
+    branch = _checkout_branch(root)
+    if branch is None:
+        return None
+    return (str(root), branch)
+
+
+def _check_cli_branch() -> list[tuple[str, str]]:
+    """The installed CLI running off a branch instead of the main one."""
+    found = _installed_cli_branch()
+    if found is None:
+        return []
+    root, branch = found
+    if branch == MAIN_BRANCH:
+        return []
+    return [(f"foreman runs from branch '{branch}' in {root} "
+             f"(the installed command must run from a main-only checkout)",
+             "reinstall foreman from the main-only checkout, then run: "
+             "foreman collector restart")]
 
 
 def doctor_main() -> int:
