@@ -1,4 +1,4 @@
-name      = "runtime-v5"
+name      = "trial-frictions"
 order     = 7
 merge     = "desk"
 want      = """
@@ -7,7 +7,7 @@ through Foreman as it is on main) reported, all recorded under '[orbit-v2 trial]
 /mnt/ssd/projects/foreman-scratch/ledger/findings.md. Owner authorization 2026-09-09: build them. The trial
 keeps running on the installed CLI; nothing lands into the installed command until the foreman says so.
 """
-done-when = "On an isolated state directory: `foreman wait <session>` blocks until the collector records the job's outcome and prints outcome, exit code, branch and head, exiting with the worker's code; `job verify --run` executes the task's verify in a fresh detached worktree of the job's head and records command, exit, duration and an output file under the session dir, and `--output-file` attaches a file to a verify or a finding; a job row on `foreman status` shows branch and head once the finish marker is read; a merge lands with `[merge.\"<repo path>\"] check` selected by the target's repository and the merge record carries the check command, exit, duration and output ref; a user pool whose manifest names a model launches with that model, and the machine-wide count exempts any pool whose executable resolves to claude; a grok launch carries the six GROK_*_ENABLED=false variables and its log shows a line within 30 s of start; `launch --kind review --branch <existing>` reviews that branch read-only; `finding --task` is accepted beside `--on`; 'unknown pool astra' hints codex; editing pool config prints the reload it needs; the job file names the marker without quoting it — all CONFIRMED by running."
+done-when = "On an isolated state directory: `foreman wait <session>` blocks until the collector records the job's outcome and prints outcome, exit code, branch and head, exiting with the worker's code; `job verify --run` executes the task's verify in a fresh detached worktree of the job's head and records command, exit, duration and an output file under the session dir, and `--output-file` attaches a file to a verify or a finding; a job row on `foreman status` shows branch and head once the finish marker is read; a merge lands with `[merge.\"<repo path>\"] check` selected by the target's repository and the merge record carries the check command, exit, duration and output ref; a user pool whose manifest names a model launches with that model, `launch --model` on a supervisor or the desk runs that model on every turn (windowed and headless), and the machine-wide count exempts any pool whose executable resolves to claude; a grok launch carries the six GROK_*_ENABLED=false variables and its log shows a line within 30 s of start; `launch --kind review --branch <existing>` reviews that branch read-only; `finding --task` is accepted beside `--on`; 'unknown pool astra' hints codex; editing pool config prints the reload it needs; the job file names the marker without quoting it — all CONFIRMED by running."
 land-on   = "main"
 reviews   = "on request"
 after     = ["runtime-v4b"]
@@ -76,7 +76,9 @@ after   = []
 title   = "pools tell the truth: user-pool model, claude-family count, grok env and liveness"
 scope   = """
 WHAT: a user pool's manifest `model` wins over the packaged adapter's role pin (or the refusal says the
-model is pinned and why); the machine-wide count exemption applies to any pool whose executable resolves
+model is pinned and why); `launch --model` on a supervisor, the foreman or the merge desk is the model the
+session actually runs, on the first turn and on every headless turn (today SUPERVISOR_MODEL is a constant
+and --model is only recorded on the roster: a Fable 5.1 supervisor could not be summoned on 2026-09-09); the machine-wide count exemption applies to any pool whose executable resolves
 to the claude binary, not only the pool named claude; the grok pool sets GROK_CLAUDE_SKILLS_ENABLED,
 GROK_CLAUDE_AGENTS_ENABLED, GROK_CLAUDE_RULES_ENABLED, GROK_CLAUDE_MCP_ENABLED, GROK_CLAUDE_HOOKS_ENABLED
 and GROK_CURSOR_RULES_ENABLED to false in every launch (confirm the exact six names from the corpus
@@ -122,7 +124,7 @@ size    = 1
 after   = ["foreman wait", "job verify --run, output files, branch and head on the job row", "the desk's check per target repository, recorded on the merge", "pools tell the truth: user-pool model, claude-family count, grok env and liveness", "review an existing branch; flag names"]
 
 [[rule]]
-text = "Every task lands through the merge desk (headless). Builders: Grok 4.6 high, two at a time inside the machine-wide cap; Opus 5 high only when the Grok run fails; Astra 6 low reviews. Slim jobs, investigate before the spec, a done-when that names every reachable check, commit as you go."
+text = "Every task lands through the merge desk (headless). Supervisor: Fable 5.1 high, on the roster and working only through foreman verbs. Builders: Grok 4.6 high, two at a time inside the machine-wide cap; Opus 5 high only when the Grok run fails; Astra 6 low reviews. Slim jobs, investigate before the spec, a done-when that names every reachable check, commit as you go."
 
 [[rule]]
 text = "The orbit-v2 trial runs on the installed CLI: nothing on this front reinstalls it or restarts the collector; the foreman does both when the trial's supervisor says it is at a safe point."
