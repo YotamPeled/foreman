@@ -1,12 +1,13 @@
 name      = "runtime-v4"
 order     = 5
+merge     = "self"
 want      = """
 What the headless proof and the first product-front preparation found wrong in the runtime: the merge desk
 lands into nothing, the runtime does not know what a pool can answer, and a handful of screen and verb
 truths. All origins are on /mnt/ssd/projects/foreman-scratch/ledger/findings.md and the headless front's
 findings; every task names its origin.
 """
-done-when = "On an isolated state directory: a desk landing fast-forwards the target under a lease and the task reads landed at a sha on the target, a request on a self-mode front is refused before the desk takes it, a pool whose vendor answered a quota refusal shows 'out until <reset>' on Capacity and refuses launches by name until then, Capacity shows each pool's vendor processes on the machine and refuses a launch that would exceed the machine-wide cap whoever started the others, a front allocation over an out pool prints as out, a headless turn's vendor process raises no intruder anomaly, every panel age is non-negative against now, `foreman attach` prints a window line only when the helper opened one, findings carry ids on the screen, a roster supervisor can file a finding on a front it does not hold, and the smoke tests reap every unit they start — all CONFIRMED by running."
+done-when = "On an isolated state directory: a desk landing fast-forwards the target under a lease and the task reads landed at a sha on the target, a request on a self-mode front is refused before the desk takes it, a pool whose vendor answered a quota refusal shows 'out until <reset>' on Capacity and refuses launches by name until then, Capacity shows each pool's vendor processes on the machine and refuses a launch that would exceed the machine-wide cap whoever started the others, a front allocation over an out pool prints as out, — all CONFIRMED by running."
 land-on   = "main"
 reviews   = "on request"
 after     = ["headless"]
@@ -59,25 +60,6 @@ size    = 1
 after   = []
 
 [[task]]
-title   = "screen and verb truths"
-scope   = """
-WHAT: a headless turn's vendor process is the session's own, never an intruder anomaly (the turn runner
-records its pid like a launch); the panel measures every age against now, never observed.at, so nothing
-renders negative; `foreman attach` prints its window line only when the helper exited 0 and reports the
-helper's stderr otherwise; findings carry ids (fnd-…) on the ledger and the screen; `foreman finding --on
-<front>` is open to any roster supervisor, tagged with who; the smoke tests stop every unit they start
-(a fixture that kills on teardown) and a test run leaves no foreman-* unit behind.
-INPUTS: headless front findings (turn vendor as intruder; negative ages; attach reports a window it never
-opened), findings ledger (findings have no ids; supervisor cannot file on a front it preps; smoke test
-left a unit running); collector.py, plugin/foreman, launch.py, progress.py, tests/conftest.py.
-OUTPUTS: the six behaviours with tests; panel harness green.
-OUT OF SCOPE: new panel blocks.
-"""
-verify  = "python -m pytest tests -q && env -u FOREMAN_SESSION bin/foreman-verify panel --loads"
-size    = 1
-after   = []
-
-[[task]]
 title   = "the proof"
 scope   = """
 WHAT: run this front's done-when on an isolated state directory with a real desk and a fixture target repo
@@ -89,7 +71,7 @@ OUT OF SCOPE: anything the done-when does not name.
 """
 verify  = "foreman doctor && foreman status | grep -c Capacity"
 size    = 1
-after   = ["the desk lands into the target", "the runtime knows what a pool can answer", "screen and verb truths"]
+after   = ["the desk lands into the target", "the runtime knows what a pool can answer"]
 
 [[rule]]
 text = "Every worker through foreman launch; every progress step through the verbs; every friction with Foreman itself is a finding and, if under a page, a job on this front. Builders are Grok 4.6 high while Muse is out (owner answer inb-by6c6is governs how many)."

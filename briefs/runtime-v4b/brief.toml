@@ -1,0 +1,58 @@
+name      = "runtime-v4b"
+order     = 6
+merge     = "desk"
+want      = """
+The smaller truths the headless proof and the corpus-recall preparation found, landed through the merge
+desk as its first live use on a Foreman front (the desk fix lands in runtime-v4 first). Also: the two
+methodology rulings of 2026-09-09 folded into the supervise skill.
+"""
+done-when = "On an isolated state directory: a headless turn's vendor process raises no intruder anomaly, every panel age is non-negative against now, `foreman attach` prints a window line only when the helper opened one, findings carry ids on the screen, a roster supervisor can file a finding on a front it does not hold, the smoke tests reap every unit they start, `foreman doctor`'s printed fix works on a history front, and skills/foreman-supervise states investigate-before-spec and slim-jobs with the verify-goes-red rule; every task of this front landed through the merge desk — all CONFIRMED by running."
+land-on   = "main"
+reviews   = "on request"
+after     = ["runtime-v4"]
+prefer    = 8
+
+[allocation]
+muse  = 0
+grok  = 2
+opus  = 1
+astra = 1
+
+[[task]]
+title   = "screen and verb truths"
+scope   = """
+WHAT: a headless turn's vendor process is the session's own, never an intruder anomaly (the turn runner
+records its pid like a launch); the panel measures every age against now, never observed.at, so nothing
+renders negative; `foreman attach` prints its window line only when the helper exited 0 and reports the
+helper's stderr otherwise; findings carry ids (fnd-…) on the ledger and the screen; `foreman finding --on
+<front>` is open to any roster supervisor, tagged with who; the smoke tests stop every unit they start
+(a fixture that kills on teardown) and a test run leaves no foreman-* unit behind.
+INPUTS: headless front findings (turn vendor as intruder; negative ages; attach reports a window it never
+opened), findings ledger (findings have no ids; supervisor cannot file on a front it preps; smoke test
+left a unit running); collector.py, plugin/foreman, launch.py, progress.py, tests/conftest.py.
+OUTPUTS: the six behaviours with tests; panel harness green.
+OUT OF SCOPE: new panel blocks.
+"""
+verify  = "python -m pytest tests -q && env -u FOREMAN_SESSION bin/foreman-verify panel --loads"
+size    = 1
+after   = []
+
+[[task]]
+title   = "supervise skill carries the 2026-09-09 rulings"
+scope   = """
+WHAT: skills/foreman-supervise/SKILL.md gains a section 'Before a spec': the supervisor reads the files the
+job touches, runs the existing checks, names the seams; a spec names WHAT/INPUTS/OUTPUTS/OUT OF SCOPE so a
+stranger could verify it; jobs are slim (one deliverable, one unit, one verify that goes red when wrong,
+under an hour; two deliverables are two jobs and their seam a third); 'commit as you go' in every spec;
+mutate before landing. Also: `foreman doctor`'s printed fix for a job on a history front (added --closed,
+no task lines) must succeed: `job fail` accepts a job whose task is not on the ledger when the front is done.
+INPUTS: swarm rules rul-ruu6hcp, rul-ruuah2r, rul-wt4tjs7, rul-6b3e3qr; skills/foreman-supervise; doctor.
+OUTPUTS: the skill section with its coverage test; the doctor fix working, with a test.
+OUT OF SCOPE: other skills.
+"""
+verify  = "python -m pytest tests -q && grep -q 'Before a spec' skills/foreman-supervise/SKILL.md"
+size    = 1
+after   = []
+
+[[rule]]
+text = "Every task of this front lands through the merge desk (merge request, desk lands into main); a desk fail-back is repaired under a task on this front. Builders: Grok 4.6 high; Opus 5 high only when Grok fails; Astra 6 low reviews."
