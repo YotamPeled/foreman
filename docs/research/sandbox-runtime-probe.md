@@ -14,7 +14,7 @@ $ srt --version
 ```
 
 The binary lands at `<node-prefix>/bin/srt` (here
-`/home/yotam/.local/share/mise/installs/node/26.8.1/bin/srt`), which was
+`~/.local/share/mise/installs/node/<version>/bin/srt`), which was
 not on a bare login `PATH` — invoked by absolute path below. Source:
 `github.com/anthropics/sandbox-runtime` (the `anthropic-experimental`
 URL redirects there, HTTP 200).
