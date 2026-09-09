@@ -10,6 +10,7 @@ the loader's own helpers.
 
 from __future__ import annotations
 
+import os
 import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
@@ -409,3 +410,95 @@ def test_directory_pool_without_adapter_reports_no_meter(env):
                                         "summary": "clean read"}
     with pytest.raises(ValueError):
         adapter.verdict(env / "no-such-verdict.json")
+
+
+def test_wrapping_claude_without_vendor_is_not_a_foreman_worker(env):
+    """A user pool wrapping the claude adapter, with no [vendor] argv,
+    inherits the packaged exemption: the executable is the owner's."""
+    write_user_pool(env, "fable",
+                    'name = "fable"\n'
+                    'model = "claude-opus-5"\n'
+                    'timeout_default = "20m"\n'
+                    'interactive = false\n'
+                    'adapter = "claude"\n')
+    adapter = get_pool("fable")
+    assert adapter.binary_is_foreman_worker is False
+    assert plugins._binary_is_foreman_worker(adapter.manifest) is False
+
+
+def test_vendor_argv_named_claude_is_not_a_foreman_worker(env):
+    """A [vendor] argv whose basename is claude is the owner's binary,
+    even when the pool is not named claude."""
+    write_user_pool(env, "fable",
+                    'name = "fable"\n'
+                    'model = "claude-opus-5"\n'
+                    'timeout_default = "20m"\n'
+                    'interactive = false\n'
+                    'adapter = "claude"\n'
+                    '[vendor]\n'
+                    'argv = ["claude", "-p"]\n')
+    adapter = get_pool("fable")
+    assert adapter.binary == "claude"
+    assert adapter.binary_is_foreman_worker is False
+
+
+def test_vendor_argv_symlink_to_claude_is_not_a_foreman_worker(env):
+    """A [vendor] argv followed through a symlink to a file named
+    claude is the owner's binary. The wrapper's own name is not."""
+    bindir = env / "bin"
+    bindir.mkdir()
+    target = bindir / "claude"
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    os.chmod(target, 0o755)
+    link = bindir / "claude-fable"
+    link.symlink_to(target)
+    write_user_pool(env, "fable",
+                    'name = "fable"\n'
+                    'model = "claude-opus-5"\n'
+                    'timeout_default = "20m"\n'
+                    'interactive = false\n'
+                    '[vendor]\n'
+                    f'argv = ["{link}", "-p"]\n')
+    adapter = get_pool("fable")
+    assert adapter.binary == "claude-fable"
+    assert adapter.binary_is_foreman_worker is False
+
+
+def test_vendor_argv_bare_name_resolving_to_claude_is_not_a_foreman_worker(
+        env, monkeypatch):
+    """A bare [vendor] argv[0] that shutil.which finds as a symlink
+    to claude is the owner's binary too."""
+    bindir = env / "bin"
+    bindir.mkdir()
+    target = bindir / "claude"
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    os.chmod(target, 0o755)
+    link = bindir / "claude-fable"
+    link.symlink_to(target)
+    monkeypatch.setenv(
+        "PATH", str(bindir) + os.pathsep + os.environ.get("PATH", ""))
+    write_user_pool(env, "fable",
+                    'name = "fable"\n'
+                    'model = "claude-opus-5"\n'
+                    'timeout_default = "20m"\n'
+                    'interactive = false\n'
+                    '[vendor]\n'
+                    'argv = ["claude-fable", "-p"]\n')
+    adapter = get_pool("fable")
+    assert adapter.binary == "claude-fable"
+    assert adapter.binary_is_foreman_worker is False
+
+
+def test_vendor_argv_grokish_is_a_foreman_worker(env):
+    """A [vendor] argv that resolves to nothing named claude stays
+    Foreman-owned: the default must not flip for an unknown binary."""
+    write_user_pool(env, "fable",
+                    'name = "fable"\n'
+                    'model = "claude-opus-5"\n'
+                    'timeout_default = "20m"\n'
+                    'interactive = false\n'
+                    '[vendor]\n'
+                    'argv = ["grokish", "--prompt-file", "job.md"]\n')
+    adapter = get_pool("fable")
+    assert adapter.binary == "grokish"
+    assert adapter.binary_is_foreman_worker is True

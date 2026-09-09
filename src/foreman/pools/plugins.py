@@ -37,7 +37,9 @@ through untouched.
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
 import sys
 import tomllib
 from dataclasses import dataclass, field
@@ -342,16 +344,42 @@ def _vendor_binary(manifest: PoolManifest) -> str:
     return ""
 
 
+def _vendor_resolves_to_claude(argv0: str) -> bool:
+    """True when ``argv0`` names the claude binary, possibly via a wrapper.
+
+    A basename of ``claude`` is enough: that is the owner's tool even
+    when the file is not on this PATH. Otherwise a path is followed
+    through symlinks (``os.path.realpath``), and a bare name is looked
+    up with ``shutil.which`` then followed the same way. The resolved
+    file's basename must be ``claude``.
+    """
+    if os.path.basename(argv0) == "claude":
+        return True
+    if os.path.isabs(argv0) or os.path.sep in argv0:
+        candidate = os.path.realpath(argv0)
+    else:
+        found = shutil.which(argv0)
+        if not found:
+            return False
+        candidate = os.path.realpath(found)
+    return os.path.basename(candidate) == "claude"
+
+
 def _binary_is_foreman_worker(manifest: PoolManifest) -> bool:
     """Whether this directory pool's vendor binary is only ever a Foreman worker.
 
-    A ``[vendor]`` argv is the user's own command, so the default
-    stands. Otherwise the packaged adapter this directory wraps
-    declares it, the way ``binary`` is read. A pool that names
-    neither defaults to True.
+    A pool whose executable resolves to the claude binary is exempt:
+    the owner's own sessions run that binary, so counting it counts
+    the owner. That is a ``[vendor]`` argv[0] that names claude (by
+    basename, through a symlink, or via ``shutil.which``), or a
+    packaged adapter whose ``binary_is_foreman_worker`` is False
+    with no ``[vendor]`` argv. Otherwise a ``[vendor]`` argv is the
+    user's own command (Foreman-owned), else the packaged adapter
+    this directory wraps declares it. A pool that names neither
+    defaults to True.
     """
     if manifest.vendor_argv:
-        return True
+        return not _vendor_resolves_to_claude(manifest.vendor_argv[0])
     if manifest.adapter:
         from . import REGISTRY
 

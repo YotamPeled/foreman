@@ -6,9 +6,11 @@ this machine. The break each test catches is in its docstring.
 
 from __future__ import annotations
 
+import os
+
 import pytest
 
-from foreman import capacity, cli, pools
+from foreman import capacity, cli, paths, pools
 from foreman.caller import SESSION_ENV
 from foreman.pools import PoolAdapter
 
@@ -41,6 +43,33 @@ TWO_GROK = {
 NINE_CLAUDE = {
     50 + i: {"cmdline": "claude -p --model opus"} for i in range(9)
 }
+
+TWO_CLAUDE = {
+    61: {"cmdline": "claude -p --model opus"},
+    62: {"cmdline": "claude -p --model opus"},
+}
+
+TWO_GROKISH = {
+    71: {"cmdline": "grokish --prompt-file a.md"},
+    72: {"cmdline": "grokish --prompt-file b.md"},
+}
+
+FABLE_IDENTITY = (
+    'name = "fable"\n'
+    'model = "claude-opus-5"\n'
+    'timeout_default = "20m"\n'
+    'interactive = false\n'
+)
+
+
+def write_fable(body: str) -> None:
+    dest = paths.config_dir() / "pools" / "fable"
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "manifest.toml").write_text(body, encoding="utf-8")
+
+
+def cap_fable(n: int = 1) -> None:
+    assert cli.main(["cap", "fable", str(n)]) == 0
 
 
 @pytest.fixture()
@@ -179,8 +208,6 @@ def test_a_user_pool_wrapping_claude_inherits_the_declaration(env):
     owner's binary. Dropping the attribute on DirectoryPool would
     refuse the clone on the box count the packaged pool just
     stopped refusing."""
-    from foreman import paths
-
     dest = paths.config_dir() / "pools" / "claude"
     dest.mkdir(parents=True, exist_ok=True)
     (dest / "manifest.toml").write_text(
@@ -195,3 +222,90 @@ def test_a_user_pool_wrapping_claude_inherits_the_declaration(env):
         "opus", "claude", "runtime-v4b", table=NINE_CLAUDE)
     assert problems == []
     assert not any("box" in line for line in problems)
+
+
+def test_a_user_pool_wrapping_claude_is_admitted_at_the_box_cap(env):
+    """A pool named fable that wraps the claude adapter is still the
+    owner's binary. The exemption is the executable, not the pool
+    name: two claude processes at a cap of one must not refuse it,
+    and the Capacity block still prints the count."""
+    write_fable(FABLE_IDENTITY + 'adapter = "claude"\n')
+    cap_fable(1)
+
+    problems = capacity.launch_problems(
+        "fable", "fable", None, table=TWO_CLAUDE)
+    assert problems == []
+    assert not any("processes on the box" in line for line in problems)
+
+    lines = capacity.capacity_lines({}, table=TWO_CLAUDE)
+    assert "  fable: 0/1 held · 2 running on the box" in lines
+
+
+def test_a_user_pool_whose_vendor_argv_is_claude_is_admitted_at_the_box_cap(env):
+    """A [vendor] argv whose basename is claude is the owner's binary
+    even when the pool is named fable. Treating every vendor argv as
+    Foreman-owned refused that pool on the owner's own sessions."""
+    write_fable(
+        FABLE_IDENTITY
+        + 'adapter = "claude"\n'
+        + "[vendor]\n"
+        + 'argv = ["claude", "-p", "--model", "claude-opus-5"]\n')
+    cap_fable(1)
+
+    problems = capacity.launch_problems(
+        "fable", "fable", None, table=TWO_CLAUDE)
+    assert problems == []
+    assert not any("processes on the box" in line for line in problems)
+
+    lines = capacity.capacity_lines({}, table=TWO_CLAUDE)
+    assert "  fable: 0/1 held · 2 running on the box" in lines
+
+
+def test_a_user_pool_whose_vendor_is_a_symlink_to_claude_is_admitted(
+        env):
+    """A [vendor] argv that is a symlink to a file named claude is
+    the same binary. The wrapper's own basename is what the count
+    matches, so two of those processes at a cap of one must not
+    refuse the launch."""
+    bindir = env / "bin"
+    bindir.mkdir()
+    target = bindir / "claude"
+    target.write_text("#!/bin/sh\n", encoding="utf-8")
+    os.chmod(target, 0o755)
+    link = bindir / "claude-fable"
+    link.symlink_to(target)
+    write_fable(
+        FABLE_IDENTITY
+        + "[vendor]\n"
+        + f'argv = ["{link}", "-p", "--model", "claude-opus-5"]\n')
+    cap_fable(1)
+    table = {
+        81: {"cmdline": f"{link} -p --model opus"},
+        82: {"cmdline": f"{link} -p --model opus"},
+    }
+
+    problems = capacity.launch_problems(
+        "fable", "fable", None, table=table)
+    assert problems == []
+    assert not any("processes on the box" in line for line in problems)
+
+    lines = capacity.capacity_lines({}, table=table)
+    assert "  fable: 0/1 held · 2 running on the box" in lines
+
+
+def test_a_user_pool_whose_vendor_is_not_claude_is_refused_at_the_box_cap(
+        env):
+    """A [vendor] argv that names nothing called claude is still a
+    Foreman worker. Two grokish processes at a cap of one must refuse
+    the way they did before the claude-family exemption."""
+    write_fable(
+        FABLE_IDENTITY
+        + "[vendor]\n"
+        + 'argv = ["grokish", "--prompt-file", "job.md"]\n')
+    cap_fable(1)
+
+    problems = capacity.launch_problems(
+        "fable", "fable", None, table=TWO_GROKISH)
+    assert problems == [
+        "role 'fable' on no front: 2 fable processes on the box, cap 1",
+    ]
