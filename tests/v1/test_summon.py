@@ -707,8 +707,7 @@ def test_the_generated_window_script_sleeps_after_the_vendor_returns(
 
     inner = launch_module.supervisor_inner_command(
         pid_path=tmp_path / "pid", session_id="ses-linger",
-        repo=str(tmp_path), role_prompt=prompt, vendor_id="vendor-uuid",
-        resume=False)
+        repo=str(tmp_path), role_prompt=prompt, vendor_id="vendor-uuid")
     run = tmp_path / "run.sh"
     run.write_text("#!/bin/bash\n" + inner, encoding="utf-8")
     subprocess.run(["bash", str(run)], check=True,
@@ -794,137 +793,140 @@ def _checkpoint(sid: str, monkeypatch, capsys) -> None:
     capsys.readouterr()
 
 
-def test_relaunch_replays_the_checkpoint_and_resumes_the_conversation(
+def test_relaunch_replays_the_checkpoint_into_a_fresh_conversation(
         env, fakes, capsys, monkeypatch):
+    """A relaunch never resumes: it summons, with the prompt in hand.
+
+    `claude --resume` takes no positional prompt, so the relaunch this
+    replaces could only print a path to the terminal and hope the session
+    read it; it did not. The fresh conversation is handed the prompt
+    itself, and continuity is the checkpoint written into that prompt.
+    """
     repo = make_repo(env / "repo")
     add_panel_front()
     capsys.readouterr()
-    old = _summon(env, repo, capsys)
-    vendor_id = (paths.session_dir(old) / "vendor-session").read_text(
+    sid = _summon(env, repo, capsys)
+    first_vendor = (paths.session_dir(sid) / "vendor-session").read_text(
         encoding="utf-8").strip()
-    _checkpoint(old, monkeypatch, capsys)
+    _checkpoint(sid, monkeypatch, capsys)
 
-    assert cli.main(["relaunch", old, "--workspace", "6"]) == 0
+    assert cli.main(["relaunch", sid, "--workspace", "6"]) == 0
     out = capsys.readouterr().out
-    new = line(out, "session: ")
-    assert new != old
-    assert line(out, "replaces: ") == old
+    # The same Foreman session id: its checkpoint, its slot grants and
+    # every anomaly already written about it still name what is running.
+    assert line(out, "relaunches: ") == sid
+    assert line(out, "session: ") == sid
+    vendor_id = line(out, "vendor session: ")
+    assert vendor_id != first_vendor
 
     prompt = Path(line(out, "role prompt: ")).read_text(encoding="utf-8")
-    # The predecessor's own words, under their own heading, so the
-    # successor picks up where it was left rather than starting over.
+    # Its own last checkpoint, under its own heading, so it picks up where
+    # it left off rather than starting the front over.
     assert "## Your predecessor's last checkpoint" in prompt
-    assert f"Session {old}, which you replace" in prompt
+    assert "You were relaunched" in prompt
     assert "Verifying the plugin skeleton job." in prompt
     assert "Plan the blocks task into three jobs." in prompt
     assert "muse worker on plugin skeleton" in prompt
-    # And it is a fresh prompt, not the old one: its own identity, and the
-    # front's tasks as they stand now.
-    assert new in prompt
+    # And it is freshly rendered: its identity and the front's tasks now.
+    assert sid in prompt
     assert '- "plugin skeleton and data feed" — ready' in prompt
 
-    # Resume, with the vendor id, and no positional prompt: a --resume with
-    # one sits idle and never starts. The MCP flags name the successor's
-    # own config, so the resumed session calls with its own row of verbs.
-    vendor = fakes["claude_argv"].read_text(
-        encoding="utf-8").strip().splitlines()
-    assert vendor == ["--resume", vendor_id, "--model", "claude-opus-5",
-                      "--dangerously-skip-permissions",
-                      "--mcp-config",
-                      str(paths.session_dir(new) / "mcp.json"),
-                      "--strict-mcp-config"]
-    assert "--session-id" not in out
+    # The vendor line: a fresh session id and the role prompt positionally,
+    # which is the shape that demonstrably starts working. No `--resume`.
+    # The fake vendor prints one argument per line and the prompt is many
+    # lines, so the flags are read off the head and the prompt is what
+    # follows the last of them.
+    received = fakes["claude_argv"].read_text(encoding="utf-8")
+    flags, marker, positional = received.partition("--strict-mcp-config\n")
+    assert marker, received
+    assert flags.splitlines() == [
+        "--session-id", vendor_id, "--model", "claude-opus-5",
+        "--dangerously-skip-permissions",
+        "--mcp-config", str(paths.session_dir(sid) / "mcp.json")]
+    assert positional.rstrip("\n") == prompt.rstrip("\n")
+    assert "--resume" not in received
+    assert "--resume" not in out
 
-    # The predecessor leaves the roster; the successor holds the front.
-    assert roster()[old]["state"] == "exited"
-    assert roster()[new]["state"] == "running"
-    assert roster()[new]["front"] == "panel"
-    assert roster()[new]["launched_by"] == old
-    # The successor answers to the same conversation, so it can be
-    # relaunched in its turn.
-    assert (paths.session_dir(new) / "vendor-session").read_text(
+    # The new vendor id is on the roster under the same session id, so the
+    # roster names the conversation that is actually running.
+    assert roster()[sid]["state"] == "running"
+    assert roster()[sid]["front"] == "panel"
+    assert roster()[sid]["vendor_session"] == vendor_id
+    assert roster()[sid]["relaunches"] == 1
+    assert (paths.session_dir(sid) / "vendor-session").read_text(
         encoding="utf-8").strip() == vendor_id
 
 
-def test_the_fresh_prompt_reaches_the_resumed_session(
+def test_the_fresh_prompt_is_what_the_relaunched_session_receives(
         env, fakes, capsys, monkeypatch):
     """A relaunch delivers its prompt, it does not merely write one.
 
-    A `--resume` carries no positional prompt, so the delivery is the one a
-    resumed conversation can act on: the prompt it already has names an
-    absolute path, that path always holds the newest prompt for the front,
-    and the window prints it. This test walks that chain the way the
-    resumed session would.
+    The old shape wrote the prompt to a file and printed the path; the
+    file was never opened. This walks the delivery that replaced it: the
+    vendor's own argv carries the prompt text, and it is the same text the
+    front's standing address holds.
     """
     repo = make_repo(env / "repo")
     add_panel_front()
     capsys.readouterr()
-    old = _summon(env, repo, capsys)
-    # What the first session actually received, from the fake vendor's argv.
-    received = fakes["claude_argv"].read_text(encoding="utf-8")
-    _checkpoint(old, monkeypatch, capsys)
+    sid = _summon(env, repo, capsys)
+    _checkpoint(sid, monkeypatch, capsys)
 
-    # The session reads its instruction: one absolute path to read on being
-    # relaunched.
-    told = re.search(r"^\s+(/\S+/supervisor-prompt\.md)$", received,
-                     re.MULTILINE)
-    assert told, "the summoned session was never told where to read a fresh prompt"
-    fresh = Path(told.group(1))
-    assert fresh == launch_module.front_prompt_path("panel")
-
-    assert cli.main(["relaunch", old, "--workspace", "6"]) == 0
+    assert cli.main(["relaunch", sid, "--workspace", "6"]) == 0
     out = capsys.readouterr().out
-    new = line(out, "session: ")
 
-    # Following that instruction now yields the successor's own prompt,
-    # with the predecessor's checkpoint in it.
-    delivered = fresh.read_text(encoding="utf-8")
-    assert new in delivered
-    assert f"Session {old}, which you replace" in delivered
+    delivered = fakes["claude_argv"].read_text(
+        encoding="utf-8").partition("--strict-mcp-config\n")[2].rstrip("\n")
     assert "Verifying the plugin skeleton job." in delivered
-    assert delivered == (paths.session_dir(new) / "role-prompt.md").read_text(
-        encoding="utf-8")
-    # And the window says so on the way in, so the path is on screen too.
-    assert str(fresh) in out
-    assert "You were relaunched" in out
-    assert str(fresh) in (paths.session_dir(new) / "run.sh").read_text(
-        encoding="utf-8")
+    assert sid in delivered
+    # The same text the session's own prompt file and the front's standing
+    # address hold: three copies, one prompt.
+    fresh = launch_module.front_prompt_path("panel")
+    assert delivered == fresh.read_text(encoding="utf-8").rstrip("\n")
+    assert delivered == (paths.session_dir(sid) / "role-prompt.md").read_text(
+        encoding="utf-8").rstrip("\n")
+    # Nothing is printed at the terminal for the session to go and read:
+    # the terminal is not the session.
+    assert "You were relaunched. Read your fresh role prompt" not in out
+    assert "You were relaunched. Read your fresh role prompt" not in (
+        paths.session_dir(sid) / "run.sh").read_text(encoding="utf-8")
 
 
-def test_relaunch_stops_the_predecessor_before_admitting_the_successor(
+def test_relaunch_stops_the_old_process_before_starting_the_new_one(
         env, fakes, capsys, monkeypatch):
     """Two live supervisors of one front is what this prevents.
 
-    Marking the old record exited while its process runs on leaves a second
-    session able to plan, dispatch and checkpoint on the same front, so the
-    process is stopped first and the roster records what was stopped.
+    Starting the fresh conversation while the old process runs on leaves
+    two sessions able to plan, dispatch and checkpoint on the same front —
+    and under one session id, two processes claiming one roster record. So
+    the process is stopped first and the roster records what was stopped.
     """
     repo = make_repo(env / "repo")
     add_panel_front()
     capsys.readouterr()
-    old = _summon(env, repo, capsys)
-    old_pid = roster()[old]["pid"]
-    old_identity = roster()[old]["pid_starttime"]
+    sid = _summon(env, repo, capsys)
+    old_pid = roster()[sid]["pid"]
+    old_identity = roster()[sid]["pid_starttime"]
     assert procs.same_process(old_pid, old_identity)
 
-    assert cli.main(["relaunch", old, "--workspace", "6"]) == 0
+    assert cli.main(["relaunch", sid, "--workspace", "6"]) == 0
     out = capsys.readouterr().out
-    new = line(out, "session: ")
     assert line(out, "stopped: ").startswith(f"pid {old_pid}")
 
-    # The predecessor's process is gone, not merely marked gone.
+    # The old process is gone, not merely marked gone, and the roster's pid
+    # is the new window's own.
     assert not procs.same_process(old_pid, old_identity)
-    record = roster()[old]
-    assert record["state"] == "exited"
+    record = roster()[sid]
+    assert record["state"] == "running"
     assert record["stopped_pid"] == old_pid
-    assert record["stopped_by"] == new
     assert record["stopped_at"]
-    # One live supervisor on the front, and it is the successor.
-    live = [sid for sid, entry in roster().items()
+    assert record["pid"] != old_pid
+    assert procs.same_process(record["pid"], record["pid_starttime"])
+    # One live supervisor on the front, and it is this one.
+    live = [held for held, entry in roster().items()
             if entry.get("state") == "running"]
-    assert live == [new]
-    assert launch_module.live_front_supervisor("panel") is not None
-    assert launch_module.live_front_supervisor("panel")[0] == new
+    assert live == [sid]
+    assert launch_module.live_front_supervisor("panel")[0] == sid
 
 
 def test_relaunch_refuses_an_unknown_session_by_name(env, capsys):
@@ -932,17 +934,39 @@ def test_relaunch_refuses_an_unknown_session_by_name(env, capsys):
     assert "unknown session 'ses-nothere'" in capsys.readouterr().err
 
 
-def test_relaunch_refuses_a_session_with_no_vendor_id(env, capsys):
+def test_relaunch_needs_no_vendor_session_to_resume(env, capsys):
+    """Nothing is resumed, so a session with no vendor id is relaunchable.
+
+    The old relaunch refused here — there was no conversation to resume.
+    A hand-registered supervisor that dies is exactly the session an owner
+    needs back, and it now gets a fresh conversation with a fresh vendor
+    id like any other.
+    """
+    repo = make_repo(env / "repo")
     add_panel_front()
     capsys.readouterr()
     store.write_snapshot(paths.roster_path(), {"sessions": {
         "ses-handmade": Session(id="ses-handmade", role="supervisor",
                                 pool="opus", model="claude-opus-5",
                                 front="panel", state="running").to_dict()}})
-    assert cli.main(["relaunch", "ses-handmade", "--dry-run"]) != 0
+    assert cli.main(["relaunch", "ses-handmade", "--repo", str(repo),
+                     "--workspace", "6", "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    assert line(out, "relaunches: ") == "ses-handmade"
+    assert line(out, "replaces vendor session: ") == "(none recorded)"
+    assert line(out, "vendor session: ")
+
+
+def test_relaunch_refuses_a_session_that_is_not_a_supervisor(env, capsys):
+    add_panel_front()
+    capsys.readouterr()
+    store.write_snapshot(paths.roster_path(), {"sessions": {
+        "ses-worker": Session(id="ses-worker", role="muse", pool="muse",
+                              model="muse", front="panel",
+                              state="running").to_dict()}})
+    assert cli.main(["relaunch", "ses-worker", "--dry-run"]) != 0
     err = capsys.readouterr().err
-    assert "no vendor session id" in err
-    assert "no conversation to resume" in err
+    assert "only a supervisor is relaunched" in err
 
 
 # --------------------------------------------------------------------------

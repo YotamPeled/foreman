@@ -168,6 +168,11 @@ class Session(Entity):
     log: str = ""
     timeout: str = ""
     launched_by: str | None = None
+    #: The vendor's own session id, so the roster names the conversation
+    #: this session is. A relaunch starts a fresh one and records it here
+    #: under the same Foreman session id, which is how the roster tells a
+    #: relaunched supervisor from the one it replaced.
+    vendor_session: str | None = None
     started_at: str | None = None
     last_declared_at: str | None = None
     last_observed_at: str | None = None

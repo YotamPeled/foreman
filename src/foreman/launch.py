@@ -39,12 +39,19 @@ commands, the rules from the ledger and the brief.
 
 `register` puts a session Foreman never started (a hand-started
 supervisor, the orchestrator) on the same roster with the same process
-identity; `relaunch` replaces a supervisor with a fresh prompt carrying
-its predecessor's last checkpoint, resuming the same vendor conversation.
-It stops the predecessor's process before admitting the successor and
-records what it stopped, and because a resumed conversation cannot be
-handed a new prompt, the fresh one is published at a path the old prompt
-already told the session to read.
+identity. `relaunch` never resumes: it stops the old process and summons a
+*fresh* vendor conversation under the same Foreman session id, with a
+newly rendered role prompt as its positional argument, carrying the
+front's latest checkpoint so the supervisor picks up where it left off.
+The new vendor id is recorded on the roster; a resumed conversation could
+not be handed a prompt at all, and the one this replaces sat idle waiting
+for a person at the keyboard.
+
+`kill` is the other half: it stops the transient unit the launcher
+started, then the recorded pid, and writes the roster line — and the job
+line, when the id names a job — killed with who killed it and why,
+releasing the slot. Only the recorded unit and pid are ever signalled;
+nothing here matches a process by pattern.
 """
 
 from __future__ import annotations
@@ -286,6 +293,54 @@ def _branch_of_checkout(repo: str, asked: str | None,
             f"--branch")
         return None
     return on
+
+
+#: How many dirty paths a refusal prints before it says "and N more":
+#: enough to recognise the work, short enough to stay one screen.
+DIRTY_SHOWN = 10
+
+
+def uncommitted_paths(repo: str) -> list[str]:
+    """Every path git reports as changed or untracked, or an empty list.
+
+    A checkout that cannot be read is not evidence of a clean one, but it
+    is not evidence of a dirty one either: the branch check above already
+    refuses a directory that is not a git repository, so silence here
+    means nothing to report.
+    """
+    try:
+        done = subprocess.run(
+            ["git", "-C", repo, "status", "--porcelain"],
+            capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if done.returncode != 0:
+        return []
+    return [line[3:].strip() for line in done.stdout.splitlines()
+            if line.strip()]
+
+
+def dirty_tree_problem(repo: str) -> str | None:
+    """The refusal a relaunch owes a working tree nobody accounted for.
+
+    A session summoned into a checkout carrying uncommitted work inherits
+    changes it did not make and cannot explain: it will either commit
+    somebody else's work as its own or throw it away. Neither is the
+    launcher's call, so the relaunch refuses and names the files, and the
+    supervisor rules keep or discard before asking again. Seen on the
+    panel front: a dead job's worktree left two modified files on top of
+    its last commit.
+    """
+    paths_dirty = uncommitted_paths(repo)
+    if not paths_dirty:
+        return None
+    shown = paths_dirty[:DIRTY_SHOWN]
+    more = len(paths_dirty) - len(shown)
+    listed = ", ".join(shown) + (f", and {more} more" if more else "")
+    return (f"checkout {repo} has uncommitted changes ({listed}); a "
+            f"relaunched session must not inherit work nobody accounted "
+            f"for, so keep it (commit it) or discard it (git restore / git "
+            f"clean) and relaunch again")
 
 
 def read_rulings(front: str | None = None) -> list[str]:
@@ -879,9 +934,11 @@ cmd_launch.add_arguments = add_launch_arguments  # type: ignore[attr-defined]
 SUPERVISOR_POOL = "opus"
 SUPERVISOR_MODEL = "claude-opus-5"
 ROLE_PROMPT_FILE = "role-prompt.md"
-#: The vendor's own session id (a uuid) lives beside the session, not on the
-#: Session record: Foreman mints the roster id, the vendor mints its own, and
-#: ``relaunch`` reads this file back to resume the same conversation.
+#: The vendor's own session id (a uuid) lives beside the session as well as
+#: on its roster record: Foreman mints the roster id and the vendor answers
+#: to this one. A relaunch mints a fresh vendor id under the same Foreman
+#: session id and rewrites both, so what the roster names is the
+#: conversation that is actually running.
 VENDOR_SESSION_FILE = "vendor-session"
 RUN_SCRIPT_FILE = "run.sh"
 #: Where the vendor's first-launch answers live. Overridable so a test never
@@ -1324,7 +1381,6 @@ def pre_answer_first_launch_dialogs(directory: str) -> None:
 
 def supervisor_inner_command(*, pid_path: Path, session_id: str, repo: str,
                              role_prompt: Path, vendor_id: str,
-                             resume: bool, front_prompt: Path | None = None,
                              mcp_config: Path | None = None) -> str:
     """The shell the window runs: pid first, then the proven vendor line.
 
@@ -1334,13 +1390,16 @@ def supervisor_inner_command(*, pid_path: Path, session_id: str, repo: str,
     makes takes its caller from the environment; without it the CLI refuses
     its own supervisor as an unregistered writer.
 
-    A resume passes **no positional prompt**: a ``--resume`` with one sits
-    idle and never starts. So the fresh prompt is delivered the way a
-    resumed conversation can actually take it — the wrapper prints its
-    path, and the prompt the session already has tells it to read that
-    file first. Writing a file nobody opens is not a relaunch.
+    There is one shape here and no second one: a fresh vendor session with
+    the role prompt as its positional argument. A relaunch used to pass
+    ``--resume`` with no prompt, because a resumed conversation cannot be
+    handed one, and printed the fresh prompt's path to the terminal
+    instead. The terminal is not the session: proven on the skills front,
+    where the resumed process wrote nothing for twenty-six minutes while
+    its front waited on one verb. So a relaunch summons a new conversation
+    with the prompt in it, and continuity comes from the prompt carrying
+    the front's latest checkpoint.
     """
-    announce = ""
     # The summoned session's verbs arrive as tools, and no other server's
     # do: the config names `foreman mcp` for this session id, and the
     # strict flag ignores every other source. A worker launch passes
@@ -1350,25 +1409,14 @@ def supervisor_inner_command(*, pid_path: Path, session_id: str, repo: str,
     if mcp_config is not None:
         mcp_flags = (f" --mcp-config {shlex.quote(str(mcp_config))}"
                      " --strict-mcp-config")
-    if resume:
-        vendor = (f"{AUTOCOMPACT} claude --resume {shlex.quote(vendor_id)} "
-                  f"--model {SUPERVISOR_MODEL} --dangerously-skip-permissions"
-                  f"{mcp_flags}")
-        where = str(front_prompt if front_prompt is not None else role_prompt)
-        announce = "printf '%s\\n' " + shlex.quote(
-            "You were relaunched. Read your fresh role prompt before anything "
-            "else, as the prompt in this conversation tells you to: "
-            + where) + "\n"
-    else:
-        vendor = (f"{AUTOCOMPACT} claude --session-id {shlex.quote(vendor_id)} "
-                  f"--model {SUPERVISOR_MODEL} --dangerously-skip-permissions"
-                  f"{mcp_flags} "
-                  f'"$(cat {shlex.quote(str(role_prompt))})"')
+    vendor = (f"{AUTOCOMPACT} claude --session-id {shlex.quote(vendor_id)} "
+              f"--model {SUPERVISOR_MODEL} --dangerously-skip-permissions"
+              f"{mcp_flags} "
+              f'"$(cat {shlex.quote(str(role_prompt))})"')
     return (
         f"echo $$ > {shlex.quote(str(pid_path))}\n"
         f"export {caller.SESSION_ENV}={shlex.quote(session_id)}\n"
         f"cd {shlex.quote(repo)}\n"
-        f"{announce}"
         f"{vendor}\n"
         f"sleep {WINDOW_LINGER_SECONDS}\n"
     )
@@ -1516,10 +1564,11 @@ def verbs_block() -> str:
 def front_prompt_path(front: str) -> Path:
     """Where the front's newest supervisor prompt always is.
 
-    A resumed conversation carries the prompt its predecessor was summoned
-    with, not the fresh one, so the fresh one is published at a path the
-    old prompt could already name. This is the address a relaunched
-    supervisor is told to read, and it is rewritten on every summon.
+    A supervisor receives its prompt as its first message, so this file is
+    not how a relaunch delivers one. It is the standing address of the
+    front's newest prompt — rewritten on every summon and every relaunch —
+    for a session whose own copy has aged out of its context, and for
+    anyone reading what a live supervisor was actually told.
     """
     return paths.front_dir(front) / "supervisor-prompt.md"
 
@@ -1561,22 +1610,41 @@ def supervisor_environment_block(*, front: str, repo: str, branch: str,
     )
 
 
-def predecessor_block(session_id: str | None) -> str:
-    """The predecessor's last checkpoint, replayed, or the fresh-start line."""
+def predecessor_block(session_id: str | None,
+                      relaunched: bool = False) -> str:
+    """The last checkpoint to pick up from, or the fresh-start line.
+
+    A relaunch keeps the Foreman session id and starts a fresh vendor
+    conversation, so the checkpoint being replayed is the session's own,
+    written before it was relaunched. It is named that way rather than as
+    somebody else's: a supervisor told it replaces itself would read its
+    own words as a stranger's.
+    """
     if not session_id:
         return ("(none: you are the first supervisor summoned for this "
                 "front, so there is nothing to pick up.)")
     record = store.read_snapshot(paths.checkpoint_path(session_id),
                                  default=None)
+    whose = ("You were relaunched: this conversation is fresh, your session "
+             "id is not"
+             if relaunched else f"Session {session_id}, which you replace,")
     if not isinstance(record, dict):
-        return (f"Session {session_id}, which you replace, left no "
-                f"checkpoint. Read the front ledger and the brief, then "
-                f"checkpoint what you find before you plan anything.")
+        if relaunched:
+            return (f"{whose}, and session {session_id} left no checkpoint "
+                    f"before the relaunch. Read the front ledger and the "
+                    f"brief, then checkpoint what you find before you plan "
+                    f"anything.")
+        return (f"{whose} left no checkpoint. Read the front ledger and the "
+                f"brief, then checkpoint what you find before you plan "
+                f"anything.")
     held = [str(item) for item in (record.get("held") or [])]
     questions = [str(item) for item in (record.get("questions") or [])]
+    opening = (f"{whose}. This is the checkpoint you left before the "
+               f"relaunch, and it is where you pick up:"
+               if relaunched
+               else f"{whose} left this. It is where you pick up:")
     return (
-        f"Session {session_id}, which you replace, left this. It is where you "
-        f"pick up:\n\n"
+        f"{opening}\n\n"
         f"- doing: {record.get('doing') or '(not declared)'}\n"
         f"- next: {record.get('next') or '(not declared)'}\n"
         f"- held: {', '.join(held) if held else 'nothing'}\n"
@@ -1587,7 +1655,8 @@ def predecessor_block(session_id: str | None) -> str:
 
 def render_supervisor_prompt(*, front: str, record: dict, session_id: str,
                              repo: str, branch: str, role_prompt: Path,
-                             predecessor: str | None) -> str:
+                             predecessor: str | None,
+                             relaunched: bool = False) -> str:
     from .collector import DEFAULTS
 
     silent = float(DEFAULTS["supervisor_silent_seconds"]) / 60
@@ -1603,7 +1672,7 @@ def render_supervisor_prompt(*, front: str, record: dict, session_id: str,
         "verbs": verbs_block(),
         "silent_minutes": f"{silent:.0f}",
         "rulings": supervisor_rulings_block(front),
-        "predecessor": predecessor_block(predecessor),
+        "predecessor": predecessor_block(predecessor, relaunched),
         "front_prompt": str(front_prompt_path(front)),
         "environment": supervisor_environment_block(
             front=front, repo=repo, branch=branch, session_id=session_id,
@@ -1613,7 +1682,7 @@ def render_supervisor_prompt(*, front: str, record: dict, session_id: str,
 
 
 def publish_front_prompt(front: str, text: str) -> Path:
-    """Put the fresh prompt where a resumed session was told to look."""
+    """Publish the newest prompt at the front's standing address."""
     path = front_prompt_path(front)
     path.parent.mkdir(parents=True, exist_ok=True)
     write_no_symlink(str(path), text)
@@ -1636,7 +1705,8 @@ def read_vendor_session(session_id: str) -> str | None:
 
 
 def _supervisor_session(session_id: str, front: str | None, repo: str,
-                        launched_by: str | None) -> Session:
+                        launched_by: str | None,
+                        vendor_id: str | None = None) -> Session:
     return Session(
         id=session_id,
         role=SUPERVISOR,
@@ -1647,15 +1717,14 @@ def _supervisor_session(session_id: str, front: str | None, repo: str,
         worktree=repo,
         log=str(paths.session_log_path(session_id)),
         launched_by=launched_by,
+        vendor_session=vendor_id,
         started_at=store.utcnow_iso(),
         state="starting",
     )
 
 
 def _start_supervisor(session_id: str, *, repo: str, role_prompt: Path,
-                      vendor_id: str, workspace: str | None,
-                      resume: bool,
-                      front_prompt: Path | None = None
+                      vendor_id: str, workspace: str | None
                       ) -> tuple[list[str], str, int | None, str | None]:
     """Write the window's script, open it, read the pid back.
 
@@ -1675,10 +1744,18 @@ def _start_supervisor(session_id: str, *, repo: str, role_prompt: Path,
         mcp_config = mcp_module.write_mcp_config(session_id)
     except OSError as exc:
         return argv, inner, None, f"OSError: cannot write MCP config: {exc}"
+    # A relaunch reuses the session id, so the pid file may still hold the
+    # pid of the process just stopped. `spawn_and_wait` returns the first
+    # pid it reads there, and a stale one would put a dead process on the
+    # roster as this launch's own — recorded running, watched, never alive.
+    try:
+        pid_path.unlink()
+    except OSError:
+        pass
     inner = supervisor_inner_command(
         pid_path=pid_path, session_id=session_id, repo=repo,
-        role_prompt=role_prompt, vendor_id=vendor_id, resume=resume,
-        front_prompt=front_prompt, mcp_config=mcp_config)
+        role_prompt=role_prompt, vendor_id=vendor_id,
+        mcp_config=mcp_config)
     argv = supervisor_outer_argv(session_id, session_dir / RUN_SCRIPT_FILE,
                                  workspace)
     try:
@@ -1855,8 +1932,9 @@ def launch_supervisor_main(args: argparse.Namespace,
         problems.append(
             f"front '{front}' already has a live supervisor '{held}' "
             f"({entry.get('state')}, pid {entry.get('pid')}); one front has "
-            f"one supervisor, so replace it with "
-            f"`foreman relaunch {held}` instead of summoning a second")
+            f"one supervisor. To replace it: "
+            f"`foreman kill {held} --reason <why>`, then "
+            f"`foreman relaunch {held}`")
     # And the system's own limit on supervisors, across every front. The
     # field was loaded and never read, so the cap the owner set on how many
     # fronts may be supervised at once bounded nothing: a summon per front
@@ -1896,7 +1974,7 @@ def launch_supervisor_main(args: argparse.Namespace,
         inner = supervisor_inner_command(
             pid_path=paths.session_pid_path(session_id),
             session_id=session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, resume=False, mcp_config=mcp_config)
+            vendor_id=vendor_id, mcp_config=mcp_config)
         argv = supervisor_outer_argv(
             session_id, session_dir / RUN_SCRIPT_FILE, workspace)
         _print_supervisor(session_id, vendor_id, role_prompt, workspace,
@@ -1917,7 +1995,8 @@ def launch_supervisor_main(args: argparse.Namespace,
             lambda roster: _place_session(
                 roster,
                 _supervisor_session(session_id, front, repo,
-                                    os.environ.get(caller.SESSION_ENV))),
+                                    os.environ.get(caller.SESSION_ENV),
+                                    vendor_id)),
             default={"sessions": {}},
         )
     except OSError as exc:
@@ -1936,7 +2015,7 @@ def launch_supervisor_main(args: argparse.Namespace,
         publish_front_prompt(front, text)
         argv, inner, pid, failure = _start_supervisor(
             session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, workspace=workspace, resume=False)
+            vendor_id=vendor_id, workspace=workspace)
     except Exception as exc:  # noqa: BLE001 - anything here is a refusal
         failure = f"{type(exc).__name__}: {exc}"
     starttime, dead = _confirm_started(pid)
@@ -2194,7 +2273,7 @@ def launch_merge_desk_main(args: argparse.Namespace,
         inner = supervisor_inner_command(
             pid_path=paths.session_pid_path(session_id),
             session_id=session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, resume=False)
+            vendor_id=vendor_id)
         argv = supervisor_outer_argv(
             session_id, session_dir / RUN_SCRIPT_FILE, workspace)
         _print_supervisor(session_id, vendor_id, role_prompt, workspace,
@@ -2223,7 +2302,7 @@ def launch_merge_desk_main(args: argparse.Namespace,
     try:
         argv_, inner, pid, failure = _start_supervisor(
             session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, workspace=workspace, resume=False)
+            vendor_id=vendor_id, workspace=workspace)
     except Exception as exc:  # noqa: BLE001 - anything here is a refusal
         failure = f"{type(exc).__name__}: {exc}"
     starttime, dead = _confirm_started(pid)
@@ -2444,7 +2523,7 @@ def launch_foreman_main(args: argparse.Namespace,
         inner = supervisor_inner_command(
             pid_path=paths.session_pid_path(session_id),
             session_id=session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, resume=False)
+            vendor_id=vendor_id)
         argv = supervisor_outer_argv(
             session_id, session_dir / RUN_SCRIPT_FILE, workspace)
         _print_supervisor(session_id, vendor_id, role_prompt, workspace,
@@ -2476,7 +2555,7 @@ def launch_foreman_main(args: argparse.Namespace,
     try:
         argv_, inner, pid, failure = _start_supervisor(
             session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, workspace=workspace, resume=False)
+            vendor_id=vendor_id, workspace=workspace)
     except Exception as exc:  # noqa: BLE001 - anything here is a refusal
         failure = f"{type(exc).__name__}: {exc}"
     starttime, dead = _confirm_started(pid)
@@ -2575,6 +2654,7 @@ def cmd_register(args: argparse.Namespace) -> int:
         pid=pid,
         pgid=pgid,
         pid_starttime=starttime,
+        vendor_session=str(args.session).strip() if args.session else None,
         log=str(paths.session_log_path(session_id)),
         launched_by=os.environ.get(caller.SESSION_ENV),
         started_at=store.utcnow_iso(),
@@ -2596,12 +2676,20 @@ cmd_register.add_arguments = add_register_arguments  # type: ignore[attr-defined
 
 
 # --------------------------------------------------------------------------
-# `foreman relaunch`: the same supervisor, a fresh prompt, its own history.
+# `foreman relaunch`: the same Foreman session, a fresh conversation.
+#
+# A relaunch never resumes. `claude --resume` takes no positional prompt, so
+# a resumed supervisor could only be told to go and read a file, and it did
+# not: the process sat idle while its front waited. So the old process is
+# stopped and a new vendor conversation is summoned under the same Foreman
+# session id, with a freshly rendered role prompt as its first message and
+# the session's own last checkpoint inside it. The roster keeps one record
+# and records the new vendor id on it.
 # --------------------------------------------------------------------------
 
 
 def add_relaunch_arguments(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("session", help="the session to replace")
+    parser.add_argument("session", help="the session to summon anew")
     parser.add_argument("--workspace", default=None,
                         help="workspace to open the window on")
     parser.add_argument("--repo", default=None, help="repository to work in")
@@ -2610,47 +2698,62 @@ def add_relaunch_arguments(parser: argparse.ArgumentParser) -> None:
                         help="render the prompt and print the command; start nothing")
 
 
-@subcommand("relaunch",
-            help="Replace a supervisor with a fresh prompt, resuming its session.")
-def cmd_relaunch(args: argparse.Namespace) -> int:
+def relaunch_main(session_id: str, *, workspace: str | None = None,
+                  repo: str | None = None, branch: str | None = None,
+                  dry_run: bool = False, by: str | None = None,
+                  quiet: bool = False) -> int:
+    """Summon one supervisor anew. The verb and the collector share this.
+
+    ``by`` names who asked (a session id, or ``collector`` when the daemon
+    did it) and lands on the roster; ``quiet`` silences the report so the
+    daemon writes records rather than a screen. Every refusal still names
+    itself on stderr: a relaunch that did not happen must not be silent.
+    """
+    def say(text: str = "") -> None:
+        if not quiet:
+            print(text)
+
     problems: list[str] = []
     frozen = paths.frozen_path()
     if frozen.exists():
         problems.append(
             f"frozen file {frozen} exists; the launcher refuses while frozen")
-    me, violations = caller.resolve("relaunch")
-    caller.check_role(me, "relaunch", FOREMAN, SUPERVISOR,
-                      violations=violations)
-    problems.extend(violations)
-    workspace = _resolve_window_workspace(args.workspace, problems)
+    # The role gate lives in `cmd_relaunch`: the collector calls this
+    # function directly and holds no session, so gating here would refuse
+    # the one caller flow 4 depends on. The workspace, though, is resolved
+    # for every caller — the daemon's relaunch needs a window as much as
+    # the verb's does, and a windowed launch with nowhere to put its
+    # window is refused by name rather than left to time out.
+    workspace = _resolve_window_workspace(workspace, problems)
 
-    old_id = args.session
     sessions = caller.read_roster().get("sessions", {})
-    old = sessions.get(old_id)
+    old = sessions.get(session_id)
     if not isinstance(old, dict):
-        problems.append(f"unknown session '{old_id}'; the roster has no record of it")
+        problems.append(
+            f"unknown session '{session_id}'; the roster has no record of it")
         old = {}
     elif (old.get("role") or "") != SUPERVISOR:
         problems.append(
-            f"session '{old_id}' has role '{old.get('role') or '(none)'}'; "
+            f"session '{session_id}' has role '{old.get('role') or '(none)'}'; "
             f"only a supervisor is relaunched")
     front = old.get("front")
     record = fronts.read_front_record(front) if front else None
     if old and record is None:
         problems.append(
-            f"session '{old_id}' names front '{front or '(none)'}', "
+            f"session '{session_id}' names front '{front or '(none)'}', "
             f"which has no record on the ledger")
-    vendor_id = read_vendor_session(old_id) if old else None
-    if old and not vendor_id:
-        problems.append(
-            f"session '{old_id}' has no vendor session id at "
-            f"{paths.session_dir(old_id) / VENDOR_SESSION_FILE}; "
-            f"there is no conversation to resume")
-    repo = os.path.abspath(args.repo or old.get("worktree") or os.getcwd())
-    if not os.path.isdir(repo):
-        problems.append(f"repo {repo!r} is not a directory")
-    branch = _branch_of_checkout(repo, args.branch, problems)
-    other = live_front_supervisor(front, ignore=old_id) if old else None
+    where = os.path.abspath(repo or old.get("worktree") or os.getcwd())
+    if not os.path.isdir(where):
+        problems.append(f"repo {where!r} is not a directory")
+    on_branch = _branch_of_checkout(where, branch, problems)
+    # Another live supervisor of the same front is the one thing a relaunch
+    # must not add to. The session being relaunched is itself, so it is not
+    # counted against itself.
+    if os.path.isdir(where) and on_branch is not None:
+        dirty = dirty_tree_problem(where)
+        if dirty is not None:
+            problems.append(dirty)
+    other = live_front_supervisor(front, ignore=session_id) if old else None
     if other is not None:
         held, entry = other
         problems.append(
@@ -2659,28 +2762,28 @@ def cmd_relaunch(args: argparse.Namespace) -> int:
             f"one supervisor, so relaunch that one instead")
     if problems:
         return refuse(*problems)
-    assert record is not None and vendor_id is not None and branch is not None
+    assert record is not None and on_branch is not None
 
-    session_id = ids.mint("session")
+    # A fresh conversation, so a fresh vendor id: the old one is the
+    # transcript of a session that is being stopped, and nothing resumes it.
+    vendor_id = str(uuid.uuid4())
     session_dir = paths.session_dir(session_id)
     role_prompt = session_dir / ROLE_PROMPT_FILE
     try:
         session_dir.mkdir(parents=True, exist_ok=True)
         text = render_supervisor_prompt(
-            front=front, record=record, session_id=session_id, repo=repo,
-            branch=branch, role_prompt=role_prompt, predecessor=old_id)
-        write_no_symlink(str(role_prompt), text)
-        # The successor answers to the same vendor conversation, so a
-        # relaunch of the relaunch resumes it too.
-        _write_vendor_session(session_id, vendor_id)
+            front=front, record=record, session_id=session_id, repo=where,
+            branch=on_branch, role_prompt=role_prompt,
+            predecessor=session_id, relaunched=True)
     except Refused as exc:
         return refuse(str(exc))
     except OSError as exc:
         return refuse(f"cannot write launch files: {exc.strerror or exc}")
 
     old_pid = old.get("pid")
+    old_vendor = read_vendor_session(session_id)
     old_alive = procs.same_process(old_pid, old.get("pid_starttime"))
-    if args.dry_run:
+    if dry_run:
         from . import mcp as mcp_module
 
         try:
@@ -2689,56 +2792,68 @@ def cmd_relaunch(args: argparse.Namespace) -> int:
             return refuse(f"cannot write launch files: {exc.strerror or exc}")
         inner = supervisor_inner_command(
             pid_path=paths.session_pid_path(session_id),
-            session_id=session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, resume=True,
-            front_prompt=front_prompt_path(front), mcp_config=mcp_config)
+            session_id=session_id, repo=where, role_prompt=role_prompt,
+            vendor_id=vendor_id, mcp_config=mcp_config)
         argv = supervisor_outer_argv(
             session_id, session_dir / RUN_SCRIPT_FILE, workspace)
-        print(f"replaces: {old_id}")
-        print(f"would stop: pid {old_pid}" if old_alive
-              else f"would stop: nothing ({old_id} is not running)")
+        say(f"relaunches: {session_id}")
+        say(f"replaces vendor session: {old_vendor or '(none recorded)'}")
+        say(f"would stop: pid {old_pid}" if old_alive
+            else f"would stop: nothing ({session_id} is not running)")
         _print_supervisor(session_id, vendor_id, role_prompt, workspace,
-                          None, argv, inner, front=front, branch=branch,
+                          None, argv, inner, front=front, branch=on_branch,
                           mcp_config=mcp_config)
-        print()
-        print(text)
+        if not quiet:
+            print()
+            print(text)
         return 0
 
-    # The predecessor is stopped before the successor is admitted, and the
-    # roster says what was stopped. Marking a record exited while its
-    # process runs on, still able to plan, dispatch and checkpoint, leaves
-    # two live supervisors of one front: the failure this runtime exists to
-    # prevent. Authority follows the process, so the process ends first.
+    # The old process is stopped before the new one is started, and the
+    # roster says what was stopped. Two live supervisors of one front, both
+    # authorised to plan and dispatch, is the failure this runtime exists to
+    # prevent, and authority follows the process — so the process ends first.
     stopped: list[int] = []
     if old_alive:
         signalled, remaining = procs.kill_job(old_pid, old.get("pgid"))
         if remaining:
             return refuse(
-                f"session '{old_id}' is still alive after being stopped "
-                f"(pids {sorted(remaining)}); no successor was started, "
-                f"because two live supervisors of one front is the failure "
-                f"this runtime exists to prevent")
+                f"session '{session_id}' is still alive after being stopped "
+                f"(pids {sorted(remaining)}); nothing was summoned in its "
+                f"place, because two live supervisors of one front is the "
+                f"failure this runtime exists to prevent")
         stopped = signalled
+    now = store.utcnow_iso()
+    relaunches = old.get("relaunches")
+    relaunches = relaunches + 1 if isinstance(relaunches, int) else 1
+    try:
+        write_no_symlink(str(role_prompt), text)
+        _write_vendor_session(session_id, vendor_id)
+    except Refused as exc:
+        return refuse(str(exc))
+    except OSError as exc:
+        return refuse(f"cannot write launch files: {exc.strerror or exc}")
+    # One record, moved back to `starting`: the session id is the same one,
+    # so its checkpoint, its slot grants and every anomaly already written
+    # about it still name the session that is now running. The counters the
+    # collector reads are cleared with it — a fresh conversation that
+    # inherited its predecessor's last declared write would be read as
+    # silent from its first second.
     store.update_snapshot(
         paths.roster_path(),
         lambda roster: _move_session(
-            roster, old_id, state="exited", pid=None, pgid=None,
+            roster, session_id, state="starting", pid=None, pgid=None,
+            pid_starttime=None, worktree=where,
+            vendor_session=vendor_id,
+            started_at=now, last_declared_at=None, last_observed_at=None,
+            cpu_s=0.0,
+            relaunches=relaunches, relaunched_at=now,
+            relaunched_by=by or caller.OWNER,
+            replaced_vendor_session=old_vendor,
             stopped_pid=old_pid if old_alive else None,
             stopped_pids=stopped,
-            stopped_at=store.utcnow_iso() if old_alive else None,
-            stopped_by=session_id),
+            stopped_at=now if old_alive else None),
         default={"sessions": {}},
     )
-    try:
-        store.update_snapshot(
-            paths.roster_path(),
-            lambda roster: _place_session(
-                roster, _supervisor_session(session_id, front, repo, old_id)),
-            default={"sessions": {}},
-        )
-    except OSError as exc:
-        return refuse(f"cannot record the session on the roster: "
-                      f"{exc.strerror or exc}")
 
     argv: list[str] = []
     inner = ""
@@ -2747,9 +2862,8 @@ def cmd_relaunch(args: argparse.Namespace) -> int:
     try:
         publish_front_prompt(front, text)
         argv, inner, pid, failure = _start_supervisor(
-            session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, workspace=workspace, resume=True,
-            front_prompt=front_prompt_path(front))
+            session_id, repo=where, role_prompt=role_prompt,
+            vendor_id=vendor_id, workspace=workspace)
     except Exception as exc:  # noqa: BLE001 - anything here is a refusal
         failure = f"{type(exc).__name__}: {exc}"
     starttime, dead = _confirm_started(pid)
@@ -2759,18 +2873,193 @@ def cmd_relaunch(args: argparse.Namespace) -> int:
                       f"{failure or dead}")
     assert pid is not None
     _record_running(session_id, pid, starttime)
-    print(f"replaces: {old_id}")
-    print(f"stopped: pid {old_pid} ({len(stopped)} process(es))" if stopped
-          else f"stopped: nothing ({old_id} was not running)")
+    say(f"relaunches: {session_id}")
+    say(f"replaces vendor session: {old_vendor or '(none recorded)'}")
+    say(f"stopped: pid {old_pid} ({len(stopped)} process(es))" if stopped
+        else f"stopped: nothing ({session_id} was not running)")
     from . import mcp as mcp_module
 
-    _print_supervisor(session_id, vendor_id, role_prompt, workspace, pid,
-                      argv, inner, front=front, branch=branch,
-                      mcp_config=mcp_module.mcp_config_path(session_id))
+    if not quiet:
+        _print_supervisor(session_id, vendor_id, role_prompt, workspace, pid,
+                          argv, inner, front=front, branch=on_branch,
+                          mcp_config=mcp_module.mcp_config_path(session_id))
     hooks.fire("on-launch", {"session": session_id, "role": "supervisor",
-                             "front": front, "branch": branch,
-                             "replaces": old_id})
+                             "front": front, "branch": on_branch,
+                             "relaunch": True})
     return 0
 
 
+@subcommand("relaunch",
+            help="Stop a supervisor and summon it anew from its checkpoint.")
+def cmd_relaunch(args: argparse.Namespace) -> int:
+    me, violations = caller.resolve("relaunch")
+    caller.check_role(me, "relaunch", FOREMAN, SUPERVISOR,
+                      violations=violations)
+    if violations:
+        return refuse(*violations)
+    return relaunch_main(args.session, workspace=args.workspace,
+                         repo=args.repo, branch=args.branch,
+                         dry_run=args.dry_run, by=caller.by_line(me))
+
+
 cmd_relaunch.add_arguments = add_relaunch_arguments  # type: ignore[attr-defined]
+
+
+# --------------------------------------------------------------------------
+# `foreman kill`: end what the launcher started, and say who and why.
+#
+# The unit first, then the pid: a worker runs as a transient systemd unit
+# whose main process is its shell, so stopping the unit reaps the whole
+# cgroup; a supervisor runs in a window and has no unit, so its recorded pid
+# and process group are the kill. Nothing here matches a process by pattern
+# and nothing is signalled that this runtime did not record starting.
+# --------------------------------------------------------------------------
+
+
+def add_kill_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("target", help="session id or job id to kill")
+    parser.add_argument("--reason", default=None,
+                        help="why it is being killed; it lands on the record")
+
+
+def _kill_target(target: str) -> tuple[str | None, dict | None, str | None,
+                                       dict | None, str | None]:
+    """Resolve a kill target to (session id, session, front, job, problem).
+
+    A session id names its own record and whatever job it runs; a job id
+    names the session the job runs in, which is the process to stop. An id
+    that is neither is the refusal.
+    """
+    from . import progress
+
+    sessions = caller.read_roster().get("sessions", {})
+    entry = sessions.get(target)
+    if isinstance(entry, dict):
+        front = entry.get("front")
+        job_id = entry.get("job")
+        job = None
+        if isinstance(job_id, str) and job_id:
+            job_front, job = progress._find_job(job_id)
+            front = job_front or front
+        return target, entry, front, job, None
+    front, job = progress._find_job(target)
+    if job is None:
+        return None, None, None, None, (
+            f"unknown session or job '{target}'; the roster has no session "
+            f"with that id and no front's job ledger has that job")
+    session_id = job.get("session")
+    session_id = session_id if isinstance(session_id, str) and session_id \
+        else None
+    entry = sessions.get(session_id) if session_id else None
+    return (session_id, entry if isinstance(entry, dict) else None, front,
+            job, None)
+
+
+@subcommand("kill",
+            help="Stop a session or a job's session and record who and why.")
+def cmd_kill(args: argparse.Namespace) -> int:
+    verb = "kill"
+    me, violations = caller.resolve(verb)
+    # The merge desk kills nothing: it holds the queue, not the roster.
+    caller.check_role(me, verb, FOREMAN, SUPERVISOR, violations=violations)
+    target = (args.target or "").strip()
+    if not target:
+        violations.append("field 'target' is required")
+    reason = (args.reason or "").strip()
+    if not reason:
+        violations.append("field '--reason' is required for 'kill'")
+    session_id, entry, front, job, problem = (
+        _kill_target(target) if target else (None, None, None, None, None))
+    if problem:
+        violations.append(problem)
+    if job is not None and session_id is None:
+        violations.append(
+            f"job '{job.get('id')}' names no session; there is no process "
+            f"this runtime started to stop")
+    if entry is None and session_id is not None:
+        violations.append(
+            f"session '{session_id}' is not on the roster; only a session "
+            f"this runtime recorded starting is killed")
+    if entry is not None and entry.get("state") == "killed":
+        violations.append(f"session '{session_id}' is already killed")
+    # A supervisor kills only what it launched. The owner and the foreman
+    # kill anything; the desk was already refused by role above.
+    if entry is not None and me is not None and me.role == SUPERVISOR:
+        launched_by = entry.get("launched_by")
+        if launched_by != me.session_id:
+            violations.append(
+                f"session '{session_id}' was launched by "
+                f"'{launched_by or '(nobody this runtime recorded)'}', not by "
+                f"you; a supervisor kills only what it launched")
+    if violations:
+        return caller.Refusal(violations).report()
+    assert session_id is not None and entry is not None
+
+    caller.check_self_contained(reason, "kill reason")
+    who = caller.by_line(me)
+    now = store.utcnow_iso()
+
+    # The unit is the kill group where there is one; a supervisor's window
+    # has none and reads as "nothing stopped here", which is not a failure.
+    unit_stopped = _common.stop_unit(session_id)
+    pid = entry.get("pid")
+    pid = pid if isinstance(pid, int) and pid > 0 else None
+    stopped: list[int] = []
+    remaining: set[int] = set()
+    was_alive = procs.same_process(pid, entry.get("pid_starttime"))
+    if was_alive:
+        pgid = entry.get("pgid")
+        pgid = pgid if isinstance(pgid, int) and pgid > 0 else pid
+        stopped, remaining = procs.kill_job(pid, pgid)
+    if remaining:
+        return caller.Refusal([
+            f"session '{session_id}' is still alive after being stopped "
+            f"(pids {sorted(remaining)}); the roster is unchanged, so what "
+            f"the screen says is still true"]).report()
+
+    store.update_snapshot(
+        paths.roster_path(),
+        lambda roster: _move_session(
+            roster, session_id, state="killed", pid=None, pgid=None,
+            killed_by=who, killed_reason=reason, killed_at=now,
+            stopped_pid=pid if was_alive else None,
+            stopped_pids=stopped,
+            stopped_at=now if was_alive else None),
+        default={"sessions": {}},
+    )
+    # The job line, when this session was running one. A job that already
+    # returned, verified or failed keeps that outcome: the process being
+    # stopped afterwards does not undo what it produced.
+    job_note = "(none)"
+    if job is not None and front:
+        state = job.get("state")
+        if state in ("planned", "queued", "running"):
+            store.append_ledger(
+                paths.front_jobs_path(front),
+                dict(job, state="killed", killed_by=who,
+                     killed_reason=reason, killed_at=now),
+                session_id=who)
+            job_note = f"{job.get('id')} killed"
+        else:
+            job_note = (f"{job.get('id')} left {state}: a job that already "
+                        f"ended is not rewritten by a kill")
+    released = capacity.release_for_session(session_id, now, "killed")
+
+    print(f"killed: {session_id}")
+    print(f"role: {entry.get('role') or '(none)'}")
+    print(f"front: {front or '(none)'}")
+    print(f"unit: {'stopped' if unit_stopped else 'nothing to stop'}")
+    print(f"stopped: pid {pid} ({len(stopped)} process(es))" if was_alive
+          else f"stopped: nothing ({session_id} was not running)")
+    print(f"job: {job_note}")
+    print(f"slots released: {released}")
+    print(f"by: {who}")
+    print(f"reason: {reason}")
+    # No hook fires here. The hook events are the ones this runtime already
+    # ships (see :mod:`foreman.hooks`), and inventing one for `kill` would
+    # be a second deliverable nobody asked for; what a kill did is on the
+    # roster and on the job ledger, which is where it is read.
+    return 0
+
+
+cmd_kill.add_arguments = add_kill_arguments  # type: ignore[attr-defined]

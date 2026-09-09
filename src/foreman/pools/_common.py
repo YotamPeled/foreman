@@ -256,6 +256,33 @@ def unit_reports_failure(status: dict | None) -> bool:
         (status.get("ExecMainStatus") or 0) != 0
 
 
+def stop_unit(session_id: str | None, *, run: Any = None) -> bool:
+    """Stop the transient unit one session's worker runs as.
+
+    The unit is the kill group: its main process is the worker shell
+    (``--service-type=exec``), so stopping the unit reaps the whole
+    cgroup, children the launcher never saw included. This is what
+    ``foreman kill`` aims at first, and the recorded pid is only the
+    fallback for a session that has no unit — a supervisor in a window,
+    or a worker whose unit is already gone.
+
+    Best-effort and never raises: a unit that is not loaded, a machine
+    with no user systemd, or a systemctl that cannot be run all read as
+    False, which means "nothing was stopped here", never "the kill
+    failed". Only the recorded session's own unit name is ever passed:
+    nothing here matches a pattern.
+    """
+    runner = run if run is not None else subprocess.run
+    try:
+        proc = runner(
+            ["systemctl", "--user", "stop", unit_name(session_id)],
+            stdout=DEVNULL, stderr=DEVNULL, text=True, timeout=30,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return proc.returncode == 0
+
+
 def reset_failed_unit(session_id: str | None, *, run: Any = None) -> bool:
     """Forget one finished unit's result. Best-effort: never raises.
 
