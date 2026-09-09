@@ -67,6 +67,16 @@ def collector_path() -> Path:
     return state_dir() / "collector.json"
 
 
+def panel_path() -> Path:
+    """The panel's one summary file: every fact its eight blocks render.
+
+    Written by the runtime (see :mod:`foreman.panel_feed`), read by the
+    panel and by nothing else. It derives from the ledgers and holds no
+    fact of its own, so deleting it costs one rewrite.
+    """
+    return state_dir() / "panel.json"
+
+
 def events_path(day: str | None = None) -> Path:
     if day is None:
         day = datetime.now(timezone.utc).strftime("%Y-%m-%d")

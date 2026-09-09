@@ -247,7 +247,10 @@ def list_tools() -> list[dict]:
     gates, _required = launch_module._gate_tables()
     tools: list[dict] = []
     for path, parser, help_text in launch_module.registered_verbs():
-        if path == "mcp":
+        # Transport and machinery, never an agent's tool: `mcp` is the
+        # server itself, and `panel-feed` is the summary the collector and
+        # every verb already refresh on their own.
+        if path in ("mcp", "panel-feed"):
             continue
         sub = launch_module._subparsers(parser)
         if sub is None:

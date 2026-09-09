@@ -19,6 +19,13 @@ Working, one line per declared monitor plus the two free ones.
 ``foreman status --fixture <dir>`` reads a state directory from that path
 instead of the real one. ``FOREMAN_NOW`` (an ISO timestamp) pins the clock
 so the golden test's ages are stable; without it the clock is now.
+
+The gathering is public and shared: :func:`front_names`, :func:`front_tasks`,
+:func:`front_jobs`, :func:`front_record_of`, :func:`front_measurements`,
+:func:`open_anomalies`, :func:`merge_rows` and :func:`session_checkpoint`
+return structured data, and :mod:`foreman.panel_feed` folds the panel's
+summary out of the same calls this renderer makes. Two views, one read of
+the state directory, so they cannot drift onto different bytes.
 """
 
 from __future__ import annotations
@@ -137,7 +144,7 @@ def _since(text: str | None, now: datetime) -> str:
 _fold_by_id = store.fold_by_id
 
 
-def _open_anomalies(records: list[dict]) -> list[dict]:
+def open_anomalies(records: list[dict]) -> list[dict]:
     """One open line per (kind, subject): a resolution appends a revised
     copy, so fold last-wins exactly like the collector does."""
     order: list[tuple[str, str]] = []
@@ -154,7 +161,7 @@ def _open_anomalies(records: list[dict]) -> list[dict]:
             if folded[key].get("resolved_at") is None]
 
 
-def _fronts() -> list[str]:
+def front_names() -> list[str]:
     try:
         return sorted(path.name for path in paths.fronts_dir().iterdir()
                       if path.is_dir())
@@ -162,21 +169,21 @@ def _fronts() -> list[str]:
         return []
 
 
-def _tasks(name: str) -> list[dict]:
+def front_tasks(name: str) -> list[dict]:
     try:
         return _fold_by_id(store.read_ledger(paths.front_tasks_path(name)))
     except OSError:
         return []
 
 
-def _jobs(name: str) -> list[dict]:
+def front_jobs(name: str) -> list[dict]:
     try:
         return _fold_by_id(store.read_ledger(paths.front_jobs_path(name)))
     except OSError:
         return []
 
 
-def _front_record(name: str) -> dict | None:
+def front_record_of(name: str) -> dict | None:
     """The folded front line, or None for a front that predates `front add`.
 
     A front with no record renders exactly as it always has: the caller adds
@@ -209,7 +216,7 @@ def _slots_held() -> dict[tuple[str, str], int]:
     return held
 
 
-def _merges() -> list[dict] | None:
+def merge_rows() -> list[dict] | None:
     """None when the ledger was never written; [] when written but empty."""
     try:
         return _fold_by_id(store.read_ledger(paths.merges_path()))
@@ -217,7 +224,7 @@ def _merges() -> list[dict] | None:
         return None
 
 
-def _checkpoint(session_id: str) -> dict | None:
+def session_checkpoint(session_id: str) -> dict | None:
     snapshot = store.read_snapshot(paths.checkpoint_path(session_id),
                                    default=None)
     return snapshot if isinstance(snapshot, dict) else None
@@ -265,7 +272,7 @@ def _doing_line(sid: str, record: dict, sessions_view: dict,
                 now: datetime) -> str | None:
     """The supervisor's doing-now with its age. The age is the collector's
     seconds-since-declared where it has one; the roster stamp otherwise."""
-    checkpoint = _checkpoint(sid)
+    checkpoint = session_checkpoint(sid)
     doing = (checkpoint or {}).get("doing")
     if not (isinstance(doing, str) and doing.strip()):
         return None
@@ -286,7 +293,7 @@ def _supervisor_for(front: str, roster: dict) -> tuple[str, dict] | None:
     successor that is actually checkpointing. Anything else falls back to
     the roster scan below.
     """
-    record = _front_record(front)
+    record = front_record_of(front)
     named = record.get("supervisor") if isinstance(record, dict) else None
     if isinstance(named, str) and named:
         entry = roster.get(named)
@@ -324,7 +331,7 @@ def _header(roster: dict, observed: dict | None, now: datetime) -> str:
         tick = "collector never ticked"
     try:
         stale = any(record.get("kind") == "collector stale"
-                    for record in _open_anomalies(
+                    for record in open_anomalies(
                         store.read_ledger(paths.anomalies_path())))
     except OSError:
         stale = False
@@ -432,7 +439,7 @@ def _problems(roster: dict, jobs_by_session: dict, now: datetime) -> list[str]:
         records = store.read_ledger(paths.anomalies_path())
     except OSError:
         records = []
-    open_lines = _open_anomalies(records)
+    open_lines = open_anomalies(records)
     if not open_lines:
         return ["Problems: none."]
     lines = [f"Problems ({len(open_lines)}):"]
@@ -497,7 +504,7 @@ def _task_line(task: dict, titles: dict[str, str]) -> str:
     return head
 
 
-def _measurements(name: str) -> list[dict]:
+def front_measurements(name: str) -> list[dict]:
     try:
         return store.read_ledger(paths.front_measurements_path(name))
     except OSError:
@@ -520,7 +527,7 @@ def _doing_monitor_line(name: str, roster: dict, sessions_view: dict,
     if held is None:
         return "    doing now \u2014 no supervisor"
     sid, record = held
-    checkpoint = _checkpoint(sid)
+    checkpoint = session_checkpoint(sid)
     doing = (checkpoint or {}).get("doing")
     if not (isinstance(doing, str) and doing.strip()):
         return "    doing now \u2014 no checkpoint yet"
@@ -555,7 +562,7 @@ def _monitor_lines(name: str, front_record: dict | None,
     from . import monitors as _monitors
 
     lines = []
-    ledger = _measurements(name)
+    ledger = front_measurements(name)
     for decl in _declared_monitors(front_record):
         question = decl.get("question") or decl.get("measure") or "?"
         question = str(question).strip() or "?"
@@ -609,8 +616,8 @@ def _load_fronts() -> tuple[list[tuple[str, list[dict], list[dict]]],
     loaded: list[tuple[str, list[dict], list[dict]]] = []
     titles: dict[str, str] = {}
     jobs_by_session: dict[str, str] = {}
-    for name in _fronts():
-        tasks, jobs = _tasks(name), _jobs(name)
+    for name in front_names():
+        tasks, jobs = front_tasks(name), front_jobs(name)
         local = {task.get("id"): task.get("title") for task in tasks
                  if task.get("id")}
         titles.update(local)
@@ -709,7 +716,7 @@ def _merge_head(tasks: list[dict]) -> str | None:
 
 def _is_done(name: str) -> bool:
     """True when the front's folded record says it ran to completion."""
-    return (_front_record(name) or {}).get("state") == "done"
+    return (front_record_of(name) or {}).get("state") == "done"
 
 
 def _done_block(loaded: list[tuple[str, list[dict], list[dict]]],
@@ -720,13 +727,13 @@ def _done_block(loaded: list[tuple[str, list[dict], list[dict]]],
     when — and appears in no other block. With no done front there is no
     block at all, so the empty screen reads exactly as it always has.
     """
-    rows = [(name, tasks) for name, tasks, _jobs in loaded
+    rows = [(name, tasks) for name, tasks, _j in loaded
             if _is_done(name)]
     if not rows:
         return []
     lines = ["Done:"]
     for name, tasks in rows:
-        record = _front_record(name) or {}
+        record = front_record_of(name) or {}
         landed = sum(1 for task in tasks if task.get("state") == "landed")
         head = _merge_head(tasks) or "(no head recorded)"
         when = _since(record.get("at"), now)
@@ -758,7 +765,7 @@ def _working(roster: dict, observed: dict | None, now: datetime,
         progress = (f"tasks {landed} landed, {built} built, "
                     f"{len(tasks)} total")
         held = _supervisor_for(name, roster)
-        front_record = _front_record(name)
+        front_record = front_record_of(name)
         # A front for trying the runtime out says so on every line it owns:
         # a task a probe job moved must never read as work a front did.
         label = name
@@ -828,11 +835,11 @@ def _overall(loaded: list[tuple[str, list[dict], list[dict]]],
              inbox: list[dict], now: datetime) -> str:
     """The whole swarm in one sentence: how many fronts are moving, the
     nearest finish, and what needs the owner."""
-    done = sum(1 for name, _tasks, _jobs in loaded
-               if (_front_record(name) or {}).get("state") == "done")
+    done = sum(1 for name, _t, _j in loaded
+               if (front_record_of(name) or {}).get("state") == "done")
     nearest: tuple[float, str] | None = None
     for name, tasks, jobs in loaded:
-        if (_front_record(name) or {}).get("state") == "done":
+        if (front_record_of(name) or {}).get("state") == "done":
             continue
         remaining, _total, _finished, hours = _estimate_for(
             tasks, jobs, now)
@@ -870,11 +877,11 @@ def _overall(loaded: list[tuple[str, list[dict], list[dict]]],
 
 def _job_queue(now: datetime) -> list[str]:
     waiting: list[str] = []
-    for name in _fronts():
+    for name in front_names():
         if _is_done(name):
             continue
-        tasks = {task.get("id"): task.get("title") for task in _tasks(name)}
-        for job in _jobs(name):
+        tasks = {task.get("id"): task.get("title") for task in front_tasks(name)}
+        for job in front_jobs(name):
             if job.get("state") not in QUEUE_STATES:
                 continue
             what = tasks.get(job.get("task"), job.get("task") or "?")
@@ -890,7 +897,7 @@ def _job_queue(now: datetime) -> list[str]:
 def _merge_queue(titles: dict[str, str], now: datetime) -> list[str]:
     from .merge import is_failed, is_landed
 
-    merges = _merges()
+    merges = merge_rows()
     if merges is None:
         return ["Merge queue: empty."]
     waiting = [row for row in merges

@@ -15,7 +15,7 @@ One front is implemented, `panel`, and two of its checks:
                    header numbers, and for each rendered block the number
                    of cards and the title text of each
 
-`--keys` drives every key against a throwaway copy of the fixture and
+`--stall` runs a 100 ms timer beside a live model and reports every gap\nover 50 ms, with the block counts at each end so an empty model cannot\npass as a fast one; FOREMAN_PROBE_MS sets how long it watches.\n\n`--keys` drives every key against a throwaway copy of the fixture and
 asserts the ledger line; `--install-roundtrip` runs the root `install`
 and `uninstall` against temporary homes and asserts the round trip is
 byte-exact.
@@ -26,6 +26,7 @@ Standard library only, so this runs wherever the repository is checked out.
 from __future__ import annotations
 
 import argparse
+import atexit
 import json
 import os
 import re
@@ -40,6 +41,7 @@ PLUGIN = REPO / "plugin" / "foreman"
 HARNESS = PLUGIN / "Harness.qml"
 PANEL_HARNESS = PLUGIN / "PanelHarness.qml"
 KEYS_HARNESS = PLUGIN / "KeysHarness.qml"
+STALL_PROBE = PLUGIN / "StallProbe.qml"
 FIXTURE = PLUGIN / "test" / "fixture"
 FIXTURE_LIVE = PLUGIN / "test" / "fixture-live"
 
@@ -368,7 +370,72 @@ def headless_env(state_dir: Path) -> dict:
     env["QT_QPA_PLATFORMTHEME"] = ""
     env["FOREMAN_STATE"] = str(state_dir)
     env["FOREMAN_CONFIG"] = str(state_dir / "harness-config")
+    env["PATH"] = str(repo_foreman()) + os.pathsep + env.get("PATH", "")
     return env
+
+
+#: The `foreman` every headless run resolves is this repository's, never
+#: whatever happens to be installed: the panel's keys run real verbs, and a
+#: check that judged the installed build would pass or fail on code that is
+#: not under review. The shim lives in a temporary directory for the life of
+#: the process and is put on PATH ahead of everything else.
+_SHIM: Path | None = None
+
+
+def repo_foreman() -> Path:
+    """A directory holding a `foreman` that runs this repository's source."""
+    global _SHIM
+    if _SHIM is not None:
+        return _SHIM
+    shim_dir = Path(tempfile.mkdtemp(prefix="foreman-verify-bin-"))
+    atexit.register(shutil.rmtree, str(shim_dir), True)
+    shim = shim_dir / "foreman"
+    shim.write_text(
+        "#!/bin/sh\n"
+        'PYTHONPATH="%s${PYTHONPATH:+:$PYTHONPATH}"\n'
+        "export PYTHONPATH\n"
+        'exec "%s" -m foreman "$@"\n' % (REPO / "src", sys.executable))
+    shim.chmod(0o755)
+    _SHIM = shim_dir
+    return shim_dir
+
+
+def fold_panel(state_dir: Path) -> Path:
+    """Write panel.json into `state_dir` with the verb under test.
+
+    The panel reads that one file and no ledger, so every check feeds it the
+    same way the runtime does: the repository's own `foreman panel-feed`,
+    against the fixture state, with no ambient identity or world inherited.
+    """
+    env = dict(os.environ)
+    for name in ("FOREMAN_SESSION", "FOREMAN_STATE", "FOREMAN_CONFIG"):
+        env.pop(name, None)
+    env["PYTHONPATH"] = str(REPO / "src") + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    result = subprocess.run(
+        [sys.executable, "-m", "foreman", "panel-feed",
+         "--fixture", str(state_dir)],
+        capture_output=True, text=True, timeout=120, env=env)
+    if result.returncode != 0 or not (state_dir / "panel.json").is_file():
+        raise Failure("panel-feed: no panel.json for %s (exit %d)\n%s"
+                      % (state_dir, result.returncode,
+                         _clean(result.stdout + result.stderr)[-2000:]))
+    return state_dir
+
+
+def fed(state_dir: Path) -> Path:
+    """A throwaway copy of `state_dir` with panel.json folded into it.
+
+    The fixtures are read-only source: the summary the runtime writes is
+    derived, so it is written beside a copy and thrown away with it rather
+    than left in the tree.
+    """
+    if not state_dir.is_dir():
+        raise Failure("harness: no such state directory: " + str(state_dir))
+    tmp = Path(tempfile.mkdtemp(prefix="foreman-fed-"))
+    atexit.register(shutil.rmtree, str(tmp), True)
+    shutil.copytree(state_dir, tmp, dirs_exist_ok=True)
+    return fold_panel(tmp)
 
 
 def check_lint() -> list[str]:
@@ -560,10 +627,10 @@ def loads(state_dir: Path) -> int:
     # proves the fixture renders, the live shape proves the runtime's real
     # output does. An explicit --state replaces the mock fixture only; the
     # live shape is always checked at its own path.
-    mock = check_blocks(state_dir, EXPECTED, "mock")
+    mock = check_blocks(fed(state_dir), EXPECTED, "mock")
     for name in BLOCKS:
         print("mock %s %d" % (name, mock["counts"][name]))
-    live = check_blocks(FIXTURE_LIVE, EXPECTED_LIVE, "live-shape")
+    live = check_blocks(fed(FIXTURE_LIVE), EXPECTED_LIVE, "live-shape")
     for name in BLOCKS:
         print("live %s %d" % (name, live["counts"][name]))
     check_live_rows(live["details"])
@@ -575,7 +642,7 @@ def loads(state_dir: Path) -> int:
 
 
 def blocks_count(state_dir: Path) -> int:
-    print(run_harness(state_dir)["nonempty"])
+    print(run_harness(fed(state_dir))["nonempty"])
     return 0
 
 
@@ -676,7 +743,8 @@ def panel_blocks(state_dir: Path) -> int:
     so this stays meaningful as the other layout jobs arrive. The strict
     assertions hold the mock fixture; an explicit --state only reports
     what the render shows."""
-    result = run_panel_harness(state_dir)
+    strict = state_dir.resolve() == FIXTURE.resolve()
+    result = run_panel_harness(fed(state_dir))
     renders = result["renders"]
 
     missing = [name for name in ["header", *PANEL_SLOTS]
@@ -690,7 +758,6 @@ def panel_blocks(state_dir: Path) -> int:
         raise Failure("blocks: %d block file(s) failed to load:\n  %s"
                       % (len(broken), "\n  ".join(broken)))
 
-    strict = state_dir.resolve() == FIXTURE.resolve()
     if strict:
         check_panel_strict(renders)
 
@@ -1035,6 +1102,11 @@ def panel_keys(state_dir: Path) -> int:
         try:
             shutil.copytree(FIXTURE, tmp, dirs_exist_ok=True)
             _scrub_throwaway_pids(tmp)
+            # The panel reads the summary and no ledger, so the copy is fed
+            # once before the run. Every key then fires a real verb, and the
+            # verb writes the summary again on its way out: that is what
+            # makes the panel show the answer it just wrote.
+            fold_panel(tmp)
             proven[label] = check_keys_once(tmp, label, session)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
@@ -1451,6 +1523,66 @@ def _refusal(home: Path) -> None:
     print("install-roundtrip [refused]: uninstall restored the rest")
 
 
+#: How long `--stall` watches the main thread, and the lateness that counts
+#: as a block. A 100 ms timer cannot run late unless something else held the
+#: thread, so the lateness is the block; 50 ms is well above scheduler noise
+#: on an idle box and well below anything a human would call a freeze.
+STALL_MS = int(os.environ.get("FOREMAN_PROBE_MS") or 60000)
+STALL_GAP_MS = 50
+
+
+def stall(state_dir: Path) -> int:
+    """Watch the model layer hold the main thread, and say by how much.
+
+    The probe is a 100 ms timer beside a live Model. It reports the block
+    counts at the start and at the end as well as the lateness, because a
+    model that folds nothing never blocks: without the counts, an empty
+    panel passes as a fast one.
+    """
+    quickshell = find_quickshell()
+    if not STALL_PROBE.is_file():
+        raise Failure("stall: missing " + str(STALL_PROBE))
+    env = headless_env(fed(state_dir))
+    env["FOREMAN_PROBE_MS"] = str(STALL_MS)
+    try:
+        result = subprocess.run(
+            [quickshell, "-p", str(STALL_PROBE)], capture_output=True,
+            text=True, timeout=STALL_MS / 1000.0 + 120, env=env)
+    except subprocess.TimeoutExpired:
+        raise Failure("stall: the probe never finished in %d ms + 120 s; a "
+                      "run that cannot report its own lateness is itself the "
+                      "worst possible result" % STALL_MS)
+    output = _clean(result.stdout + result.stderr)
+
+    done = re.search(r"PROBE done ticks=(\d+) over50=(\d+) worst=(\d+) "
+                     r"blockedMs=(\d+)", output)
+    if not done:
+        raise Failure("stall: the probe printed no summary; output was:\n"
+                      + output[-2000:])
+    ticks, over, worst, blocked = (int(g) for g in done.groups())
+
+    counts = dict(re.findall(r"(\w+)=(-?\d+)",
+                             re.search(r"PROBE counts at-end (.*)", output).group(1))
+                  ) if re.search(r"PROBE counts at-end", output) else {}
+    missing = [name for name in BLOCKS if name not in counts]
+    if missing:
+        raise Failure("stall: the probe never reported the block counts (%s); "
+                      "speed with nothing rendered is not a pass"
+                      % ", ".join(missing))
+    for name in BLOCKS:
+        print("stall block %s %s" % (name, counts[name]))
+    if not any(int(counts[name]) > 0 for name in BLOCKS):
+        raise Failure("stall: every block came back empty, so the probe "
+                      "measured a model that folds nothing")
+    for line in output.splitlines():
+        if line.strip().startswith("STALL "):
+            print(line.strip())
+    print("stall: %d tick(s) in %d ms, %d over %d ms, worst %d ms, "
+          "%d ms blocked" % (ticks, STALL_MS, over, STALL_GAP_MS, worst,
+                             blocked))
+    return 0
+
+
 def install_roundtrip(state_dir: Path) -> int:
     """The whole plugin, installed and uninstalled inside temporary homes.
 
@@ -1502,7 +1634,8 @@ def main(argv: list[str]) -> int:
                         help="state directory to read (default: the fixture)")
 
     known = set(NOT_IMPLEMENTED) | {"--loads", "--blocks-count", "--blocks",
-                                         "--keys", "--install-roundtrip"}
+                                         "--keys", "--stall",
+                                         "--install-roundtrip"}
     rest, check = [], None
     for token in argv:
         if token in known and check is None:
@@ -1528,7 +1661,7 @@ def main(argv: list[str]) -> int:
 
     checks = {"--loads": loads, "--blocks-count": blocks_count,
               "--blocks": panel_blocks, "--keys": panel_keys,
-              "--install-roundtrip": install_roundtrip}
+              "--stall": stall, "--install-roundtrip": install_roundtrip}
     if args.check not in checks:
         print("foreman-verify: unknown check %r for front panel" % args.check,
               file=sys.stderr)

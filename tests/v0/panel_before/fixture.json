@@ -1,0 +1,1825 @@
+{
+ "capacity": {
+  "count": 4,
+  "rows": [
+   {
+    "avgS": 360,
+    "held": 1,
+    "meter": 0.62,
+    "p90S": 780,
+    "pool": "codex",
+    "resetsAt": "2026-05-11T19:00:00+00:00",
+    "total": 2,
+    "waiting": 0
+   },
+   {
+    "avgS": 1020,
+    "held": 8,
+    "meter": null,
+    "p90S": 1980,
+    "pool": "grok",
+    "resetsAt": "",
+    "total": 8,
+    "waiting": 2
+   },
+   {
+    "avgS": 840,
+    "held": 3,
+    "meter": null,
+    "p90S": 1620,
+    "pool": "muse",
+    "resetsAt": "",
+    "total": 3,
+    "waiting": 4
+   },
+   {
+    "avgS": null,
+    "held": 4,
+    "meter": 0.41,
+    "p90S": null,
+    "pool": "opus",
+    "resetsAt": "2026-05-11T17:00:00+00:00",
+    "total": 4,
+    "waiting": 0
+   }
+  ]
+ },
+ "frontQueue": {
+  "count": 2,
+  "rows": [
+   {
+    "after": [
+     "api"
+    ],
+    "name": "digest",
+    "order": 6,
+    "prefer": 2,
+    "waitsFor": "after api",
+    "want": "One evening message that says what the swarm did today and what it wants"
+   },
+   {
+    "after": [],
+    "name": "dashboard",
+    "order": 7,
+    "prefer": 1,
+    "waitsFor": "capacity",
+    "want": "The same one screen in a browser for the days the owner is away from this machine"
+   }
+  ]
+ },
+ "fronts": [
+  {
+   "blockedOnOwner": [],
+   "built": 1,
+   "doingAgeS": 300,
+   "doingNext": "",
+   "doingNow": "inbox resolve endpoint out to a worker",
+   "isHeadless": false,
+   "landOn": "dev",
+   "landed": 1,
+   "lastTurnS": null,
+   "monitors": [
+    {
+     "measuredS": 420,
+     "monitor": "routes served from the ledger",
+     "of": 14,
+     "status": "CONFIRMED",
+     "trend": "up",
+     "value": 11
+    },
+    {
+     "measuredS": 420,
+     "monitor": "schema drift",
+     "of": 0,
+     "status": "CONFIRMED",
+     "trend": "flat",
+     "value": 0
+    }
+   ],
+   "name": "api",
+   "projectedFinish": "2026-05-11T18:19:30.000Z",
+   "ratePerHour": 3.5643564356435644,
+   "rateWindowH": 1.6833333333333333,
+   "remaining": [
+    "ledger write guard",
+    "inbox resolve endpoint",
+    "openapi drift check",
+    "freeze refuses launches",
+    "digest endpoint"
+   ],
+   "state": "active",
+   "supervisor": "ses-supapi01",
+   "tasks": [
+    {
+     "after": [],
+     "id": "tas-api-1",
+     "jobs": [
+      {
+       "branch": "api/write-guard",
+       "elapsedS": null,
+       "id": "job-api-1",
+       "kind": "review",
+       "minutesSinceWrite": null,
+       "model": "unknown",
+       "role": "astra",
+       "state": "verified",
+       "task": "tas-api-1",
+       "timeoutS": null,
+       "waitedS": 1740,
+       "worktree": "/srv/swarm/wt/api-guard"
+      }
+     ],
+     "state": "built",
+     "title": "ledger write guard",
+     "unitsDone": 5,
+     "unitsTotal": 5
+    },
+    {
+     "after": [],
+     "id": "tas-api-2",
+     "jobs": [],
+     "state": "landed",
+     "title": "routes from the ledger",
+     "unitsDone": 6,
+     "unitsTotal": 6
+    },
+    {
+     "after": [
+      "tas-api-2"
+     ],
+     "id": "tas-api-3",
+     "jobs": [
+      {
+       "branch": "api/inbox-resolve",
+       "elapsedS": 360,
+       "id": "job-api-2",
+       "kind": "implement",
+       "minutesSinceWrite": 1,
+       "model": "muse",
+       "role": "muse",
+       "state": "running",
+       "task": "tas-api-3",
+       "timeoutS": 1500,
+       "waitedS": 480,
+       "worktree": "/srv/swarm/wt/api-inbox-resolve"
+      }
+     ],
+     "state": "active",
+     "title": "inbox resolve endpoint",
+     "unitsDone": 1,
+     "unitsTotal": 5
+    },
+    {
+     "after": [
+      "tas-api-2"
+     ],
+     "id": "tas-api-4",
+     "jobs": [
+      {
+       "branch": "api/openapi-drift",
+       "elapsedS": 120,
+       "id": "job-api-3",
+       "kind": "implement",
+       "minutesSinceWrite": 0.5,
+       "model": "grok",
+       "role": "grok",
+       "state": "running",
+       "task": "tas-api-4",
+       "timeoutS": 1200,
+       "waitedS": 240,
+       "worktree": "/srv/swarm/wt/api-openapi-drift"
+      }
+     ],
+     "state": "active",
+     "title": "openapi drift check",
+     "unitsDone": 0,
+     "unitsTotal": 3
+    },
+    {
+     "after": [
+      "tas-api-1"
+     ],
+     "id": "tas-api-5",
+     "jobs": [
+      {
+       "branch": "",
+       "elapsedS": null,
+       "id": "job-api-4",
+       "kind": "implement",
+       "minutesSinceWrite": null,
+       "model": "unknown",
+       "role": "muse",
+       "state": "queued",
+       "task": "tas-api-5",
+       "timeoutS": null,
+       "waitedS": 180,
+       "worktree": ""
+      }
+     ],
+     "state": "ready",
+     "title": "freeze refuses launches",
+     "unitsDone": 0,
+     "unitsTotal": 4
+    },
+    {
+     "after": [
+      "tas-api-3"
+     ],
+     "id": "tas-api-6",
+     "jobs": [
+      {
+       "branch": "",
+       "elapsedS": null,
+       "id": "job-api-5",
+       "kind": "implement",
+       "minutesSinceWrite": null,
+       "model": "unknown",
+       "role": "muse",
+       "state": "planned",
+       "task": "tas-api-6",
+       "timeoutS": null,
+       "waitedS": 60,
+       "worktree": ""
+      }
+     ],
+     "state": "waiting",
+     "title": "digest endpoint",
+     "unitsDone": 0,
+     "unitsTotal": 4
+    }
+   ],
+   "total": 6,
+   "turnCount": 0,
+   "turnRunning": false,
+   "wakeAgeS": null,
+   "wakeReason": "",
+   "want": "Every swarm number the panel shows available over HTTP"
+  },
+  {
+   "blockedOnOwner": [],
+   "built": 1,
+   "doingAgeS": 180,
+   "doingNext": "",
+   "doingNow": "second reads running, 412 of 600 collected",
+   "isHeadless": false,
+   "landOn": "main",
+   "landed": 1,
+   "lastTurnS": null,
+   "monitors": [
+    {
+     "measuredS": 420,
+     "monitor": "apps collected",
+     "of": 600,
+     "status": "CONFIRMED",
+     "trend": "up",
+     "value": 412
+    },
+    {
+     "measuredS": 420,
+     "monitor": "labels double-read",
+     "of": 600,
+     "status": "CONFIRMED",
+     "trend": "up",
+     "value": 184
+    },
+    {
+     "measuredS": 420,
+     "monitor": "label agreement",
+     "of": 1,
+     "status": "CONFIRMED",
+     "trend": "flat",
+     "value": 0.91
+    }
+   ],
+   "name": "corpus",
+   "projectedFinish": "2026-05-11T18:16:20.000Z",
+   "ratePerHour": 5.775401069518717,
+   "rateWindowH": 3.1166666666666667,
+   "remaining": [
+    "second reads",
+    "recall statements",
+    "dependencies, first batch",
+    "ingest",
+    "audit",
+    "sampling plan"
+   ],
+   "state": "active",
+   "supervisor": "ses-supcorp1",
+   "tasks": [
+    {
+     "after": [],
+     "id": "tas-cor-1",
+     "jobs": [
+      {
+       "branch": "corpus/manifest",
+       "elapsedS": null,
+       "id": "job-cor-1",
+       "kind": "implement",
+       "minutesSinceWrite": null,
+       "model": "unknown",
+       "role": "muse",
+       "state": "verified",
+       "task": "tas-cor-1",
+       "timeoutS": null,
+       "waitedS": 11100,
+       "worktree": "/srv/swarm/wt/corpus-manifest"
+      }
+     ],
+     "state": "landed",
+     "title": "manifest",
+     "unitsDone": 4,
+     "unitsTotal": 4
+    },
+    {
+     "after": [
+      "tas-cor-1"
+     ],
+     "id": "tas-cor-2",
+     "jobs": [
+      {
+       "branch": "corpus/second-reads",
+       "elapsedS": 1080,
+       "id": "job-cor-2",
+       "kind": "implement",
+       "minutesSinceWrite": 1,
+       "model": "grok",
+       "role": "grok",
+       "state": "running",
+       "task": "tas-cor-2",
+       "timeoutS": 1500,
+       "waitedS": 1200,
+       "worktree": "/srv/swarm/wt/corpus-second-reads"
+      }
+     ],
+     "state": "active",
+     "title": "second reads",
+     "unitsDone": 8,
+     "unitsTotal": 12
+    },
+    {
+     "after": [
+      "tas-cor-1"
+     ],
+     "id": "tas-cor-3",
+     "jobs": [
+      {
+       "branch": "corpus/recall",
+       "elapsedS": 720,
+       "id": "job-cor-3",
+       "kind": "implement",
+       "minutesSinceWrite": 2,
+       "model": "muse",
+       "role": "muse",
+       "state": "running",
+       "task": "tas-cor-3",
+       "timeoutS": 1500,
+       "waitedS": 840,
+       "worktree": "/srv/swarm/wt/corpus-recall"
+      }
+     ],
+     "state": "active",
+     "title": "recall statements",
+     "unitsDone": 4,
+     "unitsTotal": 12
+    },
+    {
+     "after": [
+      "tas-cor-1"
+     ],
+     "id": "tas-cor-4",
+     "jobs": [],
+     "state": "built",
+     "title": "dependencies, first batch",
+     "unitsDone": 6,
+     "unitsTotal": 6
+    },
+    {
+     "after": [
+      "tas-cor-2",
+      "tas-cor-3"
+     ],
+     "id": "tas-cor-5",
+     "jobs": [],
+     "state": "waiting",
+     "title": "ingest",
+     "unitsDone": 0,
+     "unitsTotal": 5
+    },
+    {
+     "after": [
+      "tas-cor-5"
+     ],
+     "id": "tas-cor-6",
+     "jobs": [],
+     "state": "waiting",
+     "title": "audit",
+     "unitsDone": 0,
+     "unitsTotal": 4
+    },
+    {
+     "after": [],
+     "id": "tas-cor-7",
+     "jobs": [
+      {
+       "branch": "",
+       "elapsedS": null,
+       "id": "job-cor-4",
+       "kind": "implement",
+       "minutesSinceWrite": null,
+       "model": "unknown",
+       "role": "grok",
+       "state": "queued",
+       "task": "tas-cor-7",
+       "timeoutS": null,
+       "waitedS": 420,
+       "worktree": ""
+      }
+     ],
+     "state": "ready",
+     "title": "sampling plan",
+     "unitsDone": 0,
+     "unitsTotal": 3
+    }
+   ],
+   "total": 7,
+   "turnCount": 0,
+   "turnRunning": false,
+   "wakeAgeS": null,
+   "wakeReason": "",
+   "want": "Every app in the corpus read twice, with the two reads agreeing"
+  },
+  {
+   "blockedOnOwner": [],
+   "built": 0,
+   "doingAgeS": null,
+   "doingNext": "",
+   "doingNow": "",
+   "isHeadless": false,
+   "landOn": "main",
+   "landed": 0,
+   "lastTurnS": null,
+   "monitors": [],
+   "name": "dashboard",
+   "projectedFinish": "",
+   "ratePerHour": null,
+   "rateWindowH": null,
+   "remaining": [],
+   "state": "queued",
+   "supervisor": "",
+   "tasks": [],
+   "total": 0,
+   "turnCount": 0,
+   "turnRunning": false,
+   "wakeAgeS": null,
+   "wakeReason": "",
+   "want": "The same one screen in a browser for the days the owner is away from this machine"
+  },
+  {
+   "blockedOnOwner": [],
+   "built": 0,
+   "doingAgeS": null,
+   "doingNext": "",
+   "doingNow": "",
+   "isHeadless": false,
+   "landOn": "main",
+   "landed": 0,
+   "lastTurnS": null,
+   "monitors": [],
+   "name": "digest",
+   "projectedFinish": "",
+   "ratePerHour": null,
+   "rateWindowH": null,
+   "remaining": [],
+   "state": "queued",
+   "supervisor": "",
+   "tasks": [],
+   "total": 0,
+   "turnCount": 0,
+   "turnRunning": false,
+   "wakeAgeS": null,
+   "wakeReason": "",
+   "want": "One evening message that says what the swarm did today and what it wants"
+  },
+  {
+   "blockedOnOwner": [],
+   "built": 0,
+   "doingAgeS": 840,
+   "doingNext": "",
+   "doingNow": "",
+   "isHeadless": false,
+   "landOn": "main",
+   "landed": 1,
+   "lastTurnS": null,
+   "monitors": [
+    {
+     "measuredS": 1020,
+     "monitor": "slots returned after a restart",
+     "of": 4,
+     "status": "CONFIRMED",
+     "trend": "flat",
+     "value": 0
+    }
+   ],
+   "name": "engine",
+   "projectedFinish": "",
+   "ratePerHour": 0,
+   "rateWindowH": 1.7833333333333334,
+   "remaining": [
+    "frozen-state restart",
+    "placement by pool kind"
+   ],
+   "state": "active",
+   "supervisor": "ses-supeng01",
+   "tasks": [
+    {
+     "after": [],
+     "id": "tas-eng-1",
+     "jobs": [
+      {
+       "branch": "engine/slots",
+       "elapsedS": null,
+       "id": "job-eng-0",
+       "kind": "implement",
+       "minutesSinceWrite": null,
+       "model": "unknown",
+       "role": "muse",
+       "state": "verified",
+       "task": "tas-eng-1",
+       "timeoutS": null,
+       "waitedS": 9240,
+       "worktree": "/srv/swarm/wt/engine-slots"
+      }
+     ],
+     "state": "landed",
+     "title": "slot grant ledger",
+     "unitsDone": 6,
+     "unitsTotal": 6
+    },
+    {
+     "after": [
+      "tas-eng-1"
+     ],
+     "id": "tas-eng-2",
+     "jobs": [
+      {
+       "branch": "",
+       "elapsedS": null,
+       "id": "job-eng-1",
+       "kind": "implement",
+       "minutesSinceWrite": null,
+       "model": "unknown",
+       "role": "muse",
+       "state": "queued",
+       "task": "tas-eng-2",
+       "timeoutS": null,
+       "waitedS": 840,
+       "worktree": ""
+      }
+     ],
+     "state": "ready",
+     "title": "frozen-state restart",
+     "unitsDone": 0,
+     "unitsTotal": 5
+    },
+    {
+     "after": [
+      "tas-eng-1"
+     ],
+     "id": "tas-eng-3",
+     "jobs": [],
+     "state": "waiting",
+     "title": "placement by pool kind",
+     "unitsDone": 0,
+     "unitsTotal": 7
+    }
+   ],
+   "total": 3,
+   "turnCount": 0,
+   "turnRunning": false,
+   "wakeAgeS": null,
+   "wakeReason": "",
+   "want": "The scheduler places every job on the first free slot that can take it"
+  },
+  {
+   "blockedOnOwner": [],
+   "built": 0,
+   "doingAgeS": 360,
+   "doingNext": "",
+   "doingNow": "halted on a repeated defect",
+   "isHeadless": false,
+   "landOn": "main",
+   "landed": 1,
+   "lastTurnS": null,
+   "monitors": [
+    {
+     "measuredS": 360,
+     "monitor": "duplicate landings",
+     "of": 0,
+     "status": "CONFIRMED",
+     "trend": "up",
+     "value": 3
+    }
+   ],
+   "name": "ingestion",
+   "projectedFinish": "",
+   "ratePerHour": 0,
+   "rateWindowH": 2.1166666666666667,
+   "remaining": [
+    "webhook destination fix",
+    "replay window"
+   ],
+   "state": "halted",
+   "supervisor": "ses-supingn1",
+   "tasks": [
+    {
+     "after": [],
+     "id": "tas-ing-1",
+     "jobs": [
+      {
+       "branch": "ingestion/reader-id",
+       "elapsedS": null,
+       "id": "job-ing-0",
+       "kind": "implement",
+       "minutesSinceWrite": null,
+       "model": "unknown",
+       "role": "muse",
+       "state": "verified",
+       "task": "tas-ing-1",
+       "timeoutS": null,
+       "waitedS": 3300,
+       "worktree": "/srv/swarm/wt/ingestion-reader"
+      }
+     ],
+     "state": "landed",
+     "title": "reader id guard",
+     "unitsDone": 4,
+     "unitsTotal": 4
+    },
+    {
+     "after": [
+      "tas-ing-1"
+     ],
+     "id": "tas-ing-2",
+     "jobs": [
+      {
+       "branch": "",
+       "elapsedS": null,
+       "id": "job-ing-1",
+       "kind": "implement",
+       "minutesSinceWrite": null,
+       "model": "unknown",
+       "role": "grok",
+       "state": "planned",
+       "task": "tas-ing-2",
+       "timeoutS": null,
+       "waitedS": 360,
+       "worktree": ""
+      }
+     ],
+     "state": "ready",
+     "title": "webhook destination fix",
+     "unitsDone": 0,
+     "unitsTotal": 5
+    },
+    {
+     "after": [
+      "tas-ing-2"
+     ],
+     "id": "tas-ing-3",
+     "jobs": [],
+     "state": "waiting",
+     "title": "replay window",
+     "unitsDone": 0,
+     "unitsTotal": 3
+    }
+   ],
+   "total": 3,
+   "turnCount": 0,
+   "turnRunning": false,
+   "wakeAgeS": null,
+   "wakeReason": "",
+   "want": "Every event that reaches the swarm lands in the ledger exactly once"
+  },
+  {
+   "blockedOnOwner": [
+    "Ship the reaper without the dead-worktree sweep?"
+   ],
+   "built": 0,
+   "doingAgeS": 360,
+   "doingNext": "",
+   "doingNow": "waiting on the owner's scope answer",
+   "isHeadless": false,
+   "landOn": "main",
+   "landed": 1,
+   "lastTurnS": null,
+   "monitors": [
+    {
+     "measuredS": 540,
+     "monitor": "processes left behind",
+     "of": 0,
+     "status": "CONFIRMED",
+     "trend": "flat",
+     "value": 0
+    }
+   ],
+   "name": "reaper",
+   "projectedFinish": "",
+   "ratePerHour": 0,
+   "rateWindowH": 0.36666666666666664,
+   "remaining": [
+    "sweep on collector clock",
+    "dead worktree sweep"
+   ],
+   "state": "active",
+   "supervisor": "ses-supreap1",
+   "tasks": [
+    {
+     "after": [],
+     "id": "tas-rea-1",
+     "jobs": [
+      {
+       "branch": "reaper/kill-group",
+       "elapsedS": null,
+       "id": "job-rea-0",
+       "kind": "implement",
+       "minutesSinceWrite": null,
+       "model": "unknown",
+       "role": "muse",
+       "state": "verified",
+       "task": "tas-rea-1",
+       "timeoutS": null,
+       "waitedS": 1500,
+       "worktree": "/srv/swarm/wt/reaper-kill"
+      }
+     ],
+     "state": "landed",
+     "title": "kill the process group",
+     "unitsDone": 4,
+     "unitsTotal": 4
+    },
+    {
+     "after": [
+      "tas-rea-1"
+     ],
+     "id": "tas-rea-2",
+     "jobs": [
+      {
+       "branch": "",
+       "elapsedS": null,
+       "id": "job-rea-1",
+       "kind": "implement",
+       "minutesSinceWrite": null,
+       "model": "unknown",
+       "role": "muse",
+       "state": "queued",
+       "task": "tas-rea-2",
+       "timeoutS": null,
+       "waitedS": 720,
+       "worktree": ""
+      }
+     ],
+     "state": "ready",
+     "title": "sweep on collector clock",
+     "unitsDone": 0,
+     "unitsTotal": 5
+    },
+    {
+     "after": [
+      "tas-rea-2"
+     ],
+     "id": "tas-rea-3",
+     "jobs": [],
+     "state": "waiting",
+     "title": "dead worktree sweep",
+     "unitsDone": 0,
+     "unitsTotal": 4
+    }
+   ],
+   "total": 3,
+   "turnCount": 0,
+   "turnRunning": false,
+   "wakeAgeS": null,
+   "wakeReason": "",
+   "want": "Nothing the swarm started outlives the job it was started for"
+  }
+ ],
+ "frozen": false,
+ "header": {
+  "count": 10,
+  "frozen": false,
+  "inboxDepth": 2,
+  "observed": 10,
+  "openAnomalies": 3,
+  "registered": 10,
+  "rows": [
+   {
+    "label": "sessions",
+    "value": "10 registered, 10 observed"
+   },
+   {
+    "label": "frozen",
+    "value": "not frozen"
+   }
+  ]
+ },
+ "jobQueue": {
+  "count": 6,
+  "rows": [
+   {
+    "branch": "",
+    "elapsedS": null,
+    "front": "engine",
+    "id": "job-eng-1",
+    "kind": "implement",
+    "minutesSinceWrite": null,
+    "model": "unknown",
+    "role": "muse",
+    "state": "queued",
+    "task": "tas-eng-2",
+    "timeoutS": null,
+    "title": "frozen-state restart",
+    "waitedS": 840,
+    "worktree": ""
+   },
+   {
+    "branch": "",
+    "elapsedS": null,
+    "front": "reaper",
+    "id": "job-rea-1",
+    "kind": "implement",
+    "minutesSinceWrite": null,
+    "model": "unknown",
+    "role": "muse",
+    "state": "queued",
+    "task": "tas-rea-2",
+    "timeoutS": null,
+    "title": "sweep on collector clock",
+    "waitedS": 720,
+    "worktree": ""
+   },
+   {
+    "branch": "",
+    "elapsedS": null,
+    "front": "corpus",
+    "id": "job-cor-4",
+    "kind": "implement",
+    "minutesSinceWrite": null,
+    "model": "unknown",
+    "role": "grok",
+    "state": "queued",
+    "task": "tas-cor-7",
+    "timeoutS": null,
+    "title": "sampling plan",
+    "waitedS": 420,
+    "worktree": ""
+   },
+   {
+    "branch": "",
+    "elapsedS": null,
+    "front": "ingestion",
+    "id": "job-ing-1",
+    "kind": "implement",
+    "minutesSinceWrite": null,
+    "model": "unknown",
+    "role": "grok",
+    "state": "planned",
+    "task": "tas-ing-2",
+    "timeoutS": null,
+    "title": "webhook destination fix",
+    "waitedS": 360,
+    "worktree": ""
+   },
+   {
+    "branch": "",
+    "elapsedS": null,
+    "front": "api",
+    "id": "job-api-4",
+    "kind": "implement",
+    "minutesSinceWrite": null,
+    "model": "unknown",
+    "role": "muse",
+    "state": "queued",
+    "task": "tas-api-5",
+    "timeoutS": null,
+    "title": "freeze refuses launches",
+    "waitedS": 180,
+    "worktree": ""
+   },
+   {
+    "branch": "",
+    "elapsedS": null,
+    "front": "api",
+    "id": "job-api-5",
+    "kind": "implement",
+    "minutesSinceWrite": null,
+    "model": "unknown",
+    "role": "muse",
+    "state": "planned",
+    "task": "tas-api-6",
+    "timeoutS": null,
+    "title": "digest endpoint",
+    "waitedS": 60,
+    "worktree": ""
+   }
+  ]
+ },
+ "mergeQueue": {
+  "count": 5,
+  "landed": [
+   {
+    "branch": "label-index-rebuild",
+    "from": "corpus",
+    "id": "mrg-labelidx",
+    "landedS": 240,
+    "requestedS": 600,
+    "reviews": [
+     "codex"
+    ],
+    "state": "landed",
+    "target": "main",
+    "tasks": [
+     "manifest"
+    ]
+   },
+   {
+    "branch": "routes-from-ledger",
+    "from": "api",
+    "id": "mrg-routes01",
+    "landedS": 540,
+    "requestedS": 900,
+    "reviews": [
+     "grok"
+    ],
+    "state": "landed",
+    "target": "dev",
+    "tasks": [
+     "routes from the ledger"
+    ]
+   },
+   {
+    "branch": "reader-id-guard",
+    "from": "ingestion",
+    "id": "mrg-readerid",
+    "landedS": 960,
+    "requestedS": 1320,
+    "reviews": [],
+    "state": "landed",
+    "target": "main",
+    "tasks": [
+     "reader id guard"
+    ]
+   }
+  ],
+  "merging": [
+   {
+    "branch": "session-registry-read",
+    "from": "api",
+    "id": "mrg-sessreg1",
+    "landedS": null,
+    "requestedS": 60,
+    "reviews": [
+     "codex"
+    ],
+    "state": "merging",
+    "target": "dev",
+    "tasks": [
+     "ledger write guard"
+    ]
+   }
+  ],
+  "rows": [
+   {
+    "branch": "label-index-rebuild",
+    "from": "corpus",
+    "id": "mrg-labelidx",
+    "landedS": 240,
+    "requestedS": 600,
+    "reviews": [
+     "codex"
+    ],
+    "state": "landed",
+    "target": "main",
+    "tasks": [
+     "manifest"
+    ]
+   },
+   {
+    "branch": "session-registry-read",
+    "from": "api",
+    "id": "mrg-sessreg1",
+    "landedS": null,
+    "requestedS": 60,
+    "reviews": [
+     "codex"
+    ],
+    "state": "merging",
+    "target": "dev",
+    "tasks": [
+     "ledger write guard"
+    ]
+   },
+   {
+    "branch": "dump-export-shape",
+    "from": "corpus",
+    "id": "mrg-dumpexpt",
+    "landedS": null,
+    "requestedS": 240,
+    "reviews": [],
+    "state": "waiting",
+    "target": "feat/corpus-export",
+    "tasks": [
+     "dependencies, first batch"
+    ]
+   },
+   {
+    "branch": "routes-from-ledger",
+    "from": "api",
+    "id": "mrg-routes01",
+    "landedS": 540,
+    "requestedS": 900,
+    "reviews": [
+     "grok"
+    ],
+    "state": "landed",
+    "target": "dev",
+    "tasks": [
+     "routes from the ledger"
+    ]
+   },
+   {
+    "branch": "reader-id-guard",
+    "from": "ingestion",
+    "id": "mrg-readerid",
+    "landedS": 960,
+    "requestedS": 1320,
+    "reviews": [],
+    "state": "landed",
+    "target": "main",
+    "tasks": [
+     "reader id guard"
+    ]
+   }
+  ],
+  "waiting": [
+   {
+    "branch": "dump-export-shape",
+    "from": "corpus",
+    "id": "mrg-dumpexpt",
+    "landedS": null,
+    "requestedS": 240,
+    "reviews": [],
+    "state": "waiting",
+    "target": "feat/corpus-export",
+    "tasks": [
+     "dependencies, first batch"
+    ]
+   }
+  ]
+ },
+ "needsYou": {
+  "count": 2,
+  "rows": [
+   {
+    "from": "ses-fore0001",
+    "id": "inb-tokens01",
+    "kind": "money",
+    "options": [
+     "yes",
+     "no"
+    ],
+    "question": "Buy 2M extra Codex tokens so the review pool keeps two reviewers overnight?",
+    "recommendation": "No - Grok covers reviews until Monday and Codex resets at 19:00.",
+    "waitedS": 1380
+   },
+   {
+    "from": "ses-supreap1",
+    "id": "inb-reaper01",
+    "kind": "scope",
+    "options": [
+     "yes",
+     "no"
+    ],
+    "question": "Ship the reaper without the dead-worktree sweep?",
+    "recommendation": "Yes - it is 40 minutes of work nobody downstream needs.",
+    "waitedS": 360
+   }
+  ]
+ },
+ "now": "2026-05-11T14:07:00+00:00",
+ "problems": {
+  "count": 3,
+  "rows": [
+   {
+    "action": "foreman relaunch ses-supeng01",
+    "detail": "Engine supervisor has been silent for 14 minutes with no jobs running, still holding an Opus slot",
+    "front": "engine",
+    "kind": "supervisor silent",
+    "sinceS": 840,
+    "subject": "ses-supeng01"
+   },
+   {
+    "action": "foreman kill ses-wcorp002 --reason intruder-pid-41180",
+    "detail": "A Codex process is running that Foreman did not launch: workspace 9, no session id",
+    "front": "",
+    "kind": "intruder",
+    "sinceS": 180,
+    "subject": "pid-41180"
+   },
+   {
+    "action": "",
+    "detail": "Ingestion is halted: the webhook destination defect came back a third time, the supervisor must write what changed before dispatching again",
+    "front": "",
+    "kind": "defect repeated",
+    "sinceS": 360,
+    "subject": "ingestion"
+   }
+  ]
+ },
+ "working": {
+  "count": 5,
+  "rows": [
+   {
+    "blockedOnOwner": [],
+    "built": 1,
+    "doingAgeS": 300,
+    "doingNext": "",
+    "doingNow": "inbox resolve endpoint out to a worker",
+    "isHeadless": false,
+    "landOn": "dev",
+    "landed": 1,
+    "lastTurnS": null,
+    "monitors": [
+     {
+      "measuredS": 420,
+      "monitor": "routes served from the ledger",
+      "of": 14,
+      "status": "CONFIRMED",
+      "trend": "up",
+      "value": 11
+     },
+     {
+      "measuredS": 420,
+      "monitor": "schema drift",
+      "of": 0,
+      "status": "CONFIRMED",
+      "trend": "flat",
+      "value": 0
+     }
+    ],
+    "name": "api",
+    "projectedFinish": "2026-05-11T18:19:30.000Z",
+    "ratePerHour": 3.5643564356435644,
+    "rateWindowH": 1.6833333333333333,
+    "remaining": [
+     "ledger write guard",
+     "inbox resolve endpoint",
+     "openapi drift check",
+     "freeze refuses launches",
+     "digest endpoint"
+    ],
+    "state": "active",
+    "supervisor": "ses-supapi01",
+    "tasks": [
+     {
+      "after": [],
+      "id": "tas-api-1",
+      "jobs": [
+       {
+        "branch": "api/write-guard",
+        "elapsedS": null,
+        "id": "job-api-1",
+        "kind": "review",
+        "minutesSinceWrite": null,
+        "model": "unknown",
+        "role": "astra",
+        "state": "verified",
+        "task": "tas-api-1",
+        "timeoutS": null,
+        "waitedS": 1740,
+        "worktree": "/srv/swarm/wt/api-guard"
+       }
+      ],
+      "state": "built",
+      "title": "ledger write guard",
+      "unitsDone": 5,
+      "unitsTotal": 5
+     },
+     {
+      "after": [],
+      "id": "tas-api-2",
+      "jobs": [],
+      "state": "landed",
+      "title": "routes from the ledger",
+      "unitsDone": 6,
+      "unitsTotal": 6
+     },
+     {
+      "after": [
+       "tas-api-2"
+      ],
+      "id": "tas-api-3",
+      "jobs": [
+       {
+        "branch": "api/inbox-resolve",
+        "elapsedS": 360,
+        "id": "job-api-2",
+        "kind": "implement",
+        "minutesSinceWrite": 1,
+        "model": "muse",
+        "role": "muse",
+        "state": "running",
+        "task": "tas-api-3",
+        "timeoutS": 1500,
+        "waitedS": 480,
+        "worktree": "/srv/swarm/wt/api-inbox-resolve"
+       }
+      ],
+      "state": "active",
+      "title": "inbox resolve endpoint",
+      "unitsDone": 1,
+      "unitsTotal": 5
+     },
+     {
+      "after": [
+       "tas-api-2"
+      ],
+      "id": "tas-api-4",
+      "jobs": [
+       {
+        "branch": "api/openapi-drift",
+        "elapsedS": 120,
+        "id": "job-api-3",
+        "kind": "implement",
+        "minutesSinceWrite": 0.5,
+        "model": "grok",
+        "role": "grok",
+        "state": "running",
+        "task": "tas-api-4",
+        "timeoutS": 1200,
+        "waitedS": 240,
+        "worktree": "/srv/swarm/wt/api-openapi-drift"
+       }
+      ],
+      "state": "active",
+      "title": "openapi drift check",
+      "unitsDone": 0,
+      "unitsTotal": 3
+     },
+     {
+      "after": [
+       "tas-api-1"
+      ],
+      "id": "tas-api-5",
+      "jobs": [
+       {
+        "branch": "",
+        "elapsedS": null,
+        "id": "job-api-4",
+        "kind": "implement",
+        "minutesSinceWrite": null,
+        "model": "unknown",
+        "role": "muse",
+        "state": "queued",
+        "task": "tas-api-5",
+        "timeoutS": null,
+        "waitedS": 180,
+        "worktree": ""
+       }
+      ],
+      "state": "ready",
+      "title": "freeze refuses launches",
+      "unitsDone": 0,
+      "unitsTotal": 4
+     },
+     {
+      "after": [
+       "tas-api-3"
+      ],
+      "id": "tas-api-6",
+      "jobs": [
+       {
+        "branch": "",
+        "elapsedS": null,
+        "id": "job-api-5",
+        "kind": "implement",
+        "minutesSinceWrite": null,
+        "model": "unknown",
+        "role": "muse",
+        "state": "planned",
+        "task": "tas-api-6",
+        "timeoutS": null,
+        "waitedS": 60,
+        "worktree": ""
+       }
+      ],
+      "state": "waiting",
+      "title": "digest endpoint",
+      "unitsDone": 0,
+      "unitsTotal": 4
+     }
+    ],
+    "total": 6,
+    "turnCount": 0,
+    "turnRunning": false,
+    "wakeAgeS": null,
+    "wakeReason": "",
+    "want": "Every swarm number the panel shows available over HTTP"
+   },
+   {
+    "blockedOnOwner": [],
+    "built": 1,
+    "doingAgeS": 180,
+    "doingNext": "",
+    "doingNow": "second reads running, 412 of 600 collected",
+    "isHeadless": false,
+    "landOn": "main",
+    "landed": 1,
+    "lastTurnS": null,
+    "monitors": [
+     {
+      "measuredS": 420,
+      "monitor": "apps collected",
+      "of": 600,
+      "status": "CONFIRMED",
+      "trend": "up",
+      "value": 412
+     },
+     {
+      "measuredS": 420,
+      "monitor": "labels double-read",
+      "of": 600,
+      "status": "CONFIRMED",
+      "trend": "up",
+      "value": 184
+     },
+     {
+      "measuredS": 420,
+      "monitor": "label agreement",
+      "of": 1,
+      "status": "CONFIRMED",
+      "trend": "flat",
+      "value": 0.91
+     }
+    ],
+    "name": "corpus",
+    "projectedFinish": "2026-05-11T18:16:20.000Z",
+    "ratePerHour": 5.775401069518717,
+    "rateWindowH": 3.1166666666666667,
+    "remaining": [
+     "second reads",
+     "recall statements",
+     "dependencies, first batch",
+     "ingest",
+     "audit",
+     "sampling plan"
+    ],
+    "state": "active",
+    "supervisor": "ses-supcorp1",
+    "tasks": [
+     {
+      "after": [],
+      "id": "tas-cor-1",
+      "jobs": [
+       {
+        "branch": "corpus/manifest",
+        "elapsedS": null,
+        "id": "job-cor-1",
+        "kind": "implement",
+        "minutesSinceWrite": null,
+        "model": "unknown",
+        "role": "muse",
+        "state": "verified",
+        "task": "tas-cor-1",
+        "timeoutS": null,
+        "waitedS": 11100,
+        "worktree": "/srv/swarm/wt/corpus-manifest"
+       }
+      ],
+      "state": "landed",
+      "title": "manifest",
+      "unitsDone": 4,
+      "unitsTotal": 4
+     },
+     {
+      "after": [
+       "tas-cor-1"
+      ],
+      "id": "tas-cor-2",
+      "jobs": [
+       {
+        "branch": "corpus/second-reads",
+        "elapsedS": 1080,
+        "id": "job-cor-2",
+        "kind": "implement",
+        "minutesSinceWrite": 1,
+        "model": "grok",
+        "role": "grok",
+        "state": "running",
+        "task": "tas-cor-2",
+        "timeoutS": 1500,
+        "waitedS": 1200,
+        "worktree": "/srv/swarm/wt/corpus-second-reads"
+       }
+      ],
+      "state": "active",
+      "title": "second reads",
+      "unitsDone": 8,
+      "unitsTotal": 12
+     },
+     {
+      "after": [
+       "tas-cor-1"
+      ],
+      "id": "tas-cor-3",
+      "jobs": [
+       {
+        "branch": "corpus/recall",
+        "elapsedS": 720,
+        "id": "job-cor-3",
+        "kind": "implement",
+        "minutesSinceWrite": 2,
+        "model": "muse",
+        "role": "muse",
+        "state": "running",
+        "task": "tas-cor-3",
+        "timeoutS": 1500,
+        "waitedS": 840,
+        "worktree": "/srv/swarm/wt/corpus-recall"
+       }
+      ],
+      "state": "active",
+      "title": "recall statements",
+      "unitsDone": 4,
+      "unitsTotal": 12
+     },
+     {
+      "after": [
+       "tas-cor-1"
+      ],
+      "id": "tas-cor-4",
+      "jobs": [],
+      "state": "built",
+      "title": "dependencies, first batch",
+      "unitsDone": 6,
+      "unitsTotal": 6
+     },
+     {
+      "after": [
+       "tas-cor-2",
+       "tas-cor-3"
+      ],
+      "id": "tas-cor-5",
+      "jobs": [],
+      "state": "waiting",
+      "title": "ingest",
+      "unitsDone": 0,
+      "unitsTotal": 5
+     },
+     {
+      "after": [
+       "tas-cor-5"
+      ],
+      "id": "tas-cor-6",
+      "jobs": [],
+      "state": "waiting",
+      "title": "audit",
+      "unitsDone": 0,
+      "unitsTotal": 4
+     },
+     {
+      "after": [],
+      "id": "tas-cor-7",
+      "jobs": [
+       {
+        "branch": "",
+        "elapsedS": null,
+        "id": "job-cor-4",
+        "kind": "implement",
+        "minutesSinceWrite": null,
+        "model": "unknown",
+        "role": "grok",
+        "state": "queued",
+        "task": "tas-cor-7",
+        "timeoutS": null,
+        "waitedS": 420,
+        "worktree": ""
+       }
+      ],
+      "state": "ready",
+      "title": "sampling plan",
+      "unitsDone": 0,
+      "unitsTotal": 3
+     }
+    ],
+    "total": 7,
+    "turnCount": 0,
+    "turnRunning": false,
+    "wakeAgeS": null,
+    "wakeReason": "",
+    "want": "Every app in the corpus read twice, with the two reads agreeing"
+   },
+   {
+    "blockedOnOwner": [],
+    "built": 0,
+    "doingAgeS": 840,
+    "doingNext": "",
+    "doingNow": "",
+    "isHeadless": false,
+    "landOn": "main",
+    "landed": 1,
+    "lastTurnS": null,
+    "monitors": [
+     {
+      "measuredS": 1020,
+      "monitor": "slots returned after a restart",
+      "of": 4,
+      "status": "CONFIRMED",
+      "trend": "flat",
+      "value": 0
+     }
+    ],
+    "name": "engine",
+    "projectedFinish": "",
+    "ratePerHour": 0,
+    "rateWindowH": 1.7833333333333334,
+    "remaining": [
+     "frozen-state restart",
+     "placement by pool kind"
+    ],
+    "state": "active",
+    "supervisor": "ses-supeng01",
+    "tasks": [
+     {
+      "after": [],
+      "id": "tas-eng-1",
+      "jobs": [
+       {
+        "branch": "engine/slots",
+        "elapsedS": null,
+        "id": "job-eng-0",
+        "kind": "implement",
+        "minutesSinceWrite": null,
+        "model": "unknown",
+        "role": "muse",
+        "state": "verified",
+        "task": "tas-eng-1",
+        "timeoutS": null,
+        "waitedS": 9240,
+        "worktree": "/srv/swarm/wt/engine-slots"
+       }
+      ],
+      "state": "landed",
+      "title": "slot grant ledger",
+      "unitsDone": 6,
+      "unitsTotal": 6
+     },
+     {
+      "after": [
+       "tas-eng-1"
+      ],
+      "id": "tas-eng-2",
+      "jobs": [
+       {
+        "branch": "",
+        "elapsedS": null,
+        "id": "job-eng-1",
+        "kind": "implement",
+        "minutesSinceWrite": null,
+        "model": "unknown",
+        "role": "muse",
+        "state": "queued",
+        "task": "tas-eng-2",
+        "timeoutS": null,
+        "waitedS": 840,
+        "worktree": ""
+       }
+      ],
+      "state": "ready",
+      "title": "frozen-state restart",
+      "unitsDone": 0,
+      "unitsTotal": 5
+     },
+     {
+      "after": [
+       "tas-eng-1"
+      ],
+      "id": "tas-eng-3",
+      "jobs": [],
+      "state": "waiting",
+      "title": "placement by pool kind",
+      "unitsDone": 0,
+      "unitsTotal": 7
+     }
+    ],
+    "total": 3,
+    "turnCount": 0,
+    "turnRunning": false,
+    "wakeAgeS": null,
+    "wakeReason": "",
+    "want": "The scheduler places every job on the first free slot that can take it"
+   },
+   {
+    "blockedOnOwner": [],
+    "built": 0,
+    "doingAgeS": 360,
+    "doingNext": "",
+    "doingNow": "halted on a repeated defect",
+    "isHeadless": false,
+    "landOn": "main",
+    "landed": 1,
+    "lastTurnS": null,
+    "monitors": [
+     {
+      "measuredS": 360,
+      "monitor": "duplicate landings",
+      "of": 0,
+      "status": "CONFIRMED",
+      "trend": "up",
+      "value": 3
+     }
+    ],
+    "name": "ingestion",
+    "projectedFinish": "",
+    "ratePerHour": 0,
+    "rateWindowH": 2.1166666666666667,
+    "remaining": [
+     "webhook destination fix",
+     "replay window"
+    ],
+    "state": "halted",
+    "supervisor": "ses-supingn1",
+    "tasks": [
+     {
+      "after": [],
+      "id": "tas-ing-1",
+      "jobs": [
+       {
+        "branch": "ingestion/reader-id",
+        "elapsedS": null,
+        "id": "job-ing-0",
+        "kind": "implement",
+        "minutesSinceWrite": null,
+        "model": "unknown",
+        "role": "muse",
+        "state": "verified",
+        "task": "tas-ing-1",
+        "timeoutS": null,
+        "waitedS": 3300,
+        "worktree": "/srv/swarm/wt/ingestion-reader"
+       }
+      ],
+      "state": "landed",
+      "title": "reader id guard",
+      "unitsDone": 4,
+      "unitsTotal": 4
+     },
+     {
+      "after": [
+       "tas-ing-1"
+      ],
+      "id": "tas-ing-2",
+      "jobs": [
+       {
+        "branch": "",
+        "elapsedS": null,
+        "id": "job-ing-1",
+        "kind": "implement",
+        "minutesSinceWrite": null,
+        "model": "unknown",
+        "role": "grok",
+        "state": "planned",
+        "task": "tas-ing-2",
+        "timeoutS": null,
+        "waitedS": 360,
+        "worktree": ""
+       }
+      ],
+      "state": "ready",
+      "title": "webhook destination fix",
+      "unitsDone": 0,
+      "unitsTotal": 5
+     },
+     {
+      "after": [
+       "tas-ing-2"
+      ],
+      "id": "tas-ing-3",
+      "jobs": [],
+      "state": "waiting",
+      "title": "replay window",
+      "unitsDone": 0,
+      "unitsTotal": 3
+     }
+    ],
+    "total": 3,
+    "turnCount": 0,
+    "turnRunning": false,
+    "wakeAgeS": null,
+    "wakeReason": "",
+    "want": "Every event that reaches the swarm lands in the ledger exactly once"
+   },
+   {
+    "blockedOnOwner": [
+     "Ship the reaper without the dead-worktree sweep?"
+    ],
+    "built": 0,
+    "doingAgeS": 360,
+    "doingNext": "",
+    "doingNow": "waiting on the owner's scope answer",
+    "isHeadless": false,
+    "landOn": "main",
+    "landed": 1,
+    "lastTurnS": null,
+    "monitors": [
+     {
+      "measuredS": 540,
+      "monitor": "processes left behind",
+      "of": 0,
+      "status": "CONFIRMED",
+      "trend": "flat",
+      "value": 0
+     }
+    ],
+    "name": "reaper",
+    "projectedFinish": "",
+    "ratePerHour": 0,
+    "rateWindowH": 0.36666666666666664,
+    "remaining": [
+     "sweep on collector clock",
+     "dead worktree sweep"
+    ],
+    "state": "active",
+    "supervisor": "ses-supreap1",
+    "tasks": [
+     {
+      "after": [],
+      "id": "tas-rea-1",
+      "jobs": [
+       {
+        "branch": "reaper/kill-group",
+        "elapsedS": null,
+        "id": "job-rea-0",
+        "kind": "implement",
+        "minutesSinceWrite": null,
+        "model": "unknown",
+        "role": "muse",
+        "state": "verified",
+        "task": "tas-rea-1",
+        "timeoutS": null,
+        "waitedS": 1500,
+        "worktree": "/srv/swarm/wt/reaper-kill"
+       }
+      ],
+      "state": "landed",
+      "title": "kill the process group",
+      "unitsDone": 4,
+      "unitsTotal": 4
+     },
+     {
+      "after": [
+       "tas-rea-1"
+      ],
+      "id": "tas-rea-2",
+      "jobs": [
+       {
+        "branch": "",
+        "elapsedS": null,
+        "id": "job-rea-1",
+        "kind": "implement",
+        "minutesSinceWrite": null,
+        "model": "unknown",
+        "role": "muse",
+        "state": "queued",
+        "task": "tas-rea-2",
+        "timeoutS": null,
+        "waitedS": 720,
+        "worktree": ""
+       }
+      ],
+      "state": "ready",
+      "title": "sweep on collector clock",
+      "unitsDone": 0,
+      "unitsTotal": 5
+     },
+     {
+      "after": [
+       "tas-rea-2"
+      ],
+      "id": "tas-rea-3",
+      "jobs": [],
+      "state": "waiting",
+      "title": "dead worktree sweep",
+      "unitsDone": 0,
+      "unitsTotal": 4
+     }
+    ],
+    "total": 3,
+    "turnCount": 0,
+    "turnRunning": false,
+    "wakeAgeS": null,
+    "wakeReason": "",
+    "want": "Nothing the swarm started outlives the job it was started for"
+   }
+  ]
+ }
+}

@@ -377,7 +377,10 @@ def test_launch_writes_only_state_worktree_and_git(env, fake_pool, capsys):
     assert offenders == []
     assert not (env / "home").exists()
     # The state directory is watched file by file too: only the roster,
-    # the lock and the new session's own files may change under it.
+    # the lock, the panel's derived summary and the new session's own files
+    # may change under it. panel.json holds no fact of its own — the verb
+    # refolds it from the ledgers on its way out — so it moving is the
+    # roster moving, not a second place the launcher writes.
     session_files = state / "sessions" / sid
     strays = sorted(
         str(path) for path, stamp in after.items()
@@ -385,7 +388,7 @@ def test_launch_writes_only_state_worktree_and_git(env, fake_pool, capsys):
         and path.is_relative_to(state)
         and session_files not in path.parents
         and not (path.parent == state
-                 and path.name in ("roster.json", "lock"))
+                 and path.name in ("roster.json", "lock", "panel.json"))
     )
     assert strays == []
 

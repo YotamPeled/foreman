@@ -51,6 +51,7 @@ def main(argv: list[str] | None = None) -> int:
     from . import hooks as _hooks  # noqa: F401
     from . import launch as _launch  # noqa: F401
     from . import mcp as _mcp  # noqa: F401
+    from . import panel_feed as _panel_feed  # noqa: F401
     from . import measure as _measure  # noqa: F401
     from . import merge as _merge  # noqa: F401
     from . import migrate as _migrate  # noqa: F401
@@ -61,4 +62,17 @@ def main(argv: list[str] | None = None) -> int:
     from . import wake as _wake  # noqa: F401
 
     args = build_parser().parse_args(argv)
-    return args._handler(args)
+    from . import store as _store
+
+    # Anything a caller wrote before the verb started is not this verb's
+    # doing: the mark is cleared going in, so what is read on the way out
+    # is exactly what this verb wrote.
+    _store.take_written()
+    code = args._handler(args)
+    # The panel reads one summary file and no ledger, so a verb that moved
+    # the state must leave that file moved too. Once, on the way out, and
+    # only when something was actually written: a dry run and a refusal
+    # write nothing, and that has to stay true of the summary as well.
+    if args.verb != "panel-feed" and _store.take_written():
+        _panel_feed.rewrite_quietly()
+    return code
