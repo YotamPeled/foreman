@@ -322,6 +322,21 @@ def out_pools(now: datetime | None = None) -> dict[str, dict]:
     return out
 
 
+def allocation_out(role: str, now: datetime | None = None) -> str | None:
+    """``out until <reset> (because)`` if ``role``'s pool is out, else None.
+
+    Both places a front's allocation is rendered read this, so a pool
+    that is out cannot print held on one screen and out on the other.
+    """
+    record = pool_out(pool_for_role(role), now)
+    if record is None:
+        return None
+    until = _parse_iso(record.get("out_until"))
+    because = record.get("because") or "quota"
+    when = format_out_until(until) if until is not None else ""
+    return f"out until {when} ({because})"
+
+
 def launch_problems(role: str, pool: str, front: str | None,
                     now: datetime | None = None,
                     table: dict[int, dict] | None = None) -> list[str]:
@@ -492,10 +507,12 @@ def capacity_lines(observed: dict | None,
     in observed.json.
 
     A pool that is out until a named reset prints that instead of
-    held/cap, for as long as the reset is in the future. The box count
-    — vendor processes on the machine, whoever started them — prints on
-    the pool's row when it differs from held; a pool whose two numbers
-    agree keeps the row it printed before.
+    held/cap, for as long as the reset is in the future. A front's
+    allocation over such a pool prints the same out line in place of
+    held/ceiling. The box count — vendor processes on the machine,
+    whoever started them — prints on the pool's row when it differs
+    from held; a pool whose two numbers agree keeps the row it printed
+    before.
 
     ``table`` is the process table the box count is read from; ``None``
     takes a fresh snapshot.
@@ -544,6 +561,10 @@ def capacity_lines(observed: dict | None,
             line += f" · {behind} waiting"
         lines.append(line)
     for front, role, limit in allocations:
+        shown = allocation_out(role, now)
+        if shown is not None:
+            lines.append(f"  {front} {role}: {shown}")
+            continue
         lines.append(f"  {front} {role}: "
                      f"{held_front.get((front, role), 0)}/{limit} held")
     if not lines:
