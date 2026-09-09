@@ -28,4 +28,5 @@ foreman = ["pools/*/manifest.toml", "pools/*/SKILL.md", "pools/*.json",
            "migrations/*.py", "templates/*.md", "foreman.default.toml"]
 
 [tool.pytest.ini_options]
+addopts = "-m 'not smoke'"
 markers = ["smoke: runs the real vendor binary; needs credentials on PATH"]
