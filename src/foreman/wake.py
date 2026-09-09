@@ -21,7 +21,7 @@ import json
 from datetime import datetime, timezone
 
 from . import caller, cli, entities, ids, paths, store
-from .caller import FOREMAN, OWNER, Refusal
+from .caller import FOREMAN, MERGE_DESK, OWNER, SUPERVISOR, Refusal
 
 #: Sessions that run turns and therefore keep a wake queue: workers are
 #: one vendor process, not turns, so only these hold the live contract
@@ -324,25 +324,33 @@ _tell_entry.add_arguments = add_tell_arguments  # type: ignore[attr-defined]
 
 def _check_wake_access(me: caller.Caller | None, target: str,
                        verb: str, violations: list[str]) -> None:
-    """A session reads and claims its own queue; owner and foreman any."""
+    """A session reads and claims its own queue; owner and foreman any.
+
+    Both doors share this helper, so the gate reader lends its roles to
+    each caller: only turn-running roles are ever offered the queue, and
+    the own-session rule below is what the handler enforces at call time.
+    """
+    caller.check_role(me, verb, SUPERVISOR, FOREMAN, MERGE_DESK,
+                      violations=violations)
     if me is None:
         return
     if me.role == OWNER or me.role == FOREMAN:
         return
     if me.session_id != target:
         violations.append(
-            f"session '{me.session_id}' may not {verb} "
+            f"session '{me.session_id}' may not claim "
             f"session '{target}'"
         )
 
 
 def wake_list_main(target: str | None) -> int:
-    me, violations = caller.resolve("wake list")
+    verb = "wake list"
+    me, violations = caller.resolve(verb)
     if not (target or "").strip():
         violations.append("field 'session' is required")
     else:
         assert target is not None
-        _check_wake_access(me, target.strip(), "read", violations)
+        _check_wake_access(me, target.strip(), verb, violations)
     if violations:
         return _refuse(violations)
     assert target is not None
@@ -352,12 +360,13 @@ def wake_list_main(target: str | None) -> int:
 
 
 def wake_next_main(target: str | None) -> int:
-    me, violations = caller.resolve("wake next")
+    verb = "wake next"
+    me, violations = caller.resolve(verb)
     if not (target or "").strip():
         violations.append("field 'session' is required")
     else:
         assert target is not None
-        _check_wake_access(me, target.strip(), "claim", violations)
+        _check_wake_access(me, target.strip(), verb, violations)
     if violations:
         return _refuse(violations)
     assert target is not None

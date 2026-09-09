@@ -1269,6 +1269,7 @@ def import_verb_modules() -> None:
     from . import progress as _progress  # noqa: F401
     from . import status as _status  # noqa: F401
     from . import verbs as _verbs  # noqa: F401
+    from . import wake as _wake  # noqa: F401
 
 
 def registered_verbs() -> list[tuple[str, argparse.ArgumentParser, str]]:
