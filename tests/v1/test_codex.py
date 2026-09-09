@@ -548,7 +548,7 @@ SMOKE_SPEC = (
 @pytest.mark.smoke
 @pytest.mark.skipif(shutil.which("codex") is None,
                     reason="codex not on PATH")
-def test_smoke_real_astra_review(tmp_path, monkeypatch, capsys):
+def test_smoke_real_astra_review(tmp_path, monkeypatch, capsys, smoke_units):
     """One trivial review through the real binary: the session finishes,
     the marker is a line of its own, and the reviewer's verdict file
     reads back through the shared reading.
@@ -577,6 +577,7 @@ def test_smoke_real_astra_review(tmp_path, monkeypatch, capsys):
     out = capsys.readouterr().out
     assert rc == 0, out
     sid = session_line(out)
+    smoke_units.record(sid)
     log_path = next(line for line in out.splitlines()
                     if line.startswith("log: ")).split("log: ", 1)[1].strip()
 

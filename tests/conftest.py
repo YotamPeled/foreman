@@ -15,7 +15,23 @@ message, never a silent unit.
 """
 from __future__ import annotations
 
+import importlib.util
+import sys
+from pathlib import Path
+
 import pytest
+
+_SMOKE_UNITS_PATH = Path(__file__).resolve().parent / "smoke_units.py"
+_SMOKE_UNITS_NAME = "foreman_test_smoke_units"
+_spec = importlib.util.spec_from_file_location(
+    _SMOKE_UNITS_NAME, _SMOKE_UNITS_PATH)
+_smoke_units_mod = importlib.util.module_from_spec(_spec)
+sys.modules[_SMOKE_UNITS_NAME] = _smoke_units_mod
+assert _spec.loader is not None
+_spec.loader.exec_module(_smoke_units_mod)
+SmokeUnitReaper = _smoke_units_mod.SmokeUnitReaper
+list_foreman_units = _smoke_units_mod.list_foreman_units
+leftover_smoke_units = _smoke_units_mod.leftover_smoke_units
 
 #: module attribute -> what production calls it for. Each is the last
 #: point before a real `systemd-run` or `systemctl`.
@@ -75,3 +91,41 @@ def _no_systemd(monkeypatch, request):
                 f"(rul-tx35izr: no test touches this machine's units).")
 
         monkeypatch.setattr(module, attribute, refuse)
+
+
+# Smoke tests are the exception that reach systemd. They record each
+# session they launched; teardown stops the unit and clears its failed
+# state, pass or fail. The ordinary suite never uses this.
+
+
+@pytest.fixture
+def smoke_units():
+    """Stop and reset-failed every unit this smoke test started.
+
+    Runs on failure too. The process-group kill in the smoke test stays:
+    that is a stuck vendor; this is the unit name.
+    """
+    reaper = SmokeUnitReaper()
+    try:
+        yield reaper
+    finally:
+        reaper.teardown()
+
+
+@pytest.fixture(scope="session")
+def _smoke_unit_census():
+    """The user manager's ``foreman-*`` set must not grow across a smoke run."""
+    before = list_foreman_units()
+    yield
+    after = list_foreman_units()
+    grown = leftover_smoke_units(before, after)
+    assert not grown, (
+        "smoke tests left new foreman units: " + ", ".join(sorted(grown))
+    )
+
+
+@pytest.fixture(autouse=True)
+def _smoke_unit_census_bind(request):
+    if request.node.get_closest_marker("smoke") is None:
+        return
+    request.getfixturevalue("_smoke_unit_census")
