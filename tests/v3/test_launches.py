@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 
 from foreman import cli, entities, fronts, paths, store
+from foreman import launch as launch_module
 from foreman.caller import SESSION_ENV
 
 SUP = "ses-sup0001"
@@ -196,8 +197,14 @@ def test_no_workspace_and_no_default_is_refused_fast_writing_nothing(
     A launch that spent thirty seconds discovering it had nowhere to
     put a window fails the clock here; one that minted a session first
     fails the roster below.
+
+    `default_workspace` is required configuration and the packaged
+    defaults ship one, so reaching this refusal means an install whose
+    shipped configuration is gone as well as a user file that names none
+    — the only way left to have nowhere to put a window.
     """
     add_front_env(env)
+    monkeypatch.setattr(launch_module, "_packaged_defaults", dict)
     capsys.readouterr()
     started = time.monotonic()
     rc = run(monkeypatch, ["launch", "supervisor", "alpha",
@@ -542,3 +549,55 @@ def test_front_done_on_an_unknown_front_is_refused(
     capsys.readouterr()
     assert run(monkeypatch, ["front", "done", "ghost"], session=SUP) == 1
     assert "ghost" in capsys.readouterr().err
+
+
+def test_the_packaged_defaults_ship_a_workspace(env, monkeypatch, capsys):
+    """A machine nobody configured still has somewhere to put a window.
+
+    `default_workspace` is required configuration (owner ruling), so
+    Foreman ships one: a fresh install launches, and the collector's
+    automatic relaunch — which can name no workspace of its own — has a
+    value to fall back on.
+    """
+    add_front_env(env)
+    capsys.readouterr()
+    assert launch_module.configured_default_workspace() == "6"
+    assert run(monkeypatch, ["launch", "supervisor", "alpha",
+                             "--repo", str(env), "--dry-run"]) == 0
+    assert "workspace 6" in capsys.readouterr().out
+
+
+def test_the_owners_file_beats_the_packaged_workspace(env, monkeypatch,
+                                                      capsys):
+    """A value the owner wrote wins, at either level of the file."""
+    add_front_env(env)
+    write_config(env, 'default_workspace = 7\n')
+    capsys.readouterr()
+    assert launch_module.configured_default_workspace() == "7"
+    write_config(env, '[launch]\ndefault_workspace = "9"\n')
+    assert launch_module.configured_default_workspace() == "9"
+
+
+def test_doctor_names_a_configuration_with_no_workspace(env, monkeypatch,
+                                                        capsys):
+    """Required configuration is reported when it is missing."""
+    from foreman import doctor as doctor_module
+
+    shipped = launch_module._packaged_defaults
+    monkeypatch.setattr(launch_module, "_packaged_defaults", dict)
+    # Through `foreman doctor` itself, not the check alone: a check the
+    # report never calls is a check that does not exist, and asserting on
+    # the function directly cannot tell the difference.
+    capsys.readouterr()
+    assert doctor_module.doctor_main() == 1
+    out = capsys.readouterr().out
+    assert "default_workspace" in out
+    assert "fix: add a `[launch]` table" in out
+
+    # Restore by name, never monkeypatch.undo(): undo reverts the env
+    # fixture's FOREMAN_STATE as well, and doctor would then read the
+    # machine's real state directory.
+    monkeypatch.setattr(launch_module, "_packaged_defaults", shipped)
+    capsys.readouterr()
+    assert doctor_module.doctor_main() == 0
+    assert "default_workspace" not in capsys.readouterr().out

@@ -953,28 +953,50 @@ WINDOW_LINGER_SECONDS = 120
 WORKSPACE_RE = re.compile(r"\d+")
 
 
+def _packaged_defaults() -> dict:
+    """Foreman's own shipped configuration, parsed."""
+    from .config import DEFAULT_TEXT
+
+    return tomllib.loads(DEFAULT_TEXT)
+
+
+def _user_config() -> dict:
+    with open(paths.config_file(), "rb") as handle:
+        return tomllib.load(handle)
+
+
 def _configured_default_workspace() -> tuple[str | None, str | None]:
     """The configured default window workspace: (valid, malformed).
 
     Exactly one of the two is set. ``default_workspace`` is read from the
     ``[launch]`` table first and the top level second, as an integer or a
-    string of digits — the same shape ``--workspace`` takes. A missing file
-    or one that does not parse means no default, never a crash: the caller
-    refuses the launch by name instead.
+    string of digits — the same shape ``--workspace`` takes.
+
+    The packaged defaults answer where the user's file is silent, the way
+    every other configured value is layered: a fresh install ships
+    ``default_workspace``, so a machine nobody has configured still has
+    somewhere to put a window. A file that does not parse means no
+    default, never a crash: the caller refuses the launch by name.
     """
-    try:
-        with open(paths.config_file(), "rb") as handle:
-            data = tomllib.load(handle)
-    except (OSError, ValueError):
-        return None, None
-    if not isinstance(data, dict):
-        return None, None
     candidates: list[object] = []
-    launch = data.get("launch")
-    if isinstance(launch, dict) and launch.get("default_workspace") is not None:
-        candidates.append(launch.get("default_workspace"))
-    if data.get("default_workspace") is not None:
-        candidates.append(data.get("default_workspace"))
+    # The user's file first, both spellings, then the packaged defaults:
+    # a value the owner wrote always beats the one Foreman ships, at
+    # either level.
+    for source in (_user_config, _packaged_defaults):
+        try:
+            data = source()
+        except (OSError, ValueError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        table = data.get("launch")
+        if isinstance(table, dict) and \
+                table.get("default_workspace") is not None:
+            candidates.append(table.get("default_workspace"))
+        if data.get("default_workspace") is not None:
+            candidates.append(data.get("default_workspace"))
+        if candidates:
+            break
     for value in candidates:
         if isinstance(value, bool):
             text = ""
@@ -989,6 +1011,16 @@ def _configured_default_workspace() -> tuple[str | None, str | None]:
         if text or value is not None:
             return None, str(value)
     return None, None
+
+
+def configured_default_workspace() -> str | None:
+    """The configured ``[launch] default_workspace``, or None.
+
+    Doctor's reader: it reports the absence, so it needs the value alone
+    without the launcher's refusal machinery around it.
+    """
+    default, _bad = _configured_default_workspace()
+    return default
 
 
 def _resolve_window_workspace(given: str | None,

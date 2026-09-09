@@ -15,6 +15,17 @@
 # `supervisor_cap` is how many supervisors the pool may carry; a supervisor
 # holds no job slot, so it is counted separately from `cap`.
 
+# A windowed session — a supervisor, the merge desk, the foreman — opens on
+# a workspace, and the shipped window helper takes it from the environment.
+# A launch that names none used to wait thirty seconds for a window that
+# could never appear and then blame the vendor, so a workspace is required
+# configuration: `--workspace` names one per launch, and this is the one
+# every launch that does not falls back to. The collector's automatic
+# relaunch of a dead supervisor has no way to name one, so this is the
+# value flow 4 runs on.
+[launch]
+default_workspace = 6
+
 [pool.muse]
 cap = 5
 roles = ["muse"]

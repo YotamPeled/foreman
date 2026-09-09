@@ -66,6 +66,7 @@ def _problems() -> list[tuple[str, str]]:
     found.extend(_check_collector_staleness())
     found.extend(_check_front_records())
     found.extend(_check_cli_branch())
+    found.extend(_check_default_workspace())
     return found
 
 
@@ -263,6 +264,28 @@ def _check_config() -> list[tuple[str, str]]:
                 f"remove the [pool.'{name}'] table from {path}, "
                 f"or make it real with: foreman pool add {name}"))
     return out
+
+
+def _check_default_workspace() -> list[tuple[str, str]]:
+    """A configuration with no workspace for a windowed launch to open on.
+
+    Required configuration since a windowed launch stopped waiting thirty
+    seconds for a window that could never appear: `--workspace` names one
+    per launch, and this is what every launch that does not falls back
+    to. The collector's automatic relaunch of a dead supervisor has no way
+    to name one, so without this value flow 4 stops with a refusal on the
+    daemon's stderr and the front sits without a supervisor.
+    """
+    from .launch import configured_default_workspace
+
+    if configured_default_workspace() is not None:
+        return []
+    path = paths.config_file()
+    return [(f"config {path} sets no [launch] default_workspace; a windowed "
+             f"launch that names none is refused, and the collector cannot "
+             f"relaunch a dead supervisor",
+             f"add a `[launch]` table to {path} with "
+             f"`default_workspace = <n>`")]
 
 
 def _check_collector_staleness() -> list[tuple[str, str]]:
