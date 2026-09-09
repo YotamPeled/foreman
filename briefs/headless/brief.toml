@@ -1,0 +1,100 @@
+name      = "headless"
+order     = 4
+want      = """
+Supervisors and the merge desk stop being terminal windows. A headless supervisor is a Claude session
+that runs one turn at a time in print mode: the collector (the daemon is the clock) wakes it on an event
+— a job returned, failed, was killed or timed out; an inbox answer arrived; a rule landed on its front;
+a message from the foreman; a 20-minute heartbeat when nothing else happened — and each turn reads the
+front's state through the verbs, acts, checkpoints and exits. Continuity is the vendor session resumed
+with the event as its prompt, never a window waiting for a keyboard. The owner sees supervisors on the
+panel as before; `foreman attach <session>` opens a window on demand for a look, and closes without
+harming the session. The foreman stays interactive.
+"""
+done-when = "On an isolated state directory with a fixture front of two tasks: `foreman launch supervisor <front> --headless` rosters a supervisor with no window; the collector wakes it on the fixture worker's return and it verifies the job, builds the task, checkpoints and exits within one turn; a second wake on the 20-minute heartbeat (clock shortened for the test) produces a checkpoint and no other write; a merge desk launched `--headless` takes and lands a request on a wake; `foreman attach` opens a window showing the session's transcript tail and its close leaves the roster unchanged; a supervisor whose turn dies mid-way is woken again with the same event and the roster records the retry; `foreman status` and the panel show a headless supervisor with its last wake reason and age — all CONFIRMED by running."
+land-on   = "main"
+reviews   = "on request"
+after     = ["runtime-v3"]
+prefer    = 8
+
+[allocation]
+muse  = 5
+opus  = 1
+astra = 1
+grok  = 1
+
+[[task]]
+title   = "wake events and the clock"
+core    = true
+scope   = """
+WHAT: the collector emits wake events per session: job outcome (returned, returned-with-work, failed,
+killed, timed out) for the job's launcher; inbox answer for the asker; rule landed on a front for its
+supervisor; `foreman tell <session> "<text>"` from the foreman; heartbeat every `heartbeat_minutes`
+(config, default 20) when no other event woke the session since; events.jsonl per session, each with a
+reason and the ids it names; a `wake` is delivered at most once per event and never while a turn of that
+session is running (a queued event waits for the turn to end, then one wake carries every queued event).
+INPUTS: DESIGN §3 Collector, §10 anomalies, §14 flow 4; collector.py; findings 'relaunch never resumes'.
+OUTPUTS: event ledger, the wake queue, `foreman tell`, tests with a fake session runner.
+OUT OF SCOPE: running the session itself (next task).
+"""
+verify  = "python -m pytest tests -q"
+size    = 1
+after   = []
+
+[[task]]
+title   = "headless turns for supervisors and the desk"
+core    = true
+scope   = """
+WHAT: `foreman launch supervisor <front> --headless` and `foreman launch merge-desk --headless` mint the
+session and record it with no window; the first turn runs `claude -p` with the role prompt, the MCP config
+and `--output-format stream-json`, records the vendor session id; every later wake runs `claude -p --resume
+<vendor id> "<event text>"` under a systemd transient unit with RuntimeMaxSec = turn_timeout (config,
+default 15 min); the turn's result line (is_error, num_turns, usage) lands on the session's ledger; a turn
+that dies (non-zero, timeout) is retried once with the same event and then raised as an anomaly
+'supervisor turn failed twice'; `relaunch` of a headless session is the same wake with the event 'you
+were relaunched, read your checkpoint'. The role prompt for headless says: one event, act, checkpoint,
+end the turn. Interactive launch stays the default until the owner flips `headless = true` in config.
+INPUTS: docs/research/launching-agents.md (print mode, resume, stream-json result line); launch.py;
+templates/supervisor.md; skills/foreman-supervise.
+OUTPUTS: launch shapes, turn runner, ledger lines, role prompt variant, tests with a fake `claude` on PATH
+that records its argv and prints a result line.
+OUT OF SCOPE: Codex/Muse/Grok as supervisors.
+"""
+verify  = "python -m pytest tests -q"
+size    = 1
+after   = ["wake events and the clock"]
+
+[[task]]
+title   = "attach, status and the panel for headless sessions"
+scope   = """
+WHAT: `foreman attach <session>` opens a window on the launcher's workspace tailing the session's turn
+log (and, for a Claude session, `claude --resume <id>` read-only is out of scope: tail only), closing it
+changes nothing on the roster; `foreman status` shows for a headless session its last wake reason, turn
+count, last turn age and 'turn running' when one is; the panel's Working block shows the same on the
+supervisor line; the anomaly 'supervisor silent' is computed from wakes, not from window activity.
+INPUTS: status.py, plugin/foreman (panel), DESIGN §13.
+OUTPUTS: the verb, status fields, panel model + block changes, tests and the panel harness green.
+OUT OF SCOPE: the foreman itself going headless.
+"""
+verify  = "python -m pytest tests -q && env -u FOREMAN_SESSION bin/foreman-verify panel --blocks"
+size    = 1
+after   = ["headless turns for supervisors and the desk"]
+
+[[task]]
+title   = "the proof"
+scope   = """
+WHAT: run this front's done-when on an isolated state directory with a real Claude session for the
+supervisor (Opus) and a fake worker; one CONFIRMED evidence record per clause; every friction is a finding
+and, if under a page, a job here.
+INPUTS: the three tasks above landed on the front branch.
+OUTPUTS: evidence, findings, PR against main.
+OUT OF SCOPE: anything the done-when does not name.
+"""
+verify  = "foreman doctor && foreman status | grep -c wake"
+size    = 1
+after   = ["attach, status and the panel for headless sessions"]
+
+[[rule]]
+text = "Every worker through foreman launch; every progress step through the verbs; every friction with Foreman itself is a finding and, if under a page, a job on this front."
+
+[[rule]]
+text = "No test or isolated-world run touches the machine's systemd units or the real state directory; a harness never inherits FOREMAN_SESSION, FOREMAN_STATE or FOREMAN_CONFIG."
