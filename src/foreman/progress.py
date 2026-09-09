@@ -2,11 +2,13 @@
 
 ``job verify --confirmed`` appends CONFIRMED evidence, marks the job
 verified and adds its units to the task; ``job fail`` marks the job failed
-with a finding on the task; ``task built`` and ``task landed`` move the
-task once every unit is accounted for; ``evidence`` and ``finding`` append
-free-standing records to the front's ledgers. A CONFIRMED claim with no
-command behind it is refused: running the command is what turns a claim
-into evidence.
+with a finding on the task; ``job fail --closed`` records a job on a
+done front as history and writes no finding, because the task may no
+longer be on the ledger and the work already landed; ``task built`` and
+``task landed`` move the task once every unit is accounted for;
+``evidence`` and ``finding`` append free-standing records to the front's
+ledgers. A CONFIRMED claim with no command behind it is refused: running
+the command is what turns a claim into evidence.
 
 Every verb that moves work refuses a caller who is not the front's
 supervisor. ``finding`` is the exception: it records something seen and
@@ -433,7 +435,8 @@ def job_verify_main(job_id: str, confirmed: bool,
     return 0
 
 
-def job_fail_main(job_id: str, finding: str | None = None) -> int:
+def job_fail_main(job_id: str, finding: str | None = None,
+                  closed: bool = False) -> int:
     verb = "job fail"
     me, violations = caller.resolve(verb)
     key = (job_id or "").strip()
@@ -443,6 +446,29 @@ def job_fail_main(job_id: str, finding: str | None = None) -> int:
     if key and record is None:
         violations.append(f"unknown job '{key}'")
     _check(me, front, verb, violations)
+    if closed:
+        if record is not None and front is not None:
+            front_state = (fronts.read_front_record(front) or {}).get("state")
+            if front_state != "done":
+                violations.append(
+                    f"front '{front}' is not done "
+                    "(--closed records a job on a closed front as history)")
+            state = record.get("state")
+            if state == "verified":
+                violations.append(f"job '{key}' is already verified "
+                                  "(verified work is evidence, not a failure)")
+            elif state == "failed":
+                violations.append(f"job '{key}' is already failed")
+            elif state == "history":
+                violations.append(f"job '{key}' is already history")
+        if violations:
+            return _refuse(violations)
+        assert front is not None and record is not None
+        who = caller.by_line(me)
+        store.append_ledger(paths.front_jobs_path(front),
+                            dict(record, state="history"), session_id=who)
+        print(f"{key} history")
+        return 0
     text = (finding or "").strip()
     if not text:
         violations.append("field '--finding' is required for 'job fail'")
@@ -796,6 +822,9 @@ def add_job_arguments(sub: argparse.ArgumentParser) -> None:
     fail.add_argument("job", help="job id")
     fail.add_argument("--finding", default=None,
                       help="self-contained finding title (required)")
+    fail.add_argument("--closed", action="store_true",
+                      help="record a job on a done front as history, "
+                           "with no finding")
 
 
 @cli.subcommand("job", help="Verify or fail a job.")
@@ -805,7 +834,8 @@ def _job_entry(args: argparse.Namespace) -> int:
                                command=args.command, output=args.output,
                                units=args.units, because=args.because)
     if args.job_verb == "fail":
-        return job_fail_main(args.job, finding=args.finding)
+        return job_fail_main(args.job, finding=args.finding,
+                             closed=args.closed)
     raise AssertionError(f"unknown job verb {args.job_verb!r}")
 
 

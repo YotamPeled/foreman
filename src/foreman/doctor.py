@@ -6,7 +6,8 @@ Six cross-checks, each naming the command that repairs it:
    or whose pid now belongs to another process — a pid alone is not an
    identity, so the recorded start time must still match;
 2. git worktrees under the state directory no job owns, and live jobs
-   whose worktree is gone;
+   whose worktree is gone (a job on a done front is history, not a
+   live failure; the printed fix is ``job fail --closed``);
 3. open slot grants whose session is not running;
 4. ``foreman.toml`` pool tables naming pools no adapter registers;
 5. the collector running code older than this checkout;
@@ -41,10 +42,11 @@ from .entities import SESSION_ROLES
 LIVE_SESSION_STATES = ("running", "starting", "stalled")
 
 #: Job states whose worktree should still be where the record says.
-#: Terminal jobs (verified, failed, killed) keep no such promise: only
-#: a failed spawn cleans its worktree up, and a landed branch outlives
-#: the directory it was built in. A job that returned with work still
-#: needs its worktree: the supervisor has yet to verify what it holds.
+#: Terminal jobs (verified, failed, killed, history) keep no such
+#: promise: only a failed spawn cleans its worktree up, and a landed
+#: branch outlives the directory it was built in. A job that returned
+#: with work still needs its worktree: the supervisor has yet to verify
+#: what it holds. A job on a done front is history, not this promise.
 LIVE_JOB_STATES = ("planned", "queued", "running", "returned",
                    "returned-with-work")
 
@@ -188,7 +190,18 @@ def _check_worktrees() -> list[tuple[str, str]]:
                 f"orphan worktree {entry} (no job owns it)",
                 f"git worktree remove --force {entry}"))
     for jid, front, worktree, state in sorted(live):
-        if not os.path.isdir(worktree):
+        if os.path.isdir(worktree):
+            continue
+        front_record = fronts.read_front_record(front)
+        if (front_record or {}).get("state") == "done":
+            # The work landed and the front closed; failing the job
+            # would rewrite that as a failure. History, with a flag
+            # that records it as history, is what is true.
+            out.append((
+                f"job {jid} on done front '{front}' is history "
+                f"(worktree {worktree} is gone)",
+                f"foreman job fail {jid} --closed"))
+        else:
             out.append((
                 f"job {jid} on front '{front}' is '{state}' "
                 f"but its worktree {worktree} is gone",

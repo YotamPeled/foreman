@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import json
 import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
@@ -424,6 +425,133 @@ def test_callers_without_a_session_are_refused(env, monkeypatch, capsys):
                and row.get("subject") == "ses-nobody"
                and row.get("resolved_at") is None for row in anomalies)
     assert caller.read_roster() == {"sessions": {}}
+
+
+def seed_gone_worktree_job(*, front_state: str, with_task: bool) -> str:
+    """A returned job whose worktree directory was never created.
+
+    ``front_state`` is written on the front record; ``with_task`` is
+    whether the job's task still sits on the ledger. A closed front's
+    job often names a task that is gone; a live front's job still has
+    one, which is why today's ``job fail`` can file a finding.
+    """
+    gone = str(paths.state_dir() / "worktrees" / "gone-wt")
+    write(paths.front_record_path("fx"),
+          {"id": "front-1", "name": "fx", "state": front_state,
+           "merge": "self"})
+    write(paths.front_jobs_path("fx"),
+          {"id": "job-1", "state": "returned", "worktree": gone,
+           "task": "tas-0001"})
+    if with_task:
+        write(paths.front_tasks_path("fx"),
+              {"id": "tas-0001", "front": "fx", "title": "First",
+               "state": "landed"})
+    return gone
+
+
+def printed_fix_argv(out: str, divergence: str) -> list[str]:
+    """The argv of the ``fix:`` line under ``divergence``, minus ``foreman``.
+
+    The test runs that argv as printed: a reconstructed command would
+    not catch a fix line that names a verb that then refuses.
+    """
+    lines = out.splitlines()
+    for i, line in enumerate(lines):
+        if divergence not in line:
+            continue
+        for follow in lines[i + 1:]:
+            stripped = follow.strip()
+            if stripped.startswith("fix: "):
+                argv = shlex.split(stripped[len("fix: "):])
+                assert argv and argv[0] == "foreman", stripped
+                return argv[1:]
+            if stripped.startswith("doctor:"):
+                break
+    raise AssertionError(f"no fix line under {divergence!r} in:\n{out}")
+
+
+def folded_job(front: str, job_id: str) -> dict:
+    folded = store.fold_by_id(store.read_ledger(paths.front_jobs_path(front)))
+    return {row["id"]: row for row in folded}[job_id]
+
+
+def test_doctor_reports_a_gone_worktree_on_a_done_front_as_history(
+        env, monkeypatch, capsys):
+    """A returned job on a done front is history, not a live failure.
+
+    Fails if doctor still prints today's live-front line (and today's
+    ``job fail`` would then record landed work as failed), if it prints
+    no command, or if the printed command refuses a job whose task is
+    no longer on the ledger.
+    """
+    gone = seed_gone_worktree_job(front_state="done", with_task=False)
+    assert run(["doctor"], monkeypatch) == 1
+    out = capsys.readouterr().out
+    divergence = (f"job job-1 on done front 'fx' is history "
+                  f"(worktree {gone} is gone)")
+    assert divergence in out
+    assert "is 'returned' but its worktree" not in out
+    argv = printed_fix_argv(out, divergence)
+    assert argv == ["job", "fail", "job-1", "--closed"]
+    assert run(argv, monkeypatch) == 0
+    assert capsys.readouterr().out.strip() == "job-1 history"
+    assert folded_job("fx", "job-1")["state"] == "history"
+    assert store.read_ledger(paths.front_findings_path("fx")) == []
+    assert run(["doctor"], monkeypatch) == 0
+    assert capsys.readouterr().out == "doctor: clean\n"
+
+
+def test_doctor_still_fails_a_gone_worktree_on_a_live_front(
+        env, monkeypatch, capsys):
+    """A returned job on an open front is the problem it was, and the
+    same ``job fail --finding`` still records the failure.
+
+    Fails if a done-front change swallows the live case, or if the
+    printed fix no longer exits 0 when pasted.
+    """
+    gone = seed_gone_worktree_job(front_state="active", with_task=True)
+    assert run(["doctor"], monkeypatch) == 1
+    out = capsys.readouterr().out
+    divergence = (f"job job-1 on front 'fx' is 'returned' "
+                  f"but its worktree {gone} is gone")
+    assert divergence in out
+    assert "is history" not in out
+    argv = printed_fix_argv(out, divergence)
+    assert argv[:3] == ["job", "fail", "job-1"]
+    assert "--closed" not in argv
+    assert run(argv, monkeypatch) == 0
+    capsys.readouterr()
+    assert folded_job("fx", "job-1")["state"] == "failed"
+    findings = store.read_ledger(paths.front_findings_path("fx"))
+    assert len(findings) == 1
+    assert findings[0]["on"] == "tas-0001"
+    assert run(["doctor"], monkeypatch) == 0
+    assert capsys.readouterr().out == "doctor: clean\n"
+
+
+def test_job_fail_closed_refuses_a_live_front(env, monkeypatch, capsys):
+    """``--closed`` is the history path: a job on an open front stays
+    a live failure, and the flag will not re-label it.
+
+    Fails if ``--closed`` accepts a live front (and then writes history
+    where a finding belongs, or fails the job with no task line).
+    """
+    seed_gone_worktree_job(front_state="active", with_task=True)
+    assert run(["job", "fail", "job-1", "--closed"], monkeypatch) == 1
+    err = capsys.readouterr().err
+    assert "not done" in err
+    assert folded_job("fx", "job-1")["state"] == "returned"
+    assert store.read_ledger(paths.front_findings_path("fx")) == []
+
+
+def test_job_fail_closed_refuses_an_unknown_job(env, monkeypatch, capsys):
+    """An unknown job is still unknown with ``--closed``.
+
+    Fails if the flag skips the lookup and writes a history line for a
+    job nobody recorded.
+    """
+    assert run(["job", "fail", "job-ghost", "--closed"], monkeypatch) == 1
+    assert "unknown job 'job-ghost'" in capsys.readouterr().err
 
 
 def test_doctor_reports_a_dead_merge_desk(env, monkeypatch, capsys):

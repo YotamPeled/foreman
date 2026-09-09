@@ -254,6 +254,7 @@ def test_state_tuples_cover_listed_states():
         "verified",
         "failed",
         "killed",
+        "history",
     }
     assert set(entities.MERGE_STATES) == {"requested", "merging", "landed", "failed"}
     assert set(entities.SESSION_STATES) == {"running", "exited", "stalled", "killed"}

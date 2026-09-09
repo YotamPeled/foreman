@@ -56,7 +56,7 @@ WORKER_EXEMPT_ROLES = ("supervisor", "foreman", "owner")
 RUNNING_LIKE = ("running", "starting", "stalled")
 JOB_RUNNING_LIKE = ("planned", "queued", "running")
 TERMINAL_JOB_STATES = ("returned", "returned-with-work", "verified",
-                        "failed", "killed")
+                        "failed", "killed", "history")
 TERMINAL_SESSION_STATES = ("exited", "killed")
 REASSERT_KINDS = (
     "supervisor silent",
@@ -497,9 +497,9 @@ def _mark_job(front: str | None, job_id: str | None, to_state: str,
               reason: str | None = None) -> None:
     """Move a job to ``to_state``. A terminal state is terminal: when the
     latest record for the job is already returned, returned-with-work,
-    verified, failed or killed, nothing is appended, so a returned event
-    is never duplicated and a verification or failure is never overwritten
-    by a later tick. The one append carries the one wake event for the
+    verified, failed, killed or history, nothing is appended, so a
+    returned event is never duplicated and a verification or failure is
+    never overwritten by a later tick. The one append carries the one wake event for the
     job's launcher: the transition is computed here, so the event is
     emitted here rather than recomputed anywhere else. ``reason``
     overrides the event's reason where the cause differs from the state

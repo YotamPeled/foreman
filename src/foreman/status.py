@@ -42,7 +42,8 @@ from .verbs import read_inbox
 
 #: Queued work, in the supervisor's order: ledger order, first appearance.
 QUEUE_STATES = ("planned", "queued")
-TERMINAL = ("returned", "returned-with-work", "verified", "failed", "killed")
+TERMINAL = ("returned", "returned-with-work", "verified", "failed", "killed",
+            "history")
 
 #: Job states that finished work, the pace behind a front's ESTIMATE.
 #: Failed and killed jobs ended work without moving it, so they carry no

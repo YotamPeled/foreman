@@ -13,7 +13,7 @@ from typing import Any, ClassVar
 FRONT_STATES = ("queued", "active", "done", "halted", "frozen")
 TASK_STATES = ("waiting", "ready", "active", "built", "landed")
 JOB_STATES = ("planned", "queued", "running", "returned", "returned-with-work",
-              "verified", "failed", "killed")
+              "verified", "failed", "killed", "history")
 JOB_KINDS = ("implement", "review", "merge", "research", "verify")
 JOB_ROLES = ("opus", "muse", "astra", "grok")
 #: Roles a roster session may carry: every worker role, plus the two
