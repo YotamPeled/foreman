@@ -16,6 +16,10 @@ Adapter contract (the whole interface a new pool must implement):
 
 - ``name``: pool name, the registry key.
 - ``model``: model id recorded on the session and passed to the vendor CLI.
+- ``binary``: basename of the vendor executable (``grok``, ``muse``,
+  ``claude``, ``codex``). Capacity counts processes whose argv[0]
+  basename equals this. Default ``""``: a pool that names none counts
+  nothing, never everything.
 - ``timeout_default``: e.g. ``"20m"``; used unless ``--timeout`` overrides.
 - ``interactive``: only ``interactive = True`` pools may open a window.
 - ``launch(ctx) -> int``: start the worker detached, return its pid. The
@@ -83,6 +87,7 @@ class PoolAdapter:
 
     name: str = ""
     model: str = ""
+    binary: str = ""
     timeout_default: str = "20m"
     interactive: bool = False
 

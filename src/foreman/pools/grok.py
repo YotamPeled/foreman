@@ -175,6 +175,7 @@ def read_usage(transcript: Path) -> dict | None:
 class GrokAdapter(PoolAdapter):
     name = "grok"
     model = MODEL
+    binary = "grok"
     timeout_default = "20m"
     interactive = False
 

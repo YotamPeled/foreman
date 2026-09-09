@@ -302,6 +302,7 @@ def record_rollout(session: Session) -> Path | None:
 class CodexAdapter(PoolAdapter):
     name = "codex"
     model = MODEL
+    binary = "codex"
     timeout_default = "25m"
     interactive = False
 

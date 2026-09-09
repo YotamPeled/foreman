@@ -35,6 +35,16 @@ def run_status(monkeypatch, capsys, argv, tmp_path):
     # the packaged defaults answer: without this the golden output would
     # follow whatever caps the machine running it happens to carry.
     monkeypatch.setenv("FOREMAN_CONFIG", str(tmp_path / "config"))
+    if "--fixture" in argv:
+        # The box count is a second number on the same row. The fixture
+        # holds one grok and one muse; a matching table keeps those rows
+        # as they print today, so this golden stays a ledger
+        # characterization and not a reading of this machine.
+        from foreman import capacity
+        monkeypatch.setattr(capacity, "_snapshot", lambda: {
+            101: {"cmdline": "grok --prompt-file job.md"},
+            102: {"cmdline": "muse exec --prompt-file job.md"},
+        })
     assert cli.main(argv) == 0
     return capsys.readouterr().out
 

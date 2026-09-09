@@ -24,7 +24,7 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import config, entities, fronts, ids, paths, store
+from . import config, entities, fronts, ids, paths, procs, store
 
 #: Work not yet running: a job in one of these states is waiting for a slot.
 QUEUE_STATES = ("planned", "queued")
@@ -178,6 +178,50 @@ def release_for_session(session_id: str, when: str, because: str) -> int:
 # --------------------------------------------------------------------------
 
 
+def _snapshot() -> dict[int, dict]:
+    """The live process table. A test substitutes this, never ``procs.snapshot``
+    itself: the collector still has to see the children it started."""
+    return procs.snapshot()
+
+
+def running_by_pool(table: dict[int, dict] | None = None) -> dict[str, int]:
+    """Vendor processes on the machine, by pool.
+
+    ``table`` is a process table of the shape :func:`procs.snapshot`
+    returns (pid -> ``{cmdline, ...}``). ``None`` takes a fresh snapshot.
+    A process counts for a pool when
+    ``procs.executable_of(cmdline)`` equals that pool's adapter
+    ``binary`` — argv[0]'s basename, never a substring of the rest of
+    the line. A pool that names no binary counts nothing, never
+    everything.
+    """
+    from . import pools as poolmod
+
+    if table is None:
+        table = _snapshot()
+    counts: dict[str, int] = {}
+    for name in poolmod.names():
+        try:
+            adapter = poolmod.get(name)
+        except ValueError:
+            continue
+        binary = getattr(adapter, "binary", "") or ""
+        if not isinstance(binary, str) or not binary:
+            counts[name] = 0
+            continue
+        n = 0
+        for info in table.values():
+            if not isinstance(info, dict):
+                continue
+            if info.get("state") == "Z":
+                continue
+            cmdline = info.get("cmdline", "") or ""
+            if procs.executable_of(cmdline) == binary:
+                n += 1
+        counts[name] = n
+    return counts
+
+
 def ceiling(front: str | None, role: str) -> int | None:
     """The most sessions ``front`` may hold of ``role``, or None for none.
 
@@ -279,13 +323,20 @@ def out_pools(now: datetime | None = None) -> dict[str, dict]:
 
 
 def launch_problems(role: str, pool: str, front: str | None,
-                    now: datetime | None = None) -> list[str]:
+                    now: datetime | None = None,
+                    table: dict[int, dict] | None = None) -> list[str]:
     """The capacity refusals for one launch, in the order they are checked.
 
-    The front's ceiling first, then the pool's cap, then whether the pool
-    is out until a named reset. Each names the role, the front, and the
-    limit it hit. A launch wrong on more than one count is told every
-    one at once, like every other refusal here.
+    The front's ceiling first, then the pool's cap against held slots,
+    then the same cap against vendor processes on the machine, then
+    whether the pool is out until a named reset. Held and the box are
+    two numbers against one cap: the refusal fires when either reaches
+    it, and says which. Each names the role, the front, and the limit
+    it hit. A launch wrong on more than one count is told every one at
+    once, like every other refusal here.
+
+    ``table`` is the process table the box count is read from; ``None``
+    takes a fresh snapshot.
     """
     problems: list[str] = []
     limit = ceiling(front, role)
@@ -300,6 +351,10 @@ def launch_problems(role: str, pool: str, front: str | None,
         if held >= cap:
             problems.append(f"{_who(role, front)}: {held} held in pool "
                             f"{pool!r}, cap {cap}")
+        running = running_by_pool(table).get(pool, 0)
+        if running >= cap:
+            problems.append(f"{_who(role, front)}: {running} {pool} "
+                            f"processes on the box, cap {cap}")
     record = pool_out(pool, now)
     if record is not None:
         until = _parse_iso(record.get("out_until"))
@@ -423,7 +478,8 @@ def front_allocations() -> list[tuple[str, str, int]]:
 
 
 def capacity_lines(observed: dict | None,
-                   now: datetime | None = None) -> list[str]:
+                   now: datetime | None = None,
+                   table: dict[int, dict] | None = None) -> list[str]:
     """The Capacity block: held/cap per pool, held/ceiling per front role,
     and who is waiting on a pool that has nothing left to give.
 
@@ -436,7 +492,13 @@ def capacity_lines(observed: dict | None,
     in observed.json.
 
     A pool that is out until a named reset prints that instead of
-    held/cap, for as long as the reset is in the future.
+    held/cap, for as long as the reset is in the future. The box count
+    — vendor processes on the machine, whoever started them — prints on
+    the pool's row when it differs from held; a pool whose two numbers
+    agree keeps the row it printed before.
+
+    ``table`` is the process table the box count is read from; ``None``
+    takes a fresh snapshot.
     """
     pool_view = (observed or {}).get("pools")
     pool_view = pool_view if isinstance(pool_view, dict) else {}
@@ -444,11 +506,13 @@ def capacity_lines(observed: dict | None,
     allocations = front_allocations()
     held_front = held_by_front_role()
     out_now = out_pools(now)
+    running_pool = running_by_pool(table)
 
     names = set(held_pool)
     names.update(name for name in pool_view if isinstance(name, str))
     names.update(pool_for_role(role) for _front, role, _n in allocations)
     names.update(out_now)
+    names.update(pool for pool, n in running_pool.items() if n)
 
     settings = config.load()
 
@@ -464,11 +528,14 @@ def capacity_lines(observed: dict | None,
             continue
         total = settings.cap(pool)
         held = held_pool.get(pool, 0)
-        if total is None and held == 0:
+        running = running_pool.get(pool, 0)
+        if total is None and held == 0 and running == 0:
             # Nothing configured and nothing held: an empty row about a
             # pool nobody is using is noise on a one-screen panel.
             continue
         line = f"  {pool}: {held}/{total if total is not None else '-'} held"
+        if running != held:
+            line += f" · {running} running on the box"
         # A queued job is waiting for a slot only where there is no slot to
         # give it. With one free, the job waits on the supervisor's order,
         # which the Job queue block already shows by name.
