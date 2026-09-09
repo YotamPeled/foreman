@@ -27,8 +27,8 @@ through what you leave behind — the verdict JSON and the finish marker.
   the verdict schema below — the same shape the launcher passes to your
   model as its output schema, so your last message and your verdict file
   agree with each other.
-- When the work is done, write the finish marker as the last line of your
-  output: `### finished rc=$?`
+- When the work is done, write a finish line naming the exit code as
+  the last line of your output.
 - File nothing else. You write no checkpoints, no measurements, no findings.
 
 ## Your goal

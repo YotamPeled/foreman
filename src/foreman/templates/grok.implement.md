@@ -26,8 +26,8 @@ through what you leave behind — commits on your branch and the finish marker.
   runs out of time with its work uncommitted delivered nothing.
 - Run the verification command your spec names, yourself, before you finish.
   A green claim on a command you never executed is a claim, not evidence.
-- When the work is done, write the finish marker as the last line of your
-  output: `### finished rc=$?`
+- When the work is done, write a finish line naming the exit code as
+  the last line of your output.
 - This is an implement job, so you write no verdict: the file your
   launcher reserved for one, {{verdict_path}}, stays empty, and your
   commits are the report.

@@ -443,6 +443,7 @@ def test_clean_exit_returns_within_one_tick(env, fake_pool, children,
     job = folded_job("flow", "job-clean1")
     assert job["state"] == "returned"
     assert job["returned_at"] == iso(NOW)
+    assert job["exit_code"] == 0
 
     seed_job("flow", "job-crash1", first, 2, state="running")
     proc = seed_worker_session(children, "flow", "job-crash1")
@@ -454,7 +455,9 @@ def test_clean_exit_returns_within_one_tick(env, fake_pool, children,
 
     tick(now=NOW + timedelta(seconds=1))
 
-    assert folded_job("flow", "job-crash1")["state"] == "failed"
+    crashed = folded_job("flow", "job-crash1")
+    assert crashed["state"] == "failed"
+    assert crashed["exit_code"] == 3
 
 
 def test_verify_running_names_tick_and_write_times(

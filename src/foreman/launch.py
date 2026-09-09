@@ -412,7 +412,9 @@ def environment_block(worktree: str, branch: str, target: str, scratch: str,
         f"- target: {target}\n"
         f"- scratch directory: {scratch}\n"
         f"- finish marker path: {log} "
-        "(the line `### finished rc=$?` is written to this file when the worker exits)\n"
+        "(a finish line naming the worker's exit code is appended to it "
+        "when the worker exits; `foreman wait <session>` is how a launcher "
+        "learns the outcome)\n"
         f"- verdict path: {verdict}\n"
         f"- timeout: {timeout}"
     )
@@ -1298,6 +1300,7 @@ def import_verb_modules() -> None:
     from . import progress as _progress  # noqa: F401
     from . import status as _status  # noqa: F401
     from . import verbs as _verbs  # noqa: F401
+    from . import wait as _wait  # noqa: F401
     from . import wake as _wake  # noqa: F401
 
 

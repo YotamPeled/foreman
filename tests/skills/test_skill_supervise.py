@@ -16,12 +16,22 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from foreman.pools import names as pool_names
 from foreman.pools import plugins
 
 ROOT = Path(__file__).resolve().parents[2]
 SKILLS = ROOT / "skills"
 SUPERVISE = SKILLS / "foreman-supervise" / "SKILL.md"
+
+
+@pytest.fixture(autouse=True)
+def _isolate_world(tmp_path, monkeypatch):
+    """These tests name packaged pools, never this machine's user pools."""
+    monkeypatch.setenv("FOREMAN_STATE", str(tmp_path / "state"))
+    monkeypatch.setenv("FOREMAN_CONFIG", str(tmp_path / "config"))
+    monkeypatch.delenv("FOREMAN_SESSION", raising=False)
 
 # One distinctive phrase per seed rule of docs/DESIGN.md section 9. The
 # break: the supervisor skill paraphrases a rule away until a headless

@@ -25,8 +25,8 @@ through what you leave behind — the verdict JSON and the finish marker.
 - Run each judgement command in your spec yourself. A green verdict on a
   command you never executed is a claim, not evidence.
 - Write your verdict JSON to {{verdict_path}} before you exit.
-- When the work is done, write the finish marker as the last line of your
-  output: `### finished rc=$?`
+- When the work is done, write a finish line naming the exit code as
+  the last line of your output.
 - File nothing else. You write no checkpoints, no measurements, no findings.
 
 ## Your goal

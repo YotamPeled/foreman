@@ -130,6 +130,12 @@ class Job(Entity):
     verified_at: str | None = None
     artifact: str = ""
     verdict_path: str = ""
+    #: The worker's exit code as the collector read it from a finish
+    #: marker, or None when no marker was read. A waiter prints this.
+    exit_code: int | None = None
+    #: Why the collector moved the job, when the cause differs from the
+    #: state. A timeout kill is failed with outcome_reason "job timed out".
+    outcome_reason: str = ""
 
 
 @dataclass(frozen=True)

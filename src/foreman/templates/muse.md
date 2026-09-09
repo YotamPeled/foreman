@@ -24,8 +24,8 @@ and, for a review job, a verdict file.
 ## What you report and when
 
 - Commit your artifact on your branch as you finish each unit.
-- When the work is done, write the finish marker as the last line of your
-  output: `### finished rc=$?`
+- When the work is done, write a finish line naming the exit code as
+  the last line of your output.
 - For a review job, write your verdict JSON to {{verdict_path}} before you exit.
 - Rewrite nothing else. You file no checkpoints, no measurements, no findings.
 

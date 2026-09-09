@@ -903,6 +903,7 @@ def test_overdue_job_dies_despite_finish_marker(env, fake_pool, children):
     assert roster["sessions"][sid]["state"] == "killed"
     jobs = store.read_ledger(paths.front_jobs_path("comp"))
     assert jobs[-1]["id"] == "job-imm" and jobs[-1]["state"] == "failed"
+    assert jobs[-1]["outcome_reason"] == "job timed out"
 
 
 def test_terminal_job_states_are_terminal(env, fake_pool, children):

@@ -492,9 +492,20 @@ def _note_pool_refusal(adapter, record: dict, sid: str) -> None:
     }, session_id=sid)
 
 
+def _exit_code_of(observed: dict | None, finish: bool) -> int | None:
+    """The worker's exit code when a finish marker was read, else None."""
+    if not finish or not isinstance(observed, dict):
+        return None
+    code = observed.get("finish_rc")
+    if isinstance(code, bool) or not isinstance(code, int):
+        return None
+    return code
+
+
 def _mark_job(front: str | None, job_id: str | None, to_state: str,
               stamp: str | None, by: str | None = None,
-              reason: str | None = None) -> None:
+              reason: str | None = None,
+              exit_code: int | None = None) -> None:
     """Move a job to ``to_state``. A terminal state is terminal: when the
     latest record for the job is already returned, returned-with-work,
     verified, failed, killed or history, nothing is appended, so a
@@ -503,7 +514,10 @@ def _mark_job(front: str | None, job_id: str | None, to_state: str,
     job's launcher: the transition is computed here, so the event is
     emitted here rather than recomputed anywhere else. ``reason``
     overrides the event's reason where the cause differs from the state
-    (a timeout kill marks the job failed but wakes ``job timed out``)."""
+    (a timeout kill marks the job failed but wakes ``job timed out``).
+    ``exit_code`` is the worker's code from a finish marker, or None
+    when no marker was read; ``reason``, when given, is stored as
+    ``outcome_reason`` on the job line."""
     if not front or not job_id:
         return
     try:
@@ -519,7 +533,9 @@ def _mark_job(front: str | None, job_id: str | None, to_state: str,
         return
     if latest.get("state") not in JOB_RUNNING_LIKE:
         return
-    revised = dict(latest, state=to_state)
+    revised = dict(latest, state=to_state, exit_code=exit_code)
+    if reason:
+        revised["outcome_reason"] = reason
     if stamp is not None and to_state in ("returned", "returned-with-work"):
         revised["returned_at"] = stamp
     if to_state == "killed":
@@ -1138,17 +1154,20 @@ def _tick_inner(moment: datetime, now_iso: str,
                 unit_failed = False
             if unit_failed:
                 _mark_job(record.get("front"), record.get("job"),
-                          "failed", None)
+                          "failed", None,
+                          exit_code=_exit_code_of(observed, finish))
                 _release_slots(sid, now_iso, "failed")
             elif finish and _finish_rc_clean(observed):
                 _mark_job(record.get("front"), record.get("job"),
-                          "returned", now_iso)
+                          "returned", now_iso,
+                          exit_code=_exit_code_of(observed, finish))
                 _release_slots(sid, now_iso, "returned")
             elif finish:
                 # A finish marker with a non-zero code is a crash that
                 # wrote a marker on its way down: failed, never returned.
                 _mark_job(record.get("front"), record.get("job"),
-                          "failed", None)
+                          "failed", None,
+                          exit_code=_exit_code_of(observed, finish))
                 _release_slots(sid, now_iso, "failed")
             elif _job_branch_moved(record.get("front"), record.get("job")):
                 # The process is gone and the log carries no finish
@@ -1157,7 +1176,7 @@ def _tick_inner(moment: datetime, now_iso: str,
                 # state apart from failed, which a supervisor verifies
                 # like any other return.
                 _mark_job(record.get("front"), record.get("job"),
-                          "returned-with-work", now_iso)
+                          "returned-with-work", now_iso, exit_code=None)
                 _release_slots(sid, now_iso, "returned")
             else:
                 # The process is gone and the log carries no finish
@@ -1167,7 +1186,8 @@ def _tick_inner(moment: datetime, now_iso: str,
                 # where a Foreman verb did and nobody where the process
                 # merely vanished.
                 _mark_job(record.get("front"), record.get("job"),
-                          "killed", now_iso, by=_stopped_by(record))
+                          "killed", now_iso, by=_stopped_by(record),
+                          exit_code=None)
                 _release_slots(sid, now_iso, "killed")
             # The status above has been read, so the finished unit can be
             # forgotten on the collector's own schedule; without this every
@@ -1193,7 +1213,8 @@ def _tick_inner(moment: datetime, now_iso: str,
                 if not remaining:
                     update["state"] = "killed"
                     _mark_job(record.get("front"), record.get("job"),
-                              "failed", None, reason="job timed out")
+                              "failed", None, reason="job timed out",
+                              exit_code=_exit_code_of(observed, finish))
                     _release_slots(sid, now_iso, "killed")
                     note_open("job timeout", sid,
                               f"elapsed {elapsed:.0f}s past timeout "
@@ -1215,11 +1236,13 @@ def _tick_inner(moment: datetime, now_iso: str,
                     update["state"] = "exited"
                     if _finish_rc_clean(observed):
                         _mark_job(record.get("front"), record.get("job"),
-                                  "returned", now_iso)
+                                  "returned", now_iso,
+                                  exit_code=_exit_code_of(observed, finish))
                         _release_slots(sid, now_iso, "returned")
                     else:
                         _mark_job(record.get("front"), record.get("job"),
-                                  "failed", None)
+                                  "failed", None,
+                                  exit_code=_exit_code_of(observed, finish))
                         _release_slots(sid, now_iso, "failed")
             elif active_at is not None and (
                     moment - _parse_time(active_at)).total_seconds() > \
