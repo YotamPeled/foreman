@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Foreman panel installer. Safe to run more than once: it adds what is missing and
+# leaves everything else alone. `./uninstall` reverses every step.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export PYTHONPATH="$HERE/src${PYTHONPATH:+:$PYTHONPATH}"
+exec python3 "$HERE/src/foreman/panel_install.py" install "$HERE" "$@"
