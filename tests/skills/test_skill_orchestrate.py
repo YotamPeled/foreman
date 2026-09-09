@@ -366,6 +366,14 @@ def test_checklist_rejects_a_subcommand_the_parser_does_not_have():
     assert "reboot" in problem
     assert "collector" in problem
 
+    # A verb that takes no positional at all rejects a token just the
+    # same: the other way past the resolver is a token beyond the
+    # positionals the parser declares.
+    beyond = _unresolved("doctor extra", index)
+    assert beyond is not None, "a token past the verb's positionals must fail"
+    assert "extra" in beyond
+    assert "doctor" in beyond
+
 
 def test_unresolved_accepts_a_positional_choice_and_a_freeform_argument():
     """A real choice and a freeform slot both still resolve.
