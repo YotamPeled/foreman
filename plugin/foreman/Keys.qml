@@ -27,8 +27,12 @@ QtObject {
   id: root
 
   // The hint alphabet: a-z without f, so no hint starts with the freeze
-  // letter. 25 letters give 625 two-letter hints, far past any screen.
+  // letter. 25 letters give 625 two-letter hints, far past any screen;
+  // that product is also the capacity: a row past it gets no hint
+  // rather than a recycled or malformed one, and a hintless row fires
+  // through no key.
   readonly property string alphabet: "abcdeghijklmnopqrstuvwxyz"
+  readonly property int hintCapacity: 625
 
   // action id -> two-letter hint, reassigned only by syncHints().
   property var hints: ({})
@@ -68,8 +72,8 @@ QtObject {
   // Split an anomaly's "foreman ..." action into the argv the Process
   // runs: ["relaunch", "ses-..."], ["kill", "pid-..."] or
   // ["job", "kill", "job-..."]. The panel runs the row's verb verbatim;
-  // where the CLI has no such verb the run fails and the keys test says
-  // so rather than substituting another verb.
+  // where the CLI has no such verb fire() logs KEY-NOVERB first and the
+  // run fails, rather than substituting another verb.
   function argvForAction(action) {
     var s = String(action || "").trim().replace(/^\s*foreman\s+/i, "")
     if (s === "") return []
@@ -108,8 +112,23 @@ QtObject {
   // Keep assigned hints stable while their rows stay on screen, hand the
   // next free hint to each new row in model order, release the rest.
   // Runs off Model.changed, never from inside a hintFor() binding.
+  //
+  // A pending first letter narrows to the hints on screen when it was
+  // typed. When the resync changes that letter's candidate mapping —
+  // a hint released, reused or added under it — the pending letter is
+  // cancelled instead of letting the second letter resolve against the
+  // new map and fire a row the owner was not looking at.
   function syncHints() {
     var acts = root.currentActions()
+    var waiting = root.pending
+    var before = ({})
+    if (waiting !== "") {
+      var oldIds = Object.keys(root.hints)
+      for (var b = 0; b < oldIds.length; b++) {
+        var oldHint = root.hints[oldIds[b]]
+        if (oldHint && oldHint[0] === waiting) before[oldIds[b]] = oldHint
+      }
+    }
     var next = ({})
     var used = ({})
     for (var i = 0; i < acts.length; i++) {
@@ -122,10 +141,34 @@ QtObject {
     var n = 0
     for (var j = 0; j < acts.length; j++) {
       if (next[acts[j].id]) continue
-      while (used[root.hintForIndex(n)]) n++
+      if (n >= root.hintCapacity) {
+        next[acts[j].id] = ""
+        continue
+      }
+      while (n < root.hintCapacity && used[root.hintForIndex(n)]) n++
+      if (n >= root.hintCapacity) {
+        next[acts[j].id] = ""
+        continue
+      }
       next[acts[j].id] = root.hintForIndex(n)
       used[next[acts[j].id]] = true
       n++
+    }
+    if (waiting !== "") {
+      var changed = false
+      var after = ({})
+      for (var a = 0; a < acts.length; a++) {
+        var newHint = next[acts[a].id]
+        if (newHint && newHint[0] === waiting) after[acts[a].id] = newHint
+      }
+      var beforeIds = Object.keys(before)
+      var afterIds = Object.keys(after)
+      if (beforeIds.length !== afterIds.length) changed = true
+      else {
+        for (var c = 0; c < afterIds.length; c++)
+          if (before[afterIds[c]] !== after[afterIds[c]]) { changed = true; break }
+      }
+      if (changed) root.pending = ""
     }
     var same = true
     var oldKeys = Object.keys(root.hints)
@@ -157,6 +200,18 @@ QtObject {
     return null
   }
 
+  // Verbs this runtime does not ship: `kill` was never added to the CLI
+  // and `job` offers only verify and fail, so a row asking for either
+  // cannot run. The key still attempts the verb verbatim — the CLI is
+  // the only way the panel mutates anything — but it says so first
+  // rather than failing silently.
+  function verbMissing(argv) {
+    if (argv.length === 0) return false
+    if (argv[0] === "kill") return true
+    if (argv[0] === "job" && argv.length > 1 && argv[1] === "kill") return true
+    return false
+  }
+
   function fire(actionId) {
     var act = root.actionById(actionId)
     if (!act) {
@@ -164,6 +219,9 @@ QtObject {
       root.done(actionId, 127)
       return false
     }
+    if (root.verbMissing(act.verb))
+      console.log("KEY-NOVERB " + actionId + " foreman " + act.verb.join(" ")
+                  + " is absent from this runtime; attempting verbatim")
     root.queue.push({ id: actionId, argv: act.verb })
     console.log("KEY-FIRE " + actionId + " foreman " + act.verb.join(" "))
     root.pump()

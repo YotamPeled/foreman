@@ -198,6 +198,26 @@ QtObject {
     return { count: rows.length, rows: rows }
   }
 
+  // The collector writes kind, subject, since, detail and resolved_at
+  // and no action — its ledger is another front's code and stays
+  // untouched. Where the anomaly names a supported verb outright the
+  // panel derives it from kind and subject: a silent or dead supervisor
+  // is relaunched from its checkpoint, an intruder carries the mock's
+  // kill pill (whose key reports the verb absent, this runtime ships
+  // no kill). Job kinds need a job id the anomaly does not carry, so
+  // like defect repeated they stay keyless rather than guessing one.
+  function actionForAnomaly(row) {
+    var explicit = row.action || ""
+    if (explicit !== "") return explicit
+    var kind = row.kind || ""
+    var subject = row.subject || ""
+    if (subject === "") return ""
+    if (kind === "supervisor silent" || kind === "supervisor dead")
+      return "foreman relaunch " + subject
+    if (kind === "intruder") return "foreman kill " + subject
+    return ""
+  }
+
   function buildProblems() {
     var open = Ledger.unset(root.anomalies, "resolved_at")
     var rows = []
@@ -209,7 +229,7 @@ QtObject {
         subject: row.subject || "",
         detail: row.detail || "",
         front: (session && session.front) ? session.front : "",
-        action: row.action || "",
+        action: root.actionForAnomaly(row),
         sinceS: Ledger.seconds(row.since, root.now)
       })
     }
