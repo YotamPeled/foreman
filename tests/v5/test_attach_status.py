@@ -333,6 +333,52 @@ def test_attach_prints_the_window_when_the_helper_stays_running(
         reap_helpers(spawn)
 
 
+def test_attach_leaves_a_running_helper_alive_after_it_writes_stderr(
+        env, capsys, tmp_path):
+    """A helper that writes to stderr after the grace is not killed.
+
+    The break is the closed pipe: attach dropped the read end, the
+    helper's next stderr line got EPIPE, and the work it had left
+    never happened. Survival is the marker written after that line,
+    not the return code alone.
+    """
+    marker = tmp_path / "helper-still-working"
+    helper = tmp_path / "launch-window"
+    helper.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys, time\n"
+        "from pathlib import Path\n"
+        "time.sleep(2)\n"
+        "sys.stderr.write('after-grace\\n')\n"
+        "sys.stderr.flush()\n"
+        f"Path({str(marker)!r}).write_text('survived\\n')\n",
+        encoding="utf-8",
+    )
+    helper.chmod(0o700)
+    seat({SID: headless_session()})
+    write_turn(SID, ago(2))
+    spawn = spawn_helper(helper)
+    try:
+        rc = attach_module.attach_main(SID, spawn=spawn)
+        captured = capsys.readouterr()
+        proc = spawn.procs[0]
+        try:
+            finished = proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            finished = None
+
+        assert rc == 0
+        assert f"window: {attach_module.attach_window_name(SID)}" in captured.out
+        assert "window:" not in captured.err
+        assert marker.exists(), (
+            f"helper died before the work it had left "
+            f"(exit {finished})")
+        assert marker.read_text(encoding="utf-8") == "survived\n"
+        assert finished == 0
+    finally:
+        reap_helpers(spawn)
+
+
 def test_attach_treats_a_helper_that_exits_zero_as_success(
         env, capsys, tmp_path):
     """A launcher that hands over and returns still opened a window.

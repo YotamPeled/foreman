@@ -16,6 +16,7 @@ from __future__ import annotations
 import argparse
 import shlex
 import subprocess
+import tempfile
 from pathlib import Path
 from subprocess import DEVNULL
 from typing import Any
@@ -89,15 +90,23 @@ def write_attach_script(session_id: str) -> Path:
 def _default_spawn(argv: list[str]) -> Any:
     """Open the window and return at once: nothing here waits on it.
 
-    Stderr is captured so a helper that refuses in the first second can
-    be quoted; stdout stays discarded. The helper daemonizes the
+    Stderr is a file, not a pipe: attach can quote a helper that refuses
+    in the first second, then let go, and a later write does not kill
+    the window. Stdout stays discarded. The helper daemonizes the
     terminal itself, so unlike a launch there is no pid file to read
     back — the window is open or the helper said why not.
     """
-    return subprocess.Popen(argv, stdin=DEVNULL, stdout=DEVNULL,
-                            stderr=subprocess.PIPE, start_new_session=True,
-                            close_fds=True, text=True, encoding="utf-8",
-                            errors="replace")
+    captured = tempfile.TemporaryFile()
+    try:
+        proc = subprocess.Popen(argv, stdin=DEVNULL, stdout=DEVNULL,
+                                stderr=captured, start_new_session=True,
+                                close_fds=True, text=True, encoding="utf-8",
+                                errors="replace")
+    except Exception:
+        captured.close()
+        raise
+    proc.stderr = captured
+    return proc
 
 
 def _helper_exit_code(proc: Any, *, grace_s: float = HELPER_GRACE_S) -> int | None:
@@ -130,6 +139,12 @@ def _helper_stderr(proc: Any) -> str:
     if stream is None:
         return ""
     try:
+        seek = getattr(stream, "seek", None)
+        if callable(seek):
+            try:
+                seek(0)
+            except (OSError, ValueError):
+                pass
         text = stream.read()
     except (OSError, ValueError):
         return ""
@@ -139,7 +154,7 @@ def _helper_stderr(proc: Any) -> str:
 
 
 def _close_helper_stderr(proc: Any) -> None:
-    """Drop the captured pipe so a long-lived window is not stuck on it."""
+    """Drop our handle; the helper keeps its own and can keep writing."""
     stream = getattr(proc, "stderr", None)
     if stream is None:
         return
