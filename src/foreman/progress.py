@@ -16,6 +16,9 @@ written is ever edited.
 from __future__ import annotations
 
 import argparse
+import os
+import subprocess
+from datetime import datetime, timezone
 
 from . import caller, cli, entities, hooks, paths, store
 from .caller import MERGE_DESK, OWNER, SUPERVISOR, Refusal
@@ -174,9 +177,145 @@ def _task_of_job(front: str, record: dict) -> tuple[dict | None, str]:
     return None, (f"job '{record.get('id')}' names unknown task '{ref}'")
 
 
+#: Job states a verify can take as they stand: the worker came back, with
+#: or without writing a finish marker.
+RETURNED_LIKE = ("returned", "returned-with-work")
+
+#: Job states a verify can take past failure: the worker died or was
+#: stopped, and only work left on the branch makes the verify honest.
+FAILED_LIKE = ("failed", "killed")
+
+
+def job_units_count(record: dict) -> int:
+    """How many units verifying this job credits: its count.
+
+    Records written before the count change carry a list of unit ids, and
+    folding one credits its length — exactly what `job verify` always
+    added — so an old job verifies onto its task with nothing silently
+    changed. Anything else (missing, a stray string) credits zero.
+    """
+    units = record.get("units")
+    if isinstance(units, bool):
+        return 0
+    if isinstance(units, int):
+        return max(0, units)
+    if isinstance(units, (list, tuple)):
+        return len(units)
+    return 0
+
+
+def job_branch_moved(record: dict) -> bool:
+    """True when the job's branch holds commits past its base: the work
+    exists outside any marker or ledger line.
+
+    Anything unreadable — no branch or base recorded, no checkout to ask,
+    no git, an unknown ref — answers False, so a failure stays a failure
+    until somebody shows the work.
+    """
+    branch = (record.get("branch") or "").strip() \
+        if isinstance(record.get("branch"), str) else ""
+    base = (record.get("base") or "").strip() \
+        if isinstance(record.get("base"), str) else ""
+    if not branch or not base or branch == base:
+        return False
+    repo = record.get("worktree") \
+        if isinstance(record.get("worktree"), str) else ""
+    if not repo or not os.path.isdir(repo):
+        return False
+    try:
+        proc = subprocess.run(
+            ["git", "-C", repo, "rev-list", "--count",
+             f"{base}..{branch}"],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+            timeout=10)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+    if proc.returncode != 0:
+        return False
+    try:
+        return int(proc.stdout.strip()) > 0
+    except ValueError:
+        return False
+
+
+def _collector_last_tick() -> str | None:
+    """When the collector last ticked, or None where it never did."""
+    try:
+        observed = store.read_snapshot(paths.observed_path(), default=None)
+    except OSError:
+        return None
+    if isinstance(observed, dict):
+        ticked = observed.get("at")
+        if isinstance(ticked, str) and ticked:
+            return ticked
+    return None
+
+
+def _worker_last_write(record: dict) -> str | None:
+    """The worker's last write as an ISO timestamp, or None.
+
+    The newest mtime across the worktree and the session log, the same
+    two places the collector watches: a stale collector and an unfinished
+    worker read apart here.
+    """
+    newest: float | None = None
+
+    def consider(moment: object) -> None:
+        nonlocal newest
+        if isinstance(moment, (int, float)) and not isinstance(moment, bool) \
+                and (newest is None or moment > newest):
+            newest = moment
+
+    log = record.get("log")
+    if isinstance(log, str) and log:
+        try:
+            consider(os.stat(log).st_mtime)
+        except OSError:
+            pass
+    worktree = record.get("worktree")
+    if isinstance(worktree, str) and worktree and os.path.isdir(worktree):
+        try:
+            consider(os.stat(worktree).st_mtime)
+        except OSError:
+            pass
+        try:
+            walker = os.walk(worktree)
+        except OSError:
+            walker = iter(())
+        try:
+            for dirpath, _dirnames, filenames in walker:
+                for name in filenames:
+                    try:
+                        consider(os.stat(
+                            os.path.join(dirpath, name)).st_mtime)
+                    except OSError:
+                        continue
+        except OSError:
+            pass
+    if newest is None:
+        return None
+    return datetime.fromtimestamp(newest, tz=timezone.utc).isoformat()
+
+
+def _unverifiable_state_violation(key: str, state: object,
+                                 record: dict) -> str:
+    """Why a job in no verifiable state cannot be verified.
+
+    Names the collector's last tick and the worker's last write, so a
+    stale collector reads apart from an unfinished worker.
+    """
+    ticked = _collector_last_tick() or "unknown"
+    wrote = _worker_last_write(record) or "unknown"
+    return (f"job '{key}' is '{state}', not 'returned' "
+            f"(only a returned job can be verified; "
+            f"collector last tick {ticked}; worker last write {wrote})")
+
+
 def job_verify_main(job_id: str, confirmed: bool,
                     command: str | None = None,
-                    output: str | None = None) -> int:
+                    output: str | None = None,
+                    units: str | None = None,
+                    because: str | None = None) -> int:
     verb = "job verify"
     me, violations = caller.resolve(verb)
     key = (job_id or "").strip()
@@ -194,15 +333,49 @@ def job_verify_main(job_id: str, confirmed: bool,
     if not (output or "").strip():
         violations.append("field '--output' is required with '--confirmed' "
                           "(a claim with no output behind it is not evidence)")
+    override: int | None = None
+    if units is not None:
+        text = units.strip()
+        if text.isdigit():
+            override = int(text)
+        else:
+            violations.append(
+                f"bad units {units!r}; '--units' takes a count, e.g. "
+                f"--units 4")
+    because_text = (because or "").strip()
     task = None
     task_violation = ""
     if record is not None:
         state = record.get("state")
         if state == "verified":
             violations.append(f"job '{key}' is already verified")
-        elif state != "returned":
-            violations.append(f"job '{key}' is '{state}', not 'returned' "
-                              "(only a returned job can be verified)")
+        elif state in RETURNED_LIKE:
+            pass
+        elif state in FAILED_LIKE:
+            # A job that commits and then dies still did the work: where
+            # its branch moved past its base the supervisor verifies it
+            # past the failure, saying what the branch holds. Where the
+            # branch never moved the refusal stands, with the same two
+            # times a running refusal names.
+            if not job_branch_moved(record):
+                branch = record.get("branch") or "?"
+                base = record.get("base") or "?"
+                ticked = _collector_last_tick() or "unknown"
+                wrote = _worker_last_write(record) or "unknown"
+                violations.append(
+                    f"job '{key}' is '{state}', not 'returned' "
+                    f"(a '{state}' job verifies only with '--because' "
+                    f"past a moved branch; branch '{branch}' has not "
+                    f"moved past its base '{base}'; "
+                    f"collector last tick {ticked}; "
+                    f"worker last write {wrote})")
+            if not because_text:
+                violations.append(
+                    f"field '--because' is required to verify a '{state}' "
+                    f"job (say what work the branch holds, in one sentence)")
+        else:
+            violations.append(
+                _unverifiable_state_violation(key, state, record))
         # A job that names no task at all is not a broken record: the
         # launcher takes `--front` without `--task`, and work commissioned
         # outside a brief arrives that way. It is verified like any other
@@ -216,8 +389,7 @@ def job_verify_main(job_id: str, confirmed: bool,
     if violations:
         return _refuse(violations)
     assert front is not None and record is not None
-    units = record.get("units")
-    add = len(units) if isinstance(units, list) else 0
+    add = override if override is not None else job_units_count(record)
     done = ((task.get("units_done") or 0) + add) if task is not None else add
     total = (task.get("units_total") or 0) if task is not None else 0
     who = caller.by_line(me)
@@ -231,8 +403,12 @@ def job_verify_main(job_id: str, confirmed: bool,
                           ).to_dict(),
         session_id=who,
     )
-    store.append_ledger(paths.front_jobs_path(front),
-                        dict(record, state="verified", verified_at=now),
+    # The `--because` sentence travels on the job line, so the screen can
+    # show why a job that died still counted.
+    revised = dict(record, state="verified", verified_at=now)
+    if because_text:
+        revised["verify_because"] = because_text
+    store.append_ledger(paths.front_jobs_path(front), revised,
                         session_id=who)
     if task is not None:
         store.append_ledger(paths.front_tasks_path(front),
@@ -243,6 +419,8 @@ def job_verify_main(job_id: str, confirmed: bool,
               f"({add} units on task '{task.get('title')}': {done}/{total})")
     else:
         print(f"{key} verified (on front '{front}', no task)")
+    if because_text:
+        print(f"because: {because_text}")
     if spec:
         # What was verified, not just that something was. A proof run
         # credited a real front's task with a probe job's spec, and nothing
@@ -603,6 +781,12 @@ def add_job_arguments(sub: argparse.ArgumentParser) -> None:
                         help="verification command that was re-run (required)")
     verify.add_argument("--output", default=None,
                         help="command output, or a path to it (required)")
+    verify.add_argument("--units", default=None,
+                        help="unit count to credit (default: the job's "
+                             "launch count)")
+    verify.add_argument("--because", default=None,
+                        help="one sentence saying what work the branch holds "
+                             "(required for a 'failed' or 'killed' job)")
     fail = verbs.add_parser("fail", help="Fail a job with a finding.")
     fail.add_argument("job", help="job id")
     fail.add_argument("--finding", default=None,
@@ -613,7 +797,8 @@ def add_job_arguments(sub: argparse.ArgumentParser) -> None:
 def _job_entry(args: argparse.Namespace) -> int:
     if args.job_verb == "verify":
         return job_verify_main(args.job, args.confirmed,
-                               command=args.command, output=args.output)
+                               command=args.command, output=args.output,
+                               units=args.units, because=args.because)
     if args.job_verb == "fail":
         return job_fail_main(args.job, finding=args.finding)
     raise AssertionError(f"unknown job verb {args.job_verb!r}")

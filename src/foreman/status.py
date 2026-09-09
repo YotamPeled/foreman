@@ -35,12 +35,12 @@ from .verbs import read_inbox
 
 #: Queued work, in the supervisor's order: ledger order, first appearance.
 QUEUE_STATES = ("planned", "queued")
-TERMINAL = ("returned", "verified", "failed", "killed")
+TERMINAL = ("returned", "returned-with-work", "verified", "failed", "killed")
 
 #: Job states that finished work, the pace behind a front's ESTIMATE.
 #: Failed and killed jobs ended work without moving it, so they carry no
-#: rate.
-COMPLETED_JOB_STATES = ("returned", "verified")
+#: rate. A job that returned with work moved its branch, so it counts.
+COMPLETED_JOB_STATES = ("returned", "returned-with-work", "verified")
 
 #: Hours of job completions behind every ESTIMATE rate (DESIGN section 7:
 #: landed units per hour over the last N hours).
@@ -410,7 +410,11 @@ def _job_detail(job: dict, observed_jobs: dict, roster: dict,
         return f"{role} job queued (waiting {_since(stamp, now)})"
     if state in TERMINAL:
         stamp = job.get("verified_at") or job.get("returned_at")
-        return f"{role} job {state} {_since(stamp, now)} ago"
+        detail = f"{role} job {state} {_since(stamp, now)} ago"
+        because = job.get("verify_because")
+        if isinstance(because, str) and because.strip():
+            detail += f" \u2014 {' '.join(because.split())}"
+        return detail
     elapsed = _age(seen.get("elapsed_s"))
     timeout = _age(seen.get("timeout_s"))
     idle = seen.get("minutes_since_write")

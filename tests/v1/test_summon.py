@@ -50,7 +50,8 @@ SUPERVISOR_COMMANDS = (
     "foreman launch <role> [<pool>] [<spec>]",
     "foreman relaunch <session>",
     "foreman register --role <role> --pid <pid>",
-    "foreman job verify <job> --confirmed --command <command> --output <output>",
+    "foreman job verify <job> --confirmed --command <command> --output <output> "
+    "--because <because>",
     "foreman job fail <job> --finding <finding>",
     "foreman task built <task>",
     "foreman task landed <task> --head <head>",

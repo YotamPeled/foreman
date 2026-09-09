@@ -128,7 +128,6 @@ VERIFY_RUNNER_RE = re.compile(
 WORKER_WINDOW_ENV = "FOREMAN_WORKER_WINDOW"
 
 TIMEOUT_RE = re.compile(r"(?:\d+[smhd])+$")
-UNIT_RANGE_RE = re.compile(r"(\d+)-(\d+)$")
 
 
 def add_launch_arguments(parser: argparse.ArgumentParser) -> None:
@@ -158,7 +157,9 @@ def add_launch_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--worktree", default=None, help="absolute worktree path")
     parser.add_argument("--log", default=None, help="absolute log path")
     parser.add_argument("--timeout", default=None, help="e.g. 20m (pool default otherwise)")
-    parser.add_argument("--units", default=None, help="unit range, e.g. 3-7")
+    parser.add_argument("--units", default=None,
+                        help="unit count, e.g. 4 (default: every unit "
+                             "the task still lacks)")
     parser.add_argument("--effort", default="high", choices=EFFORTS)
     parser.add_argument("--scope", default=None, help="task scope text")
     parser.add_argument("--window", action="store_true",
@@ -175,23 +176,45 @@ class Refused(Exception):
     """A launch refusal: str lists every violated field at once."""
 
 
-def parse_units(text: str) -> list[int]:
-    parts = [piece.strip() for piece in text.split(",") if piece.strip()]
-    if not parts:
-        raise ValueError("empty units")
-    units: list[int] = []
-    for piece in parts:
-        match = UNIT_RANGE_RE.fullmatch(piece)
-        if match:
-            start, end = int(match.group(1)), int(match.group(2))
-            if start > end or start < 1:
-                raise ValueError(f"bad range {piece!r}")
-            units.extend(range(start, end + 1))
-        elif piece.isdigit() and int(piece) >= 1:
-            units.append(int(piece))
-        else:
-            raise ValueError(f"bad units {piece!r}")
-    return units
+def parse_units(text: str) -> int:
+    """A unit count, never unit ids: ``--units 4`` is four units.
+
+    A range or list of ids (``3-7``, ``1,2``) is refused: it named which
+    units, not how many, so a supervisor asking for four units credited
+    one and `task built` refused work that was delivered. Zero is a real
+    count: a repair job on a task that already earned its units launches
+    with `--units 0`.
+    """
+    piece = (text or "").strip()
+    if piece.isdigit():
+        return int(piece)
+    raise ValueError(
+        f"bad units {text!r}; --units takes a count, e.g. --units 4")
+
+
+def default_unit_count(front: str | None, task: str | None) -> int:
+    """Every unit the task still lacks: total minus done, never negative.
+
+    No task (a bare worker) or a task the ledger does not name lacks
+    nothing countable, so the default is zero there rather than a guess.
+    """
+    task_id = lookup_task_id(front, task)
+    if not front or not task_id:
+        return 0
+    try:
+        folded = store.fold_by_id(
+            store.read_ledger(paths.front_tasks_path(front)))
+    except OSError:
+        return 0
+    for record in folded:
+        if record.get("id") == task_id:
+            try:
+                total = int(record.get("units_total") or 0)
+                done = int(record.get("units_done") or 0)
+            except (TypeError, ValueError):
+                return 0
+            return max(0, total - done)
+    return 0
 
 
 def spec_problems(text: str) -> list[str]:
@@ -571,10 +594,11 @@ def cmd_launch(args: argparse.Namespace) -> int:
             f"bad timeout {args.timeout!r}; use a number with a unit, e.g. 20m"
         )
     try:
-        units = parse_units(args.units) if args.units else []
+        explicit_units = parse_units(args.units) \
+            if args.units is not None else None
     except ValueError as exc:
         problems.append(str(exc))
-        units = []
+        explicit_units = None
 
     if getattr(args, "window", False):
         if me is not None and me.role != caller.OWNER:
@@ -608,6 +632,11 @@ def cmd_launch(args: argparse.Namespace) -> int:
     if problems:
         return refuse(*problems)
     assert spec_text is not None and adapter is not None
+
+    # The count travels, not the flag: an explicit `--units n` credits n,
+    # and the default is every unit the task still lacks.
+    units = explicit_units if explicit_units is not None \
+        else default_unit_count(args.front, args.task)
 
     session_id = ids.mint("session")
     branch = args.branch or f"foreman/{session_id}"
@@ -666,7 +695,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
         write_no_symlink(
             job_path,
             build_job_file(job_label, args.kind, task_label, front_label,
-                           env, rulings_block, scope, spec_text, args.units,
+                           env, rulings_block, scope, spec_text, str(units),
                            role_text=role_text),
         )
         write_no_symlink(role_path, role_text)
@@ -705,7 +734,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
             target=target,
             timeout=timeout,
             effort=args.effort,
-            units=tuple(units),
+            units=units,
             kind=args.kind,
             window=bool(getattr(args, "window", False)),
         )
@@ -798,13 +827,16 @@ def cmd_launch(args: argparse.Namespace) -> int:
                 task=lookup_task_id(args.front, args.task) or args.task,
                 kind=args.kind, role=args.role,
                 spec_path=os.path.abspath(args.spec), session=session_id,
-                worktree=worktree, branch=branch, log=log_path,
-                timeout=timeout,
-                # The units the job was launched to do. They were parsed,
+                worktree=worktree, branch=branch, base=target,
+                log=log_path, timeout=timeout,
+                # The unit count the job was launched to do. It was parsed,
                 # validated and written into the job file, and then left
                 # off this record, so `job verify` added nothing to its
                 # task and no task could ever reach `built` through the
                 # runtime. Found by carrying one real job end to end.
+                # `base` is what a later branch-moved check measures the
+                # branch against: without it a failed job's work is
+                # uncountable.
                 units=units,
                 state="running",
                 started_at=store.utcnow_iso(),

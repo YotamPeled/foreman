@@ -44,7 +44,7 @@ delegates to it, adding only its vendor argv.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
 from ..entities import Session
@@ -66,7 +66,8 @@ class LaunchContext:
     target: str
     timeout: str
     effort: str = "high"
-    units: tuple[int, ...] = field(default_factory=tuple)
+    #: How many units the job was launched to do. A count, never unit ids.
+    units: int = 0
     kind: str = "implement"
     #: Open this worker in a terminal window, for watching a run. Off by
     #: owner ruling: swarm sessions do not take the owner's workspaces.

@@ -12,7 +12,8 @@ from typing import Any, ClassVar
 
 FRONT_STATES = ("queued", "active", "done", "halted", "frozen")
 TASK_STATES = ("waiting", "ready", "active", "built", "landed")
-JOB_STATES = ("planned", "queued", "running", "returned", "verified", "failed", "killed")
+JOB_STATES = ("planned", "queued", "running", "returned", "returned-with-work",
+              "verified", "failed", "killed")
 JOB_KINDS = ("implement", "review", "merge", "research", "verify")
 JOB_ROLES = ("opus", "muse", "astra", "grok")
 #: Roles a roster session may carry: every worker role, plus the two
@@ -104,7 +105,18 @@ class Job(Entity):
     branch: str = ""
     log: str = ""
     timeout: str = ""
-    units: list[int] = field(default_factory=list)
+    #: How many units the job was launched to do. Records written before
+    #: the count change carry a list of unit ids; :func:`foreman.progress.
+    #: job_units_count` folds both shapes, so the old lists keep crediting
+    #: their length.
+    units: int = 0
+    #: The base ref the job's branch was cut from. Records written before
+    #: this field existed carry none, so a branch-moved check on them
+    #: answers False and a failure stays a failure.
+    base: str = ""
+    #: The `--because` sentence a failed or killed job was verified with.
+    #: Empty on every other job; the screen renders it beside the job.
+    verify_because: str = ""
     attempt: int = 1
     state: str = "planned"
     planned_at: str | None = None
