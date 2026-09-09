@@ -29,6 +29,12 @@ from .pools import _common
 #: two rules never catch each other's windows.
 ATTACH_SCRIPT_FILE = "attach.sh"
 
+#: How long attach waits to learn whether the helper died instead of
+#: opening a window. The helper daemonizes the terminal; a second is
+#: enough to hear a refusal, and attach must not wait on a window that
+#: stays open for hours.
+HELPER_GRACE_S = 1.0
+
 
 def attach_window_name(session_id: str) -> str:
     """The window class one attach opens: `org.agent.foreman-attach-<id>`."""
@@ -83,13 +89,66 @@ def write_attach_script(session_id: str) -> Path:
 def _default_spawn(argv: list[str]) -> Any:
     """Open the window and return at once: nothing here waits on it.
 
-    The helper daemonizes the terminal itself, so unlike a launch there
-    is no pid file to read back and no process to confirm — the window is
-    open or the helper said why not.
+    Stderr is captured so a helper that refuses in the first second can
+    be quoted; stdout stays discarded. The helper daemonizes the
+    terminal itself, so unlike a launch there is no pid file to read
+    back — the window is open or the helper said why not.
     """
     return subprocess.Popen(argv, stdin=DEVNULL, stdout=DEVNULL,
-                            stderr=DEVNULL, start_new_session=True,
-                            close_fds=True)
+                            stderr=subprocess.PIPE, start_new_session=True,
+                            close_fds=True, text=True, encoding="utf-8",
+                            errors="replace")
+
+
+def _helper_exit_code(proc: Any, *, grace_s: float = HELPER_GRACE_S) -> int | None:
+    """The helper's exit code after the grace, or None if it is still running.
+
+    ``None`` is success: that is the normal case, the window is open. A
+    spawn that returned no process (a test double that records argv) is
+    the same. ``wait(timeout=…)`` returns as soon as the helper exits, so
+    a refusal is heard without sitting out the rest of the grace.
+    """
+    if proc is None:
+        return None
+    wait = getattr(proc, "wait", None)
+    if callable(wait):
+        try:
+            return wait(timeout=grace_s)
+        except subprocess.TimeoutExpired:
+            return None
+        except TypeError:
+            pass
+    poll = getattr(proc, "poll", None)
+    if callable(poll):
+        return poll()
+    return getattr(proc, "returncode", None)
+
+
+def _helper_stderr(proc: Any) -> str:
+    """The helper's own words, stripped; empty when it said nothing."""
+    stream = getattr(proc, "stderr", None)
+    if stream is None:
+        return ""
+    try:
+        text = stream.read()
+    except (OSError, ValueError):
+        return ""
+    if isinstance(text, bytes):
+        text = text.decode("utf-8", "replace")
+    return text.strip() if isinstance(text, str) else ""
+
+
+def _close_helper_stderr(proc: Any) -> None:
+    """Drop the captured pipe so a long-lived window is not stuck on it."""
+    stream = getattr(proc, "stderr", None)
+    if stream is None:
+        return
+    closer = getattr(stream, "close", None)
+    if callable(closer):
+        try:
+            closer()
+        except OSError:
+            pass
 
 
 def attach_main(target: str | None, spawn: Any = None) -> int:
@@ -119,7 +178,13 @@ def attach_main(target: str | None, spawn: Any = None) -> int:
     script = write_attach_script(name)
     argv = attach_outer_argv(name, script)
     run = spawn if spawn is not None else _default_spawn
-    run(argv)
+    proc = run(argv)
+    code = _helper_exit_code(proc, grace_s=HELPER_GRACE_S)
+    if code not in (None, 0):
+        words = _helper_stderr(proc) or f"window helper exited {code}"
+        _close_helper_stderr(proc)
+        return Refusal([words]).report()
+    _close_helper_stderr(proc)
     log = paths.session_log_path(name)
     print(f"session: {name}")
     print(f"log: {log}")

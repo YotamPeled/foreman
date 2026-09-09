@@ -8,17 +8,23 @@ screen reads them and real where the collector ticks.
 
 The break each test catches: an attach that parks the window anywhere but
 the launcher's workspace, an attach that writes the roster, an empty
-window for a session with no turns, a status line without the wake
-reason/turn count/last-turn age, `turn running` on a stale marker or a
-status run that clears one, a between-turns session flagged silent, and a
-woken-but-turnless session missed.
+window for a session with no turns, a window line for a helper that
+never opened one, a status line without the wake reason/turn count/last-turn
+age, `turn running` on a stale marker or a status run that clears one, a
+between-turns session flagged silent, and a woken-but-turnless session
+missed.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import signal
+import subprocess
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -144,6 +150,48 @@ class Recorder:
         return None
 
 
+HELPER_REFUSAL = (
+    "launch-window: export BOXES_SESSION=<your session id> first")
+
+
+def write_helper(path: Path, body: str) -> Path:
+    """A fake window helper: no real window, just the exit the test names."""
+    path.write_text("#!/bin/bash\n" + body, encoding="utf-8")
+    path.chmod(0o700)
+    return path
+
+
+def spawn_helper(helper: Path):
+    """The production spawn, with argv[0] swapped for the double."""
+    procs: list[Any] = []
+
+    def spawn(argv: list[str]):
+        proc = attach_module._default_spawn([str(helper), *argv[1:]])
+        procs.append(proc)
+        return proc
+
+    spawn.procs = procs  # type: ignore[attr-defined]
+    return spawn
+
+
+def reap_helpers(spawn) -> None:
+    """Kill anything the still-running double left behind."""
+    for proc in getattr(spawn, "procs", ()):
+        if proc.poll() is not None:
+            continue
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        try:
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            pass
+
+
 # --------------------------------------------------------------------------
 # `foreman attach`: a window on the launcher's workspace, and nothing else.
 # --------------------------------------------------------------------------
@@ -232,6 +280,78 @@ def test_attach_cli_parses_to_a_session(env):
     parser = cli.build_parser()
     args = parser.parse_args(["attach", SID])
     assert args.session == SID
+
+
+def test_attach_refuses_when_the_helper_exits_nonzero(env, capsys, tmp_path):
+    """A helper that dies with a line on stderr never opened a window.
+
+    The break is the observed lie: the helper printed
+    `launch-window: export BOXES_SESSION=…` and exited 2, no window
+    opened, and attach still printed the window line and returned 0.
+    """
+    helper = write_helper(
+        tmp_path / "launch-window",
+        f"echo {HELPER_REFUSAL!r} >&2\nexit 2\n",
+    )
+    seat({SID: headless_session()})
+    write_turn(SID, ago(2))
+    spawn = spawn_helper(helper)
+    try:
+        rc = attach_module.attach_main(SID, spawn=spawn)
+        captured = capsys.readouterr()
+
+        assert rc != 0
+        assert HELPER_REFUSAL in captured.err
+        assert "window:" not in captured.out
+    finally:
+        reap_helpers(spawn)
+
+
+def test_attach_prints_the_window_when_the_helper_stays_running(
+        env, capsys, tmp_path):
+    """A helper still running after the grace opened the window.
+
+    The test waits the grace once, not twice: a helper that sleeps far
+    longer than the grace is enough to prove still-running, and sitting
+    out the grace a second time would only prove the clock.
+    """
+    helper = write_helper(tmp_path / "launch-window", "exec sleep 30\n")
+    seat({SID: headless_session()})
+    write_turn(SID, ago(2))
+    spawn = spawn_helper(helper)
+    started = time.monotonic()
+    try:
+        rc = attach_module.attach_main(SID, spawn=spawn)
+        elapsed = time.monotonic() - started
+        captured = capsys.readouterr()
+
+        assert rc == 0
+        assert f"window: {attach_module.attach_window_name(SID)}" in captured.out
+        # One second of grace, not two: a second wait would only prove the clock.
+        assert elapsed < 2.0
+    finally:
+        reap_helpers(spawn)
+
+
+def test_attach_treats_a_helper_that_exits_zero_as_success(
+        env, capsys, tmp_path):
+    """A launcher that hands over and returns still opened a window.
+
+    The break is treating any exit as failure: the helper daemonized
+    the terminal and left, which is how a successful open looks.
+    """
+    helper = write_helper(tmp_path / "launch-window", "exit 0\n")
+    seat({SID: headless_session()})
+    write_turn(SID, ago(2))
+    spawn = spawn_helper(helper)
+    try:
+        rc = attach_module.attach_main(SID, spawn=spawn)
+        captured = capsys.readouterr()
+
+        assert rc == 0
+        assert f"window: {attach_module.attach_window_name(SID)}" in captured.out
+    finally:
+        reap_helpers(spawn)
 
 
 # --------------------------------------------------------------------------
