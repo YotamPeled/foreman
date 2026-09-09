@@ -223,6 +223,44 @@ def _checkpoint(session_id: str) -> dict | None:
     return snapshot if isinstance(snapshot, dict) else None
 
 
+def _headless_tail(sid: str, record: dict, now: datetime) -> str:
+    """What a headless supervisor is doing, from its two ledgers.
+
+    The last wake reason, the turn count, the age of the last turn, and
+    `turn running` while one's marker is fresh — never from a process, so
+    a headless session with no pid reads as normal, not as dead. Empty
+    for every session that is not headless, so the windowed lines read
+    exactly as they always have.
+    """
+    if not record.get("headless"):
+        return ""
+    from . import headless as _headless
+    from . import wake as _wake
+
+    parts = []
+    last = _wake.last_wake(sid)
+    if last is None:
+        parts.append("no wake yet")
+    else:
+        reason = last.get("reason") or "?"
+        age = _since(last.get("at"), now)
+        when = f"{age} ago" if age != "?" else "at an unknown time"
+        parts.append(f"last wake '{reason}' {when}")
+    try:
+        turns = _headless.read_turns(sid)
+    except OSError:
+        turns = []
+    if turns:
+        age = _since(turns[-1].get("at"), now)
+        when = f"{age} ago" if age != "?" else "at an unknown time"
+        parts.append(f"{_count(len(turns), 'turn')} · last turn {when}")
+    else:
+        parts.append("0 turns")
+    if _wake.turn_fresh(sid, now=now):
+        parts.append("turn running")
+    return " · " + " · ".join(parts)
+
+
 def _doing_line(sid: str, record: dict, sessions_view: dict,
                 now: datetime) -> str | None:
     """The supervisor's doing-now with its age. The age is the collector's
@@ -732,6 +770,7 @@ def _working(roster: dict, observed: dict | None, now: datetime,
             sid, record = held
             doing = _doing_line(sid, record, sessions_view, now)
             tail = f" \u00b7 doing now: {doing}" if doing else ""
+            tail += _headless_tail(sid, record, now)
             lines.append(f"  {label} \u2014 supervisor attached "
                          f"\u00b7 {progress}{tail}")
         if front_record is not None:

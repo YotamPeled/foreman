@@ -603,6 +603,46 @@ def _declared_at(record: dict):
     return best
 
 
+def _check_headless_silence(sid: str, record: dict, moment: datetime,
+                            now_iso: str, config: CollectorConfig,
+                            note_open, asserted: set) -> None:
+    """``supervisor silent`` for a headless session, from wakes and turns.
+
+    A headless session holds no window and no process between turns, so
+    window activity and the process table say nothing about it. What says
+    something is the two ledgers: a session that was woken and ran no
+    turn never started working, and one that ran no turn and heard no
+    wake for longer than the silence threshold never started either. A
+    session between turns — turns on its ledger, whatever its queue holds —
+    is working as designed and is never flagged: that false alarm is the
+    one this check exists not to raise.
+    """
+    from . import headless as _headless
+    from . import wake as _wake
+
+    try:
+        turns = _headless.read_turns(sid)
+    except OSError:
+        turns = []
+    if turns:
+        return
+    events = _wake.read_events(sid)
+    if events:
+        last = _wake.last_wake(sid) or {}
+        reason = last.get("reason") or "?"
+        note_open("supervisor silent", sid,
+                  f"supervisor {sid} woken (last wake '{reason}') "
+                  f"but ran no turn", asserted)
+        return
+    base = _parse_time(record.get("started_at"))
+    if base is None:
+        return
+    if (moment - base).total_seconds() > config.supervisor_silent_seconds:
+        note_open("supervisor silent", sid,
+                  f"supervisor {sid} ran no turn and had no wake for "
+                  f"{config.supervisor_silent_seconds:.0f}s", asserted)
+
+
 @contextmanager
 def _exclusive_tick():
     """Hold an exclusive lock for one tick so overlapping ticks cannot
@@ -772,7 +812,14 @@ def _tick_inner(moment: datetime, now_iso: str,
         overdue = elapsed is not None and timeout_s is not None and \
             elapsed > timeout_s
 
-        if role == "supervisor" and pid is not None and not alive:
+        if role == "supervisor" and record.get("headless") \
+                and state in RUNNING_LIKE:
+            # No window, no process between turns: liveness is wakes and
+            # turns, never the process table below. A pid here would be a
+            # stale breadcrumb, not a session, so this branch comes first.
+            _check_headless_silence(sid, record, moment, now_iso, config,
+                                    note_open, asserted)
+        elif role == "supervisor" and pid is not None and not alive:
             # Re-check liveness immediately: the roster was read after the
             # process snapshot, so a supervisor registered since still reads
             # dead from the stale table. A live recheck never relaunches

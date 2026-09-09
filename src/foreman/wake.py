@@ -106,25 +106,62 @@ def _turn_stale_seconds() -> float:
         return 600.0
 
 
-def turn_running(session_id: str, now: datetime | None = None) -> bool:
-    """True while a fresh turn marker exists. A stale marker clears itself."""
+def turn_started_at(session_id: str) -> datetime | None:
+    """When the session's turn marker says its turn started, or None.
+
+    Read-only: a reader (the status screen) must never clear a stale
+    marker by looking at it, so the unlink lives in :func:`turn_running`
+    and nowhere else.
+    """
     marker = store.read_snapshot(paths.session_turn_path(session_id),
                                  default=None)
     if not isinstance(marker, dict):
-        return False
-    started = _parse_time(marker.get("started_at"))
+        return None
+    return _parse_time(marker.get("started_at"))
+
+
+def turn_fresh(session_id: str, now: datetime | None = None) -> bool:
+    """True while a fresh turn marker exists. Never writes.
+
+    The read-only half of :func:`turn_running`: a stale marker reads as
+    no turn running but is left on disk for the turn path to clear.
+    """
+    started = turn_started_at(session_id)
     if started is None:
         return False
     moment = now or datetime.now(timezone.utc)
     if moment.tzinfo is None:
         moment = moment.replace(tzinfo=timezone.utc)
-    if (moment - started).total_seconds() > _turn_stale_seconds():
+    return (moment - started).total_seconds() <= _turn_stale_seconds()
+
+
+def turn_running(session_id: str, now: datetime | None = None) -> bool:
+    """True while a fresh turn marker exists. A stale marker clears itself."""
+    if turn_fresh(session_id, now=now):
+        return True
+    if turn_started_at(session_id) is not None:
         try:
             paths.session_turn_path(session_id).unlink()
         except OSError:
             pass
-        return False
-    return True
+    return False
+
+
+def last_wake(session_id: str) -> dict | None:
+    """The session's latest wake event by its ``at`` stamp, or None.
+
+    Delivered or still queued: either way the session was woken, and the
+    status screen names the reason of this event. None where no event
+    ever named the session.
+    """
+    latest: dict | None = None
+    for record in read_events(session_id):
+        at = record.get("at")
+        if not isinstance(at, str) or not at:
+            continue
+        if latest is None or at > (latest.get("at") or ""):
+            latest = record
+    return latest
 
 
 def turn_started(session_id: str, now: datetime | None = None) -> None:
