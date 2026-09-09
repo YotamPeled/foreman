@@ -1389,8 +1389,21 @@ def _is_required(action, fields: set[str]) -> bool:
     if action.required:
         return True
     names = {action.dest} | {opt.lstrip("-") for opt in action.option_strings}
-    return any(field == name or name.startswith(field) or field.startswith(name)
-               for field in fields for name in names)
+
+    def matches(name: str, field: str) -> bool:
+        if name == field:
+            return True
+        if name.startswith(field):
+            rest = name[len(field):]
+        elif field.startswith(name):
+            rest = field[len(name):]
+        else:
+            return False
+        # dest `class_` matches field `class`; `--output-file` (and dest
+        # `output_file`) must not match field `output`.
+        return rest == "_" or not rest.startswith(("-", "_"))
+
+    return any(matches(name, field) for field in fields for name in names)
 
 
 def _verb_line(path: str, parser: argparse.ArgumentParser, help_text: str,
