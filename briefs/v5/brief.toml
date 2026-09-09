@@ -1,0 +1,40 @@
+name      = "v5"
+order     = 8
+merge     = "self"
+want      = """
+Adapter only. The plan of record is fronts/v5/FRONT.md (the owner's v5-format inputs: goal, finish
+line, decisions, team, repositories). This brief exists so today's launcher can start the front; the
+supervisor reads FRONT.md first and treats its decisions as rules.
+"""
+done-when = "Foreman v5 runs this front on itself end to end: the front's own map, milestones and tree are held by the runtime through its verbs; its remaining jobs are queued by the supervisor and started by the runtime; job branches land onto the front branch and the front branch is queued onto main by the foreman, both through the mechanical landing step; `foreman status` shows the front queue with reservations, this front's milestones with pieces done and split count, and its tree — every clause CONFIRMED by running on the live installation."
+land-on   = "main"
+reviews   = "on request"
+after     = ["trial-frictions"]
+prefer    = 9
+
+[allocation]
+muse  = 0
+grok  = 2
+opus  = 1
+astra = 1
+
+[[task]]
+title   = "v5 to the finish line"
+core    = true
+scope   = """
+WHAT: everything fronts/v5/FRONT.md decides, to its finish line. This single task is the adapter:
+the real plan is the map, milestones and tree the supervisor writes under fronts/v5/ (decision 19)
+and later holds in the runtime. Every job the supervisor queues is a node of that tree.
+INPUTS: fronts/v5/FRONT.md; the findings ledger at
+/mnt/ssd/projects/foreman-scratch/ledger/findings.md (frictions 1-15, '[orbit-v2 trial]');
+runtime-lessons.md beside it; the current source under src/foreman.
+OUTPUTS: the v5 runtime on main; fronts/v5/{map.md,milestones.jsonl,tree.jsonl} imported into it;
+the proof as evidence.
+OUT OF SCOPE: the constellation UI; product fronts.
+"""
+verify  = "python -m pytest tests -q"
+size    = 1
+after   = []
+
+[[rule]]
+text = "Read fronts/v5/FRONT.md before anything else; its 21 decisions are the owner's rules for this front. Map first (facts marked seen or assumed, refs resolved against origin), then five to eight milestones, then the tree; every node carries a verify command, a must-not-touch line and a reason. Land self until the mechanical landing exists (fetch origin main:main before every rebase, check in a fresh worktree, record head and output). Never reinstall the CLI or restart the collector; ask the foreman."
