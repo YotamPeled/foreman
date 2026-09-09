@@ -248,6 +248,7 @@ def test_state_tuples_cover_listed_states():
         "queued",
         "running",
         "returned",
+        "returned-with-work",
         "verified",
         "failed",
         "killed",

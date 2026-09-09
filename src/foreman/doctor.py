@@ -39,8 +39,10 @@ LIVE_SESSION_STATES = ("running", "starting", "stalled")
 #: Job states whose worktree should still be where the record says.
 #: Terminal jobs (verified, failed, killed) keep no such promise: only
 #: a failed spawn cleans its worktree up, and a landed branch outlives
-#: the directory it was built in.
-LIVE_JOB_STATES = ("planned", "queued", "running", "returned")
+#: the directory it was built in. A job that returned with work still
+#: needs its worktree: the supervisor has yet to verify what it holds.
+LIVE_JOB_STATES = ("planned", "queued", "running", "returned",
+                   "returned-with-work")
 
 #: Session roles doctor checks liveness for. The foreman's own session
 #: is the orchestrator's interactive process (out of band: no verb mints

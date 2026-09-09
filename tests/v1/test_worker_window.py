@@ -104,7 +104,7 @@ def test_a_launched_job_records_the_units_it_was_given(env, fake_pool,
                                                        monkeypatch, capsys):
     """Units reach the job record, or no task can ever be built.
 
-    The launcher parsed `--units`, validated the range and wrote it into
+    The launcher parsed `--units`, validated the count and wrote it into
     the job file, then left it off the job record. `job verify` therefore
     added nothing to its task, `task built` refused for ever, and the
     whole progress path was dead. Found by carrying one real job from
@@ -116,8 +116,8 @@ def test_a_launched_job_records_the_units_it_was_given(env, fake_pool,
     spec = write_spec(env, "units.md", SPEC_OK)
     assert launch(["muse", "fake", spec, "--repo", str(repo),
                    "--front", "corpus", "--task", "second reads",
-                   "--units", "2-4"]) == 0
+                   "--units", "3"]) == 0
     capsys.readouterr()
     jobs = store.fold_by_id(store.read_ledger(
         paths.front_jobs_path("corpus")))
-    assert [job["units"] for job in jobs] == [[2, 3, 4]]
+    assert [job["units"] for job in jobs] == [3]

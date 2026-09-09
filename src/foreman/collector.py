@@ -52,7 +52,8 @@ DEFAULTS = {
 WORKER_EXEMPT_ROLES = ("supervisor", "foreman", "owner")
 RUNNING_LIKE = ("running", "starting", "stalled")
 JOB_RUNNING_LIKE = ("planned", "queued", "running")
-TERMINAL_JOB_STATES = ("returned", "verified", "failed", "killed")
+TERMINAL_JOB_STATES = ("returned", "returned-with-work", "verified",
+                        "failed", "killed")
 TERMINAL_SESSION_STATES = ("exited", "killed")
 REASSERT_KINDS = (
     "supervisor silent",
@@ -396,9 +397,10 @@ def _stopped_by(record: dict) -> str | None:
 def _mark_job(front: str | None, job_id: str | None, to_state: str,
               stamp: str | None, by: str | None = None) -> None:
     """Move a job to ``to_state``. A terminal state is terminal: when the
-    latest record for the job is already returned, verified, failed or
-    killed, nothing is appended, so a returned event is never duplicated
-    and a verification or failure is never overwritten by a later tick."""
+    latest record for the job is already returned, returned-with-work,
+    verified, failed or killed, nothing is appended, so a returned event
+    is never duplicated and a verification or failure is never overwritten
+    by a later tick."""
     if not front or not job_id:
         return
     try:
@@ -415,7 +417,7 @@ def _mark_job(front: str | None, job_id: str | None, to_state: str,
     if latest.get("state") not in JOB_RUNNING_LIKE:
         return
     revised = dict(latest, state=to_state)
-    if stamp is not None and to_state == "returned":
+    if stamp is not None and to_state in ("returned", "returned-with-work"):
         revised["returned_at"] = stamp
     if to_state == "killed":
         # A killed line is authored by whoever stopped the job, and by
@@ -423,6 +425,57 @@ def _mark_job(front: str | None, job_id: str | None, to_state: str,
         # the line it revises would name the launcher as the killer.
         revised.pop("by", None)
     store.append_ledger(paths.front_jobs_path(front), revised, session_id=by)
+
+
+def _latest_job_record(front: str | None,
+                        job_id: str | None) -> dict | None:
+    """The latest ledger line for a job, or None where there is none."""
+    if not front or not job_id:
+        return None
+    try:
+        records = store.read_ledger(paths.front_jobs_path(front))
+    except OSError:
+        return None
+    latest: dict | None = None
+    for record in records:
+        if record.get("id") == job_id:
+            latest = record
+    return latest
+
+
+def _job_branch_moved(front: str | None, job_id: str | None) -> bool:
+    """True when the job's branch holds commits past its base.
+
+    The branch-moved check lives in :mod:`foreman.progress` beside the
+    verify that relies on it; it is imported here lazily so the two
+    modules stay import-independent. Anything unreadable answers False.
+    """
+    try:
+        from .progress import job_branch_moved
+    except ImportError:  # pragma: no cover - the module is always present
+        return False
+    record = _latest_job_record(front, job_id)
+    if record is None:
+        return False
+    try:
+        return bool(job_branch_moved(record))
+    except Exception:  # noqa: BLE001 - a branch check never blocks a tick
+        return False
+
+
+def _finish_rc_clean(observed: dict | None) -> bool:
+    """True when the worker exited clean: a marker with rc 0, or a marker
+    whose code the adapter did not report.
+
+    A marker with a non-zero code is a crash that happened to write one,
+    and reads as failed, never returned.
+    """
+    if not observed:
+        return True
+    code = observed.get("finish_rc")
+    if code is None:
+        return True
+    return code == 0
 
 
 def _tick_lock_path() -> Path:
@@ -750,9 +803,24 @@ def _tick_inner(moment: datetime, now_iso: str,
                 _mark_job(record.get("front"), record.get("job"),
                           "failed", None)
                 _release_slots(sid, now_iso, "failed")
-            elif finish:
+            elif finish and _finish_rc_clean(observed):
                 _mark_job(record.get("front"), record.get("job"),
                           "returned", now_iso)
+                _release_slots(sid, now_iso, "returned")
+            elif finish:
+                # A finish marker with a non-zero code is a crash that
+                # wrote a marker on its way down: failed, never returned.
+                _mark_job(record.get("front"), record.get("job"),
+                          "failed", None)
+                _release_slots(sid, now_iso, "failed")
+            elif _job_branch_moved(record.get("front"), record.get("job")):
+                # The process is gone and the log carries no finish
+                # marker, but the branch moved past its base: the work
+                # exists, so the job returned with work of its own. A
+                # state apart from failed, which a supervisor verifies
+                # like any other return.
+                _mark_job(record.get("front"), record.get("job"),
+                          "returned-with-work", now_iso)
                 _release_slots(sid, now_iso, "returned")
             else:
                 # The process is gone and the log carries no finish
@@ -808,9 +876,14 @@ def _tick_inner(moment: datetime, now_iso: str,
                               f"process(es) still alive", asserted)
                 elif state in RUNNING_LIKE:
                     update["state"] = "exited"
-                    _mark_job(record.get("front"), record.get("job"),
-                              "returned", now_iso)
-                    _release_slots(sid, now_iso, "returned")
+                    if _finish_rc_clean(observed):
+                        _mark_job(record.get("front"), record.get("job"),
+                                  "returned", now_iso)
+                        _release_slots(sid, now_iso, "returned")
+                    else:
+                        _mark_job(record.get("front"), record.get("job"),
+                                  "failed", None)
+                        _release_slots(sid, now_iso, "failed")
             elif active_at is not None and (
                     moment - _parse_time(active_at)).total_seconds() > \
                     config.job_stalled_seconds:
