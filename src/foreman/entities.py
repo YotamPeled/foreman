@@ -312,8 +312,10 @@ class Event(Entity):
 
 #: Reasons a wake event names. Job reasons go to the job's launcher,
 #: ``inbox answered`` to the session that asked, ``rule landed`` to the
-#: supervisor of the rule's front, ``told`` to the named session, and
-#: ``heartbeat`` to any session with a live turn contract.
+#: supervisor of the rule's front, ``told`` to the named session,
+#: ``heartbeat`` to any session with a live turn contract, ``merge
+#: requested`` to the front's merge desk, and ``merge landed`` /
+#: ``merge failed`` to the supervisor that asked.
 WAKE_REASONS = (
     "job returned",
     "job returned-with-work",
@@ -324,6 +326,9 @@ WAKE_REASONS = (
     "rule landed",
     "told",
     "heartbeat",
+    "merge requested",
+    "merge landed",
+    "merge failed",
 )
 
 
@@ -353,6 +358,9 @@ class WakeEvent(Entity):
     rule: str | None = None
     from_: str | None = None
     text: str | None = None
+    merge: str | None = None
+    branch: str | None = None
+    sha: str | None = None
     delivered_at: str | None = None
 
 
