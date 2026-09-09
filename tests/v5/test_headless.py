@@ -876,7 +876,8 @@ def test_the_unit_pipes_its_output_back_rather_than_journalling_it(env):
     assert "--wait" not in argv
 
 
-def test_a_turn_frees_its_unit_name_before_starting(env, monkeypatch):
+def test_a_turn_frees_its_unit_name_before_starting(env, monkeypatch,
+                                                    real_door):
     """A failed transient unit keeps its name until it is reset.
 
     The name is stable so `foreman kill` can stop a session by it, which
@@ -893,7 +894,11 @@ def test_a_turn_frees_its_unit_name_before_starting(env, monkeypatch):
 
     monkeypatch.setattr(headless_module.subprocess, "run", fake_run)
     outer = headless_module.turn_outer_argv("ses-probe01", "/tmp/run.sh")
-    headless_module._default_spawn(outer, timeout_s=5)
+    # The doors' own bodies, with what they call doubled: this test is
+    # about what they do, so shutting them would test nothing.
+    monkeypatch.setattr(headless_module, "free_unit_name",
+                        real_door("foreman.headless.free_unit_name"))
+    real_door("foreman.headless._default_spawn")(outer, timeout_s=5)
     assert calls[0] == ["systemctl", "--user", "reset-failed",
                         "foreman-ses-probe01"]
     assert calls[1] == outer

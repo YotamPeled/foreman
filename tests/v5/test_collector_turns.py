@@ -79,18 +79,31 @@ def turn_spawn(env, monkeypatch):
     children: list[subprocess.Popen] = []
 
     def double(argv: list[str], *, env: dict[str, str]):
-        assert isinstance(argv, list) and len(argv) == 8, argv
+        assert isinstance(argv, list), argv
         assert argv[0] == "systemd-run", argv
         assert argv[1] == "--user", argv
         assert argv[2].startswith("--unit="), argv
         match = UNIT_RE.fullmatch(argv[2].split("=", 1)[1])
         assert match is not None, argv
         sid, attempt = match.group(1), int(match.group(2))
-        assert argv[3:] == [str(Path(sys.executable).resolve()),
-                            "-m", "foreman", "turn", sid], argv
+        # The world travels as --setenv= on the unit, not as the spawn's
+        # own environment: systemd-run hands the unit to the user
+        # manager, which starts it from its own environment and not from
+        # the caller's. A carrier died on "No module named foreman" with
+        # a perfectly good env= beside it, so this double asserts the
+        # thing the unit actually reads.
+        setenvs = dict(
+            part.split("=", 1)[1].split("=", 1)
+            for part in argv[3:] if part.startswith("--setenv="))
+        assert setenvs.get("FOREMAN_STATE"), argv
+        assert setenvs.get("PYTHONPATH"), argv
+        assert SESSION_ENV not in setenvs, argv
+        tail = [part for part in argv[3:]
+                if not part.startswith("--setenv=")]
+        assert tail == [str(Path(sys.executable).resolve()),
+                        "-m", "foreman", "turn", sid], argv
         assert isinstance(env, dict) and env, argv
         assert SESSION_ENV not in env, argv
-        assert env.get("FOREMAN_STATE"), argv
         roster = store.read_snapshot(paths.roster_path(),
                                      default={"sessions": {}})
         assert sid in roster.get("sessions", {}), argv
@@ -197,10 +210,17 @@ def test_tick_spawns_one_carrier_for_a_queued_wake(env, turn_spawn):
         [(SUP, 1)]
     call = turn_spawn[0]
     assert call["unit"] == f"foreman-turn-{SUP}-1"
-    assert call["argv"] == ["systemd-run", "--user",
-                            f"--unit=foreman-turn-{SUP}-1",
-                            str(Path(sys.executable).resolve()),
-                            "-m", "foreman", "turn", SUP]
+    assert call["argv"][:3] == ["systemd-run", "--user",
+                                f"--unit=foreman-turn-{SUP}-1"]
+    # The world is told to the unit, because the unit inherits none of
+    # the caller's: the user manager starts it from its own environment.
+    setenvs = [part for part in call["argv"] if part.startswith("--setenv=")]
+    assert any(part.startswith("--setenv=FOREMAN_STATE=")
+               for part in setenvs), call["argv"]
+    assert any(part.startswith("--setenv=PYTHONPATH=")
+               for part in setenvs), call["argv"]
+    assert call["argv"][3 + len(setenvs):] == [
+        str(Path(sys.executable).resolve()), "-m", "foreman", "turn", SUP]
     assert [event["text"] for event in pending(SUP)] == ["worker returned"]
 
 

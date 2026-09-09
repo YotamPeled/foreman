@@ -718,13 +718,22 @@ def turn_carrier_outer_argv(session_id: str, attempt: int) -> list[str]:
     ``systemd-run`` without ``--wait`` returns once the unit is started,
     so starting it is all the tick ever does with it. No working
     directory: the carrier reads absolute state paths, never a worktree.
+
+    The world travels as ``--setenv=`` and not as the spawn's own
+    environment. ``systemd-run --user`` hands the unit to the user
+    manager, which starts it from *its* environment, not the caller's:
+    an env= on the spawn reaches the systemd-run process and stops
+    there. Measured, by a carrier that died on "No module named
+    foreman" while its spawn's env held the right PYTHONPATH.
     """
-    return ["systemd-run", "--user",
-            f"--unit={turn_carrier_unit(session_id, attempt)}",
-            *turn_carrier_argv(session_id)]
+    argv = ["systemd-run", "--user",
+            f"--unit={turn_carrier_unit(session_id, attempt)}"]
+    for name, value in sorted(turn_carrier_env(only_world=True).items()):
+        argv.append(f"--setenv={name}={value}")
+    return [*argv, *turn_carrier_argv(session_id)]
 
 
-def turn_carrier_env() -> dict[str, str]:
+def turn_carrier_env(only_world: bool = False) -> dict[str, str]:
     """The world a turn carrier runs in: this process's, minus a session.
 
     The state and config directories travel the way every other launch
@@ -742,7 +751,16 @@ def turn_carrier_env() -> dict[str, str]:
         inherited = env.get("PYTHONPATH")
         env["PYTHONPATH"] = str(src) + (
             os.pathsep + inherited if inherited else "")
-    return env
+    if not only_world:
+        return env
+    # Just the part the unit must be told, since it inherits nothing:
+    # which world to read and where the package is.
+    world = {}
+    for name in (paths.STATE_ENV, paths.CONFIG_ENV, "PYTHONPATH"):
+        value = env.get(name)
+        if value:
+            world[name] = value
+    return world
 
 
 def _default_turn_spawn(argv: list[str], *,
