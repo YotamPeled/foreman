@@ -12,7 +12,7 @@ import argparse
 import json
 
 from . import caller, cli, entities, fronts, ids, paths, store
-from .caller import Refusal
+from .caller import FOREMAN, SUPERVISOR, Refusal
 
 LIVE_LIMIT = 8
 
@@ -465,7 +465,15 @@ def milestone_merge_main(front: str, ids: list[str] | None,
 def milestone_list_main(front: str, as_json: bool = False,
                         history: bool = False) -> int:
     verb = "milestone list"
-    _me, violations, front_name, record = _gate_front(verb, front)
+    me, violations = caller.resolve(verb)
+    front_name = (front or "").strip()
+    if not front_name:
+        violations.append("field 'front' is required")
+    record = fronts.read_front_record(front_name) if front_name else None
+    if front_name and record is None:
+        violations.append(f"unknown front '{front_name}'")
+    caller.check_role(me, verb, FOREMAN, SUPERVISOR, violations=violations)
+    caller.check_visible_front(me, front_name or None, violations=violations)
     if violations:
         return _refuse(violations)
     assert record is not None

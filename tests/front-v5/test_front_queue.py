@@ -175,8 +175,11 @@ def test_team_fits_names_the_pool_numbers(env, capsys):
         "pool fake: cap 3, reserved 2, wants 2")
 
 
-def test_front_queue_refuses_a_supervisor(env, monkeypatch, capsys):
+def test_front_queue_prints_all_names_for_a_supervisor(
+        env, monkeypatch, capsys):
+    """The queue order is public: a supervisor sees every queued name."""
     write_v5("alpha", builders=1)
+    write_v5("beta", builders=1)
     store.write_snapshot(paths.roster_path(), {"sessions": {
         "ses-sup0001": Session(
             id="ses-sup0001", role="supervisor", pool="opus",
@@ -184,9 +187,10 @@ def test_front_queue_refuses_a_supervisor(env, monkeypatch, capsys):
         ).to_dict(),
     }})
     monkeypatch.setenv(SESSION_ENV, "ses-sup0001")
-    assert cli.main(["front", "queue"]) == 1
-    err = capsys.readouterr().err
-    assert "role 'supervisor' may not call 'front queue'" in err
+    assert cli.main(["front", "queue"]) == 0
+    out = capsys.readouterr().out
+    assert "alpha" in out
+    assert "beta" in out
 
 
 def test_one_tick_starts_the_top_front_and_not_the_second(

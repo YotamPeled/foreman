@@ -46,8 +46,8 @@ SUPERVISOR_TOOLS = frozenset({
 })
 #: The foreman role's own row: answers and rules, never front or job verbs.
 FOREMAN_TOOLS = frozenset({
-    "answer", "attach", "checkpoint", "doctor", "front_allocate",
-    "front_land", "front_policy", "front_queue", "front_release", "front_reserve", "front_resume", "front_show", "front_stop", "front_team", "inbox", "kill", "launch", "map_show", "pool_clear", "pool_list", "register", "relaunch",
+    "answer", "attach", "checkpoint", "doctor", "evidence", "front_allocate",
+    "front_land", "front_policy", "front_queue", "front_release", "front_reserve", "front_resume", "front_show", "front_stop", "front_team", "inbox", "job_list", "kill", "launch", "map_show", "milestone_list", "node_list", "pool_clear", "pool_list", "register", "relaunch",
     "resource_list", "rule",
     "status",
     "tell", "turn", "version", "wait", "wake",

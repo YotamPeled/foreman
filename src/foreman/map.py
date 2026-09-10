@@ -470,11 +470,8 @@ def map_show_main(front: str, repo: str | None = None,
     record = fronts.read_front_record(front_name) if front_name else None
     if front_name and record is None:
         violations.append(f"unknown front '{front_name}'")
-    if me is not None and me.role == SUPERVISOR:
-        caller.check_front_supervisor(me, front_name or None, verb,
-                                      violations=violations)
-    else:
-        caller.check_role(me, verb, FOREMAN, violations=violations)
+    caller.check_role(me, verb, FOREMAN, SUPERVISOR, violations=violations)
+    caller.check_visible_front(me, front_name or None, violations=violations)
     repo_name = (repo or "").strip()
     if violations:
         return _refuse(violations)

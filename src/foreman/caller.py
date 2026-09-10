@@ -140,6 +140,58 @@ def check_front_supervisor(
         )
 
 
+def visible_fronts(me: Caller | None) -> list[str] | None:
+    """Fronts this caller may read.
+
+    ``None`` means every front: the owner at a terminal, and the
+    foreman. A supervisor or a worker sees the front on its roster
+    line. An unknown session (``me is None``) sees none.
+    """
+    if me is None:
+        return []
+    if me.role in (OWNER, FOREMAN):
+        return None
+    front = me.session.get("front")
+    if isinstance(front, str) and front:
+        return [front]
+    return []
+
+
+def check_visible_front(
+    me: Caller | None, front: str | None, *, violations: list[str]
+) -> None:
+    """Refuse a front this caller may not read.
+
+    Owner and foreman are never refused. A supervisor or worker looking
+    at another front gets ``front 'orbit' is not yours (v5)``. An
+    unknown session is already covered by :func:`resolve`.
+    """
+    if me is None or not front:
+        return
+    visible = visible_fronts(me)
+    if visible is None or front in visible:
+        return
+    mine = visible[0] if visible else "(none)"
+    violations.append(f"front '{front}' is not yours ({mine})")
+
+
+def drop_role_refusal(
+    me: Caller | None, verb: str, violations: list[str]
+) -> None:
+    """Drop a role refusal for a known session; keep identity refusals.
+
+    Used by verbs that any roster session may call (status, the public
+    queue names) without offering those verbs to workers over MCP: the
+    ``check_role`` call stays in the handler so the gate scanner still
+    reads the supervisor/foreman row.
+    """
+    if me is None:
+        return
+    marker = f"role '{me.role}' may not call '{verb}'"
+    if marker in violations:
+        violations.remove(marker)
+
+
 def by_line(me: Caller | None) -> str:
     return me.session_id if me is not None and me.session_id else OWNER
 

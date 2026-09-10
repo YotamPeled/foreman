@@ -22,7 +22,7 @@ import time
 from pathlib import Path
 
 from . import caller, cli, entities, fronts, ids, paths, resources, store
-from .caller import Refusal
+from .caller import FOREMAN, SUPERVISOR, Refusal
 from .entities import (
     CHILDLESS_NODE_KINDS, NODE_KINDS, NODE_SCOPES, NODE_STATES,
 )
@@ -483,8 +483,8 @@ def node_list_main(front: str, under: str | None = None,
     record = fronts.read_front_record(front_name) if front_name else None
     if front_name and record is None:
         violations.append(f"unknown front '{front_name}'")
-    caller.check_front_supervisor(me, front_name or None, verb,
-                                  violations=violations)
+    caller.check_role(me, verb, FOREMAN, SUPERVISOR, violations=violations)
+    caller.check_visible_front(me, front_name or None, violations=violations)
     under_id = None if under is None else str(under).strip()
     if under is not None and not under_id:
         violations.append("field '--under' is required")

@@ -349,14 +349,41 @@ def _supervisor_for(front: str, roster: dict) -> tuple[str, dict] | None:
     return running or backup
 
 
-def _header(roster: dict, observed: dict | None, now: datetime) -> str:
-    if isinstance(observed, dict) and isinstance(
+def _is_visible(name: object, visible: list[str] | None) -> bool:
+    """True when ``name`` is a front this caller may see.
+
+    ``visible is None`` means every front (owner, foreman).
+    """
+    if visible is None:
+        return True
+    return isinstance(name, str) and name in visible
+
+
+def _roster_on_visible(roster: dict, visible: list[str] | None) -> dict:
+    """Sessions whose front is visible; unchanged when ``visible`` is None."""
+    if visible is None:
+        return roster
+    shown: dict = {}
+    for sid, record in roster.items():
+        if isinstance(record, dict) and record.get("front") in visible:
+            shown[sid] = record
+    return shown
+
+
+def _header(roster: dict, observed: dict | None, now: datetime,
+            visible: list[str] | None = None) -> str:
+    shown = _roster_on_visible(roster, visible)
+    if visible is None and isinstance(observed, dict) and isinstance(
             observed.get("swarm"), dict):
         swarm = observed["swarm"]
-        registered = swarm.get("sessions_registered", len(roster))
+        registered = swarm.get("sessions_registered", len(shown))
         seen = swarm.get("sessions_observed", 0)
     else:
-        registered, seen = len(roster), 0
+        registered, seen = len(shown), 0
+        if visible is not None and isinstance(observed, dict):
+            sessions_view = observed.get("sessions") or {}
+            if isinstance(sessions_view, dict):
+                seen = sum(1 for sid in shown if sid in sessions_view)
     frozen = "frozen" if paths.frozen_path().exists() else "live"
     if isinstance(observed, dict) and _parse_time(observed.get("at")):
         tick = f"collector {_since(observed.get('at'), now)} ago"
@@ -439,8 +466,24 @@ def _format_hours(hours: float) -> str:
     return f"about {minutes // 60 // 24}d"
 
 
-def _needs_you(now: datetime) -> list[str]:
+def _inbox_front(item: dict, roster: dict) -> str | None:
+    """The front an inbox item belongs to, via the asking session."""
+    for key in ("from", "by"):
+        record = roster.get(item.get(key) or "")
+        if isinstance(record, dict):
+            front = record.get("front")
+            if isinstance(front, str) and front:
+                return front
+    return None
+
+
+def _needs_you(now: datetime, roster: dict | None = None,
+               visible: list[str] | None = None) -> list[str]:
     items = _open_inbox()
+    if visible is not None:
+        roster = roster if isinstance(roster, dict) else {}
+        items = [item for item in items
+                 if _is_visible(_inbox_front(item, roster), visible)]
     if not items:
         return ["Needs you: nothing needs you."]
     lines = [f"Needs you ({len(items)}):"]
@@ -475,12 +518,29 @@ def _problem_context(kind: str, subject: str, roster: dict,
     return None
 
 
-def _problems(roster: dict, jobs_by_session: dict, now: datetime) -> list[str]:
+def _problem_front(record: dict, roster: dict) -> str | None:
+    """The front an anomaly is about, via its subject session or name."""
+    subject = record.get("subject")
+    entry = roster.get(subject) if isinstance(subject, str) else None
+    if isinstance(entry, dict):
+        front = entry.get("front")
+        if isinstance(front, str) and front:
+            return front
+    if isinstance(subject, str) and subject:
+        return subject
+    return None
+
+
+def _problems(roster: dict, jobs_by_session: dict, now: datetime,
+              visible: list[str] | None = None) -> list[str]:
     try:
         records = store.read_ledger(paths.anomalies_path())
     except OSError:
         records = []
     open_lines = open_anomalies(records)
+    if visible is not None:
+        open_lines = [record for record in open_lines
+                      if _is_visible(_problem_front(record, roster), visible)]
     if not open_lines:
         return ["Problems: none."]
     lines = [f"Problems ({len(open_lines)}):"]
@@ -862,7 +922,7 @@ def _is_v5_swarm() -> bool:
                for name in front_names())
 
 
-def _front_queue_block() -> list[str]:
+def _front_queue_block(visible: list[str] | None = None) -> list[str]:
     """The swarm front queue: queued fronts with why they wait, then running.
 
     Omitted on a v0 swarm with nothing queued, so the committed golden
@@ -878,14 +938,24 @@ def _front_queue_block() -> list[str]:
             continue
         if record.get("state") == "active":
             running.append(record)
+    if visible is not None:
+        queued = [record for record in queued
+                  if _is_visible(record.get("name"), visible)]
+        running = [record for record in running
+                   if _is_visible(record.get("name"), visible)]
     if not queued and not running and not _is_v5_swarm():
         return []
     if not queued and not running:
         return ["queue: empty."]
     lines = ["queue:"]
+    full_queued = fronts_mod.queued_fronts()
     for record in queued:
         name = record.get("name") or ""
-        reason = fronts_mod.queue_wait_reason(record, queued)
+        reason = fronts_mod.queue_wait_reason(record, full_queued)
+        if visible is not None and reason.startswith("behind "):
+            other = reason[len("behind "):]
+            if not _is_visible(other, visible):
+                reason = "queued"
         lines.append(f"  {name}  {reason}")
     running.sort(key=lambda rec: rec.get("name") or "")
     for record in running:
@@ -1192,9 +1262,11 @@ def _overall(loaded: list[tuple[str, list[dict], list[dict]]],
     return line
 
 
-def _job_queue(now: datetime) -> list[str]:
+def _job_queue(now: datetime, visible: list[str] | None = None) -> list[str]:
     waiting: list[str] = []
     for name in front_names():
+        if visible is not None and not _is_visible(name, visible):
+            continue
         if _is_done(name):
             continue
         tasks = {task.get("id"): task.get("title") for task in front_tasks(name)}
@@ -1211,12 +1283,16 @@ def _job_queue(now: datetime) -> list[str]:
     return ["Job queue:"] + waiting
 
 
-def _merge_queue(titles: dict[str, str], now: datetime) -> list[str]:
+def _merge_queue(titles: dict[str, str], now: datetime,
+                 visible: list[str] | None = None) -> list[str]:
     from .merge import is_failed, is_landed
 
     merges = merge_rows()
     if merges is None:
         return ["Merge queue: empty."]
+    if visible is not None:
+        merges = [row for row in merges
+                  if _is_visible(row.get("front"), visible)]
     waiting = [row for row in merges
                if not is_landed(row) and not is_failed(row)]
     landed = [row for row in merges if is_landed(row)]
@@ -1268,9 +1344,16 @@ def _capacity(observed: dict | None, now: datetime | None = None) -> list[str]:
     return list(lines) + extra
 
 
-def render(now: datetime | None = None) -> str:
+def render(now: datetime | None = None,
+           visible: list[str] | None = None) -> str:
     """The whole screen, in section 13 order. Pure text: no colour, no
-    terminal control codes — a pipe gets exactly what a terminal gets."""
+    terminal control codes — a pipe gets exactly what a terminal gets.
+
+    ``visible`` is the caller's readable fronts from
+    :func:`caller.visible_fronts`: ``None`` prints every front (owner,
+    foreman, and direct callers); a list prints only those names. The
+    Capacity block is always the whole machine.
+    """
     moment = now or _now()
     roster = caller.read_roster().get("sessions", {})
     if not isinstance(roster, dict):
@@ -1282,15 +1365,21 @@ def render(now: datetime | None = None) -> str:
     if not isinstance(observed, dict):
         observed = None
     loaded, titles, jobs_by_session = _load_fronts()
+    if visible is not None:
+        loaded = [(name, tasks, jobs) for name, tasks, jobs in loaded
+                  if name in visible]
     inbox = _open_inbox()
-    blocks = [_header(roster, observed, moment),
-              *_front_queue_block(),
-              *_needs_you(moment),
-              *_problems(roster, jobs_by_session, moment),
+    if visible is not None:
+        inbox = [item for item in inbox
+                 if _is_visible(_inbox_front(item, roster), visible)]
+    blocks = [_header(roster, observed, moment, visible=visible),
+              *_front_queue_block(visible=visible),
+              *_needs_you(moment, roster=roster, visible=visible),
+              *_problems(roster, jobs_by_session, moment, visible=visible),
               *_working(roster, observed, moment, loaded, inbox),
               *_done_block(loaded, moment),
-              *_job_queue(moment),
-              *_merge_queue(titles, moment),
+              *_job_queue(moment, visible=visible),
+              *_merge_queue(titles, moment, visible=visible),
               *_capacity(observed, moment),
               _overall(loaded, inbox, moment)]
     return "\n".join(blocks) + "\n"
@@ -1314,8 +1403,10 @@ def status_main(fixture: str | None = None) -> int:
     me, violations = caller.resolve("status")
     caller.check_role(me, "status", FOREMAN, SUPERVISOR,
                       violations=violations)
+    caller.drop_role_refusal(me, "status", violations)
     if violations:
         return Refusal(violations).report()
+    visible = caller.visible_fronts(me)
     if fixture is not None:
         if not Path(fixture).is_dir():
             print(f"foreman status: no such fixture directory: {fixture}")
@@ -1323,13 +1414,13 @@ def status_main(fixture: str | None = None) -> int:
         previous = os.environ.get(paths.STATE_ENV)
         os.environ[paths.STATE_ENV] = fixture
         try:
-            print(render(), end="")
+            print(render(visible=visible), end="")
         finally:
             if previous is None:
                 del os.environ[paths.STATE_ENV]
             else:
                 os.environ[paths.STATE_ENV] = previous
         return 0
-    print(render(), end="")
+    print(render(visible=visible), end="")
     return 0
 

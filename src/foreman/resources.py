@@ -135,6 +135,7 @@ def resource_list_main() -> int:
                       caller.MERGE_DESK, violations=violations)
     if violations:
         return _refuse(violations)
+    visible = caller.visible_fronts(me)
     settings = config.load()
     names = settings.resource_names()
     held = held_by_name()
@@ -144,6 +145,8 @@ def resource_list_main() -> int:
         shown = count if count is not None else 0
         lines.append(format_line(name, held.get(name, 0), shown))
         for front, nid in holders_of(name):
+            if visible is not None and front not in visible:
+                continue
             lines.append(f"  {front} {nid}")
     if lines:
         print("\n".join(lines))

@@ -1411,6 +1411,7 @@ def _list_lines() -> list[str]:
 def front_list_main() -> int:
     me, violations = caller.resolve("front list")
     caller.check_role(me, "front list", violations=violations)
+    caller.drop_role_refusal(me, "front list", violations)
     if violations:
         return Refusal(violations).report()
     for line in _list_lines():
@@ -1423,6 +1424,7 @@ def front_queue_main() -> int:
     me, violations = caller.resolve("front queue")
     caller.check_role(me, "front queue", caller.FOREMAN,
                       violations=violations)
+    caller.drop_role_refusal(me, "front queue", violations)
     if violations:
         return Refusal(violations).report()
     queued = queued_fronts()
@@ -2053,11 +2055,9 @@ def front_show_main(name: str, as_json: bool = False) -> int:
     record = read_front_record(key) if key else None
     if key and record is None:
         violations.append(f"unknown front '{key}'")
-    if me is not None and me.role == caller.SUPERVISOR:
-        caller.check_front_supervisor(me, key or None, verb,
-                                      violations=violations)
-    else:
-        caller.check_role(me, verb, caller.FOREMAN, violations=violations)
+    caller.check_role(me, verb, caller.FOREMAN, caller.SUPERVISOR,
+                      violations=violations)
+    caller.check_visible_front(me, key or None, violations=violations)
     if violations:
         return Refusal(violations).report()
     assert record is not None
@@ -2211,11 +2211,9 @@ def front_policy_main(front: str, repo: str) -> int:
     record = read_front_record(key) if key else None
     if key and record is None:
         violations.append(f"unknown front '{key}'")
-    if me is not None and me.role == caller.SUPERVISOR:
-        caller.check_front_supervisor(me, key or None, verb,
-                                      violations=violations)
-    else:
-        caller.check_role(me, verb, caller.FOREMAN, violations=violations)
+    caller.check_role(me, verb, caller.FOREMAN, caller.SUPERVISOR,
+                      violations=violations)
+    caller.check_visible_front(me, key or None, violations=violations)
     if violations:
         return Refusal(violations).report()
     from . import landing

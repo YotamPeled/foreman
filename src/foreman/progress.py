@@ -37,7 +37,7 @@ from . import (
     caller, capacity, cli, config, entities, fronts, hooks, ids, node as node_mod,
     paths, resources as resources_mod, store, wait,
 )
-from .caller import MERGE_DESK, OWNER, SUPERVISOR, Refusal
+from .caller import FOREMAN, MERGE_DESK, OWNER, SUPERVISOR, Refusal
 from .entities import JOB_ROLES
 
 CONFIRMED = "CONFIRMED"
@@ -1239,7 +1239,8 @@ def evidence_list_main(front: str) -> int:
     record = fronts.read_front_record(key) if key else None
     if key and record is None:
         violations.append(f"unknown front '{key}'")
-    _check(me, key or None, verb, violations)
+    caller.check_role(me, verb, FOREMAN, SUPERVISOR, violations=violations)
+    caller.check_visible_front(me, key or None, violations=violations)
     if violations:
         return _refuse(violations)
     lines = []
@@ -1966,7 +1967,8 @@ def job_list_main(front: str) -> int:
     record = fronts.read_front_record(front_name) if front_name else None
     if front_name and record is None:
         violations.append(f"unknown front '{front_name}'")
-    _check(me, front_name or None, verb, violations)
+    caller.check_role(me, verb, FOREMAN, SUPERVISOR, violations=violations)
+    caller.check_visible_front(me, front_name or None, violations=violations)
     if violations:
         return _refuse(violations)
     assert record is not None
