@@ -6,13 +6,13 @@ the tests name the ceiling they need; ``front add`` is not the seam.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from foreman import cli, entities, fronts, ids, paths, store
 from foreman.caller import SESSION_ENV
-from foreman.team import TeamEntry, derive_team
+from foreman.team import TeamEntry, apply_team_signals, derive_team
 
 NOW = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -218,3 +218,80 @@ def test_milestone_land_records_working_team_again(env, capsys):
     assert second.get("derived_at")
     working = second.get("working_team")
     assert isinstance(working, list) and working
+
+
+def seed_working(name: str, grok: int, grok_ceiling: int,
+                 muse: int, muse_ceiling: int) -> dict:
+    record = fronts.read_front_record(name)
+    assert record is not None
+    team = [
+        {"role": "supervisor", "pool": "grok", "count": 1, "ceiling": 1,
+         "reason": "supervisor", "agent": "grok-4.6", "model": "grok-4.6",
+         "effort": "high"},
+        {"role": "builder", "pool": "grok", "count": grok,
+         "ceiling": grok_ceiling, "reason": "seeded",
+         "agent": "grok-4.6", "model": "grok-4.6", "effort": "high"},
+        {"role": "builder", "pool": "muse", "count": muse,
+         "ceiling": muse_ceiling, "reason": "seeded",
+         "agent": "muse", "model": "muse", "effort": "high"},
+    ]
+    return fronts.revise_front(
+        name, record, "owner",
+        working_team=team, derived_at=iso(NOW))
+
+
+def evidence_claims(front: str) -> list[str]:
+    try:
+        lines = store.read_ledger(paths.front_evidence_path(front))
+    except OSError:
+        return []
+    return [str(line.get("claim") or "") for line in lines
+            if isinstance(line, dict)]
+
+
+def test_pool_out_raises_the_other_builder_and_writes_evidence(env):
+    """Grok is out: muse (the other builder) steps 1 -> 2 within 3."""
+    write_front("alpha", grok=3, muse=3)
+    seed_working("alpha", grok=2, grok_ceiling=3, muse=1, muse_ceiling=3)
+    store.append_ledger(paths.pools_path(), {
+        "id": "grok", "pool": "grok",
+        "out_until": iso(NOW + timedelta(hours=1)),
+        "because": "quota",
+    })
+    record = fronts.read_front_record("alpha")
+    apply_team_signals("alpha", record, now=NOW, who="collector")
+    updated = fronts.read_front_record("alpha")
+    assert updated is not None
+    muse = [e for e in updated["working_team"]
+            if e.get("role") == "builder" and e.get("pool") == "muse"][0]
+    grok = [e for e in updated["working_team"]
+            if e.get("role") == "builder" and e.get("pool") == "grok"][0]
+    assert muse["count"] == 2
+    assert grok["count"] == 2
+    claims = evidence_claims("alpha")
+    assert any(
+        "team adjusted: builder muse 1 -> 2 (pool out)" in claim
+        for claim in claims), claims
+
+
+def test_signal_at_the_ceiling_files_an_ask_and_changes_nothing(env):
+    write_front("alpha", grok=3, muse=3)
+    seed_working("alpha", grok=3, grok_ceiling=3, muse=3, muse_ceiling=3)
+    store.append_ledger(paths.pools_path(), {
+        "id": "grok", "pool": "grok",
+        "out_until": iso(NOW + timedelta(hours=1)),
+        "because": "quota",
+    })
+    before = fronts.read_front_record("alpha")
+    assert before is not None
+    apply_team_signals("alpha", before, now=NOW, who="collector")
+    after = fronts.read_front_record("alpha")
+    assert after is not None
+    assert after.get("working_team") == before.get("working_team")
+    inbox = store.read_ledger(paths.inbox_path())
+    assert inbox, "expected an owner ask"
+    question = str(inbox[0].get("question") or "")
+    assert "front alpha" in question
+    assert "(pool out)" in question
+    assert inbox[0].get("kind") == "money"
+    assert evidence_claims("alpha") == []

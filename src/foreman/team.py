@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import dataclasses
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
-from . import config, paths, store
+from . import config, entities, ids, paths, store
 
 
 #: Two builders per supervisor on one codebase. Three or four only where
@@ -31,6 +32,13 @@ MUSE_MECHANICAL_SHARE = 0.5
 
 #: A front with no tree yet: its supervisor and one builder.
 NO_TREE_BUILDERS = 1
+
+SIGNAL_POOL_OUT = "pool out"
+SIGNAL_MILESTONE_LATE = "milestone late"
+SIGNAL_JOBS_FAST = "jobs returning under fifteen minutes"
+SIGNAL_FAILURE_TWICE = "same failure class twice"
+FAST_JOB_SECONDS = 15 * 60
+_BUILDER_ROLES = ("builder", "backup-builder")
 
 
 @dataclass(frozen=True)
@@ -349,3 +357,320 @@ def working_team_of(record: dict, tree: list[dict] | None = None,
     nodes = tree if tree is not None else load_tree(name)
     map_facts = facts if facts is not None else load_facts(name)
     return [entry.to_dict() for entry in derive_team(record, nodes, map_facts)]
+
+
+def _as_utc(now: datetime | None) -> datetime:
+    moment = now if now is not None else datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+def _parse_iso(text: object) -> datetime | None:
+    if not isinstance(text, str) or not text:
+        return None
+    try:
+        moment = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    return moment
+
+
+def _int(value: object) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        return 0
+    return value
+
+
+def _evidence_claims(front: str) -> list[str]:
+    try:
+        lines = store.read_ledger(paths.front_evidence_path(front))
+    except OSError:
+        return []
+    claims: list[str] = []
+    for line in lines:
+        if not isinstance(line, dict):
+            continue
+        claim = line.get("claim")
+        if isinstance(claim, str) and claim:
+            claims.append(claim)
+    return claims
+
+
+def _already_noted(front: str, signal: str) -> bool:
+    needle = f"({signal})"
+    return any(needle in claim for claim in _evidence_claims(front))
+
+
+def _open_asks(front: str) -> list[dict]:
+    try:
+        items = store.fold_by_id(store.read_ledger(paths.inbox_path()))
+    except OSError:
+        return []
+    found: list[dict] = []
+    for item in items:
+        if not isinstance(item, dict) or item.get("answered_at"):
+            continue
+        question = str(item.get("question") or "")
+        if f"front {front} " in question or question.startswith(f"front {front}"):
+            found.append(item)
+    return found
+
+
+def _milestone_late(front: str, now: datetime) -> bool:
+    moment = _as_utc(now)
+    nodes = load_tree(front)
+    try:
+        milestones = store.fold_by_id(
+            store.read_ledger(paths.front_milestones_path(front)))
+    except OSError:
+        milestones = []
+    rows = list(milestones) + [
+        node for node in nodes
+        if isinstance(node, dict) and node.get("kind") == "milestone"]
+    for row in rows:
+        if str(row.get("state") or "") == "landed":
+            continue
+        estimate = _parse_iso(row.get("estimate") or row.get("eta"))
+        if estimate is not None and moment > estimate:
+            return True
+    return False
+
+
+def _jobs_fast(front: str) -> bool:
+    try:
+        jobs = store.fold_by_id(store.read_ledger(paths.front_jobs_path(front)))
+    except OSError:
+        return False
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        started = _parse_iso(job.get("started_at"))
+        returned = _parse_iso(job.get("returned_at"))
+        if started is None or returned is None:
+            continue
+        if (returned - started).total_seconds() < FAST_JOB_SECONDS:
+            return True
+    return False
+
+
+def _failure_twice(front: str) -> bool:
+    try:
+        findings = store.read_ledger(paths.front_findings_path(front))
+    except OSError:
+        findings = []
+    counts: dict[str, int] = {}
+    for line in findings:
+        if not isinstance(line, dict):
+            continue
+        class_ = line.get("class")
+        if not (isinstance(class_, str) and class_):
+            continue
+        counts[class_] = counts.get(class_, 0) + 1
+        if counts[class_] >= 2:
+            return True
+    try:
+        jobs = store.fold_by_id(store.read_ledger(paths.front_jobs_path(front)))
+    except OSError:
+        jobs = []
+    review_counts: dict[str, int] = {}
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        class_ = job.get("review_class")
+        if not (isinstance(class_, str) and class_) or class_ == "clean":
+            continue
+        review_counts[class_] = review_counts.get(class_, 0) + 1
+        if review_counts[class_] >= 2:
+            return True
+    return False
+
+
+def detect_signals(front: str, record: dict,
+                   now: datetime | None = None) -> list[str]:
+    """Signals that fire on this front at ``now``, in a stable order."""
+    from . import capacity
+
+    moment = _as_utc(now)
+    fired: list[str] = []
+    team = working_team_of(record)
+    our_pools = {str(entry.get("pool") or "") for entry in team
+                 if entry.get("role") in _BUILDER_ROLES
+                 and entry.get("pool")}
+    out = set(capacity.out_pools(moment))
+    if our_pools & out:
+        fired.append(SIGNAL_POOL_OUT)
+    if _milestone_late(front, moment):
+        fired.append(SIGNAL_MILESTONE_LATE)
+    if _jobs_fast(front):
+        fired.append(SIGNAL_JOBS_FAST)
+    if _failure_twice(front):
+        fired.append(SIGNAL_FAILURE_TWICE)
+    return fired
+
+
+def _builder_indexes(working: list[dict], *,
+                     avoid_pools: set[str] | None = None) -> list[int]:
+    avoid = avoid_pools or set()
+    indexes: list[int] = []
+    for i, entry in enumerate(working):
+        if entry.get("role") not in _BUILDER_ROLES:
+            continue
+        pool = str(entry.get("pool") or "")
+        if pool in avoid:
+            continue
+        indexes.append(i)
+    return indexes
+
+
+def _raise_index(working: list[dict], *,
+                 avoid_pools: set[str] | None = None) -> int | None:
+    """First builder under its ceiling, else None (at the ceiling)."""
+    for i in _builder_indexes(working, avoid_pools=avoid_pools):
+        count = _int(working[i].get("count"))
+        ceiling = _int(working[i].get("ceiling"))
+        if count < ceiling:
+            return i
+    return None
+
+
+def _ask_index(working: list[dict], *,
+               avoid_pools: set[str] | None = None) -> int | None:
+    indexes = _builder_indexes(working, avoid_pools=avoid_pools)
+    return indexes[0] if indexes else None
+
+
+def _lower_index(working: list[dict]) -> int | None:
+    for i in _builder_indexes(working):
+        if _int(working[i].get("count")) > 0:
+            return i
+    return None
+
+
+def file_ceiling_ask(front: str, entry: dict, signal: str,
+                     who: str | None) -> None:
+    """File an owner ask with the numbers (tsk-5.4's inbox path).
+
+    The raise itself is tsk-5.4: this only asks, and only when no open
+    ask for this front and signal is already sitting in the inbox.
+    """
+    marker = f"({signal})"
+    for item in _open_asks(front):
+        if marker in str(item.get("question") or ""):
+            return
+    role = str(entry.get("role") or "")
+    pool = str(entry.get("pool") or "")
+    count = _int(entry.get("count"))
+    ceiling = _int(entry.get("ceiling"))
+    want = count + 1
+    store.append_ledger(
+        paths.inbox_path(),
+        entities.InboxItem(
+            id=ids.mint("inbox"),
+            from_=who or "foreman",
+            kind="money",
+            question=(
+                f"front {front} wants {role} {pool} {want} "
+                f"(ceiling {ceiling}) {marker}"
+            ),
+            recommendation=f"raise {pool} on {front} to {want}",
+            asked_at=store.utcnow_iso(),
+        ).to_dict(),
+        session_id=who,
+    )
+
+
+def _write_adjustment(front: str, entry: dict, old: int, new: int,
+                      signal: str, who: str | None) -> None:
+    role = str(entry.get("role") or "")
+    pool = str(entry.get("pool") or "")
+    store.append_ledger(
+        paths.front_evidence_path(front),
+        entities.Evidence(
+            id=ids.mint("evidence"),
+            on=front,
+            claim=(f"team adjusted: {role} {pool} {old} -> {new} "
+                   f"({signal})"),
+            status="CONFIRMED",
+            command="collector tick",
+        ).to_dict(),
+        session_id=who,
+    )
+
+
+def apply_team_signals(name: str, record: dict | None = None, *,
+                       now: datetime | None = None,
+                       who: str | None = None) -> dict | None:
+    """Move the working team one step per new signal, or file an ask."""
+    from . import capacity
+    from . import fronts
+
+    key = (name or "").strip()
+    if not key:
+        return record
+    current = record if record is not None else fronts.read_front_record(key)
+    if current is None:
+        return None
+    moment = _as_utc(now)
+    subject = who or "collector"
+    working = [dict(entry) for entry in working_team_of(current)]
+    if not working:
+        return current
+    changed = False
+    for signal in detect_signals(key, current, moment):
+        if _already_noted(key, signal):
+            continue
+        avoid: set[str] = set()
+        if signal == SIGNAL_POOL_OUT:
+            avoid = {pool for pool, _rec in capacity.out_pools(moment).items()}
+        if signal == SIGNAL_JOBS_FAST:
+            idx = _lower_index(working)
+            if idx is None:
+                continue
+            old = _int(working[idx].get("count"))
+            new = old - 1
+            working[idx]["count"] = new
+            _write_adjustment(key, working[idx], old, new, signal, subject)
+            changed = True
+            continue
+        idx = _raise_index(working, avoid_pools=avoid)
+        if idx is None:
+            ask_at = _ask_index(working, avoid_pools=avoid)
+            if ask_at is not None:
+                file_ceiling_ask(key, working[ask_at], signal, subject)
+            continue
+        old = _int(working[idx].get("count"))
+        new = old + 1
+        working[idx]["count"] = new
+        _write_adjustment(key, working[idx], old, new, signal, subject)
+        changed = True
+    if not changed:
+        return current
+    return fronts.revise_front(
+        key, current, subject,
+        working_team=working,
+        derived_at=store.utcnow_iso(),
+    )
+
+
+def adjust_all_fronts(now: datetime | None = None,
+                      who: str | None = None) -> None:
+    """Read the ledgers and adjust every live v5 front (one collector tick)."""
+    from . import fronts
+
+    try:
+        names = sorted(entry.name for entry in paths.fronts_dir().iterdir()
+                       if entry.is_dir())
+    except OSError:
+        return
+    moment = _as_utc(now)
+    subject = who or "collector"
+    for name in names:
+        record = fronts.read_front_record(name)
+        if record is None or record.get("shape") != "v5":
+            continue
+        if record.get("state") in ("done", "halted", "frozen", "stopped"):
+            continue
+        apply_team_signals(name, record, now=moment, who=subject)

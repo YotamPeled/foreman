@@ -29,7 +29,10 @@ from . import caller, cli, config, entities, ids, monitors, paths, store
 from .pools import plugins as pool_plugins
 from .caller import Refusal
 from .entities import JOB_ROLES
-from .team import TeamEntry, derive_team, format_team_line, record_working_team
+from .team import (  # noqa: F401 - re-export for the job's named seam
+    TeamEntry, apply_team_signals, derive_team, format_team_line,
+    record_working_team,
+)
 
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 

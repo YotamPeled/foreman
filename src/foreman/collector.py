@@ -1843,6 +1843,12 @@ def _tick_inner(moment: datetime, now_iso: str,
     _front_queue_tick(cstate, now_iso)
     _queue_tick(cstate, now_iso)
 
+    # Decision 31: the working team moves one step on a signal, or an
+    # ask is filed when the step would pass the owner's ceiling.
+    from . import team as _team
+
+    _team.adjust_all_fronts(moment, who=COLLECTOR_SUBJECT)
+
     # After the queue pass so a rebase item queued this tick waits for
     # the next: the detecting tick is the one that records behind.
     _detect_target_moves(cstate, now_iso)
