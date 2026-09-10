@@ -346,6 +346,34 @@ class MapFact(Entity):
 
 
 @dataclass(frozen=True)
+class Milestone(Entity):
+    """One line on a front's milestone ledger (``fronts/<name>/milestones.jsonl``).
+
+    ``op`` is ``add``, ``split`` or ``merge``. ``from_ids`` names the
+    milestones a split or merge came from. The fold fills ``split_into``
+    and ``merged_into`` from later lines; live milestones have neither.
+    """
+
+    _aliases: ClassVar[dict[str, str]] = {"break_": "break"}
+
+    id: str | None = None
+    front: str = ""
+    op: str = ""
+    order: int = 0
+    title: str = ""
+    done_when: str = ""
+    verify: str = ""
+    reason: str = ""
+    break_: str = ""
+    from_ids: list = field(default_factory=list)
+    split_into: list = field(default_factory=list)
+    merged_into: list = field(default_factory=list)
+    force: bool = False
+    at: str | None = None
+    by: str | None = None
+
+
+@dataclass(frozen=True)
 class Checkpoint(Entity):
     session: str | None = None
     doing: str = ""

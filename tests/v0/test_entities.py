@@ -19,6 +19,7 @@ from foreman.entities import (
     MapFact,
     Measurement,
     Merge,
+    Milestone,
     Pool,
     Ruling,
     Session,
@@ -176,6 +177,20 @@ INSTANCES = [
         at="2026-09-10T23:00:00+00:00",
         by="ses-sup0001",
     ),
+    Milestone(
+        id="mil-abc1234",
+        front="v5",
+        op="add",
+        order=1,
+        title="Front inputs",
+        done_when="the front takes the owner's inputs",
+        verify="python -m pytest tests -q",
+        reason="every later milestone writes onto the front record",
+        break_="drop the goal key from a v5 brief",
+        from_ids=[],
+        at="2026-09-10T00:40:00+00:00",
+        by="ses-sup0001",
+    ),
     Checkpoint(
         session="ses-abc1234",
         doing="splitting task",
@@ -236,6 +251,8 @@ def test_wire_names_for_keywords():
     assert Finding.from_dict({"on": "t", "class": "c"}).class_ == "c"
     assert Finding.from_dict({"on": "t", "class": "c"}).id is None
     assert InboxItem.from_dict({"from": "f"}).from_ == "f"
+    assert Milestone(break_="drop the goal").to_dict()["break"] == "drop the goal"
+    assert Milestone.from_dict({"break": "drop the goal"}).break_ == "drop the goal"
 
 
 def test_from_dict_ignores_unknown_keys():

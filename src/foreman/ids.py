@@ -31,6 +31,7 @@ KIND_PREFIXES = {
     "finding": "fnd",
     "measurement": "msm",
     "map": "map",
+    "milestone": "mil",
     "checkpoint": "chk",
     "inbox": "inb",
     "turn": "trn",

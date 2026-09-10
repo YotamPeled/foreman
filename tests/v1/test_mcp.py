@@ -40,7 +40,7 @@ PANEL_BRIEF = ROOT / "briefs" / "panel"
 #: disagreeing with the table.
 SUPERVISOR_TOOLS = frozenset({
     "ask", "attach", "checkpoint", "doctor", "evidence", "finding",
-    "front_done", "front_show", "front_take", "job_fail", "job_repoint", "job_verify", "kill", "launch", "map_add", "map_import", "map_resolve", "map_show", "measure", "merge_request", "pool_list", "register",
+    "front_done", "front_show", "front_take", "job_fail", "job_repoint", "job_verify", "kill", "launch", "map_add", "map_import", "map_resolve", "map_show", "measure", "merge_request", "milestone_add", "pool_list", "register",
     "relaunch", "rule",
     "status", "task_add", "task_built", "task_landed", "task_reset", "turn",
     "version", "wait", "wake",
@@ -161,7 +161,7 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     # wait from the ledger-waiter job, the collector's verdict; plus
     # front show from the v5 inputs job.
     # Counted, not derived, so a verb added without intent fails here.
-    assert len(names) == 54
+    assert len(names) == 55
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):
