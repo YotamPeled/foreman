@@ -97,14 +97,14 @@ def _ok(argv: list[str]) -> str:
     return proc.stdout
 
 
-def _write_front(name: str) -> None:
+def _write_front(name: str, grok_ceiling: int = 3) -> None:
     directory = _state() / "fronts" / name
     directory.mkdir(parents=True, exist_ok=True)
     team = [
         {"agent": "grok-4.6", "pool": "grok", "model": "grok-4.6",
          "effort": "high", "count": 1, "role": "supervisor"},
         {"agent": "grok-4.6", "pool": "grok", "model": "grok-4.6",
-         "effort": "high", "count": 3, "role": "builder"},
+         "effort": "high", "count": grok_ceiling, "role": "builder"},
         {"agent": "muse", "pool": "muse", "model": "muse",
          "effort": "high", "count": 3, "role": "builder"},
         {"agent": "opus-5", "pool": "claude", "model": "claude-opus-5",
@@ -168,6 +168,18 @@ def run(world) -> str:
     if "4 leaves in the next milestone" not in str(grok.get("reason") or ""):
         raise Failure(f"reason is {grok.get('reason')!r}")
 
+    # The owner's ceiling clamps the derived count: four leaves want two
+    # builders, and a ceiling of one derives one (task break: derive a
+    # count above the owner's ceiling).
+    low = f"{name}low"
+    _write_front(low, grok_ceiling=1)
+    _write_leaves(low, 4)
+    _ok(["front", "team", low])
+    clamped = _builder(_front(low), "grok")
+    if clamped.get("count") != 1 or clamped.get("ceiling") != 1:
+        raise Failure(
+            f"a ceiling of 1 did not clamp the derived count: {clamped}")
+
     reserved = _ok(["front", "reserve", name])
     if "reserved grok 2 (builders)" not in reserved:
         raise Failure(f"reservation did not hold derived 2:\n{reserved}")
@@ -201,6 +213,7 @@ def run(world) -> str:
         raise Failure(f"no pool-out evidence line in {claims}")
     return (
         f"front {name} derived grok 2 of 3 (4 leaves in the next milestone); "
+        f"{low} derived 1 under a ceiling of 1; "
         f"reservation held 2; pool-out raised muse {before} -> "
         f"{after.get('count')} and wrote the evidence line"
     )
