@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
-"""Front proof: the trial-frictions done-when, clause by clause.
+"""Front proof: trial-frictions (inlined) and v5 (one file per clause).
 
     PYTHONPATH=src python bin/foreman-proof trial-frictions
+    PYTHONPATH=src python bin/foreman-proof v5 --milestone N
+    PYTHONPATH=src python bin/foreman-proof v5 --list
 
 Drives this checkout's CLI against an isolated state directory, a fake
-worker, and two fixture repositories. Prints one ``CLAUSE n PASS|FAIL``
-line per done-when clause (clause 9 may SKIP when grok is not on PATH)
-and exits non-zero if any fails.
+worker, and two fixture repositories. Prints one ``CLAUSE id PASS|FAIL``
+line per done-when clause (trial-frictions clause 9 may SKIP when grok
+is not on PATH) and exits non-zero if any fails.
 
+v5 clauses live under ``proof/v5/m<N>_<slug>.py``, loaded by path.
 Standard library only. Never inherits FOREMAN_SESSION, FOREMAN_STATE or
 FOREMAN_CONFIG from the caller: it sets the world those verbs run in.
 """
@@ -16,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import atexit
+import importlib.util
 import json
 import os
 import re
@@ -1347,26 +1351,160 @@ CLAUSES = (
 )
 
 
-def report(n: int, status: str, text: str) -> None:
+# --------------------------------------------------------------------------
+# v5: one clause file per module under proof/v5/
+# --------------------------------------------------------------------------
+
+V5_DIR_NAME = "proof/v5"
+V5_DIR = REPO / "proof" / "v5"
+CLAUSE_FILE_RE = re.compile(r"^m(\d+)_[A-Za-z0-9_]+\.py$")
+
+
+def discover_v5_files(milestone: int | None = None) -> list[Path]:
+    """Clause files named m<N>_<slug>.py, sorted by file name, never imported."""
+    if not V5_DIR.is_dir():
+        return []
+    found: list[Path] = []
+    for path in sorted(V5_DIR.iterdir(), key=lambda p: p.name):
+        if not path.is_file():
+            continue
+        match = CLAUSE_FILE_RE.match(path.name)
+        if match is None:
+            continue
+        if milestone is not None and int(match.group(1)) != milestone:
+            continue
+        found.append(path)
+    return found
+
+
+def load_clause_file(path: Path):
+    """Load a clause module by path. Failure, Skip, run_foreman are injected."""
+    name = f"_foreman_proof_{path.stem}"
+    spec = importlib.util.spec_from_file_location(name, path)
+    if spec is None or spec.loader is None:
+        raise Failure(f"cannot load clause file {path.name}")
+    module = importlib.util.module_from_spec(spec)
+    module.Failure = Failure
+    module.Skip = Skip
+    module.run_foreman = run_foreman
+    module.assert_world = assert_world
+    sys.modules[name] = module
+    spec.loader.exec_module(module)
+    clause = getattr(module, "CLAUSE", None)
+    if not (isinstance(clause, tuple) and len(clause) == 2):
+        raise Failure(f"{path.name} must define CLAUSE = (id, title)")
+    if not callable(getattr(module, "run", None)):
+        raise Failure(f"{path.name} must define def run(world)")
+    return module
+
+
+def list_v5_clauses(files: list[Path]) -> int:
+    try:
+        for path in files:
+            module = load_clause_file(path)
+            cid, title = module.CLAUSE
+            print(f"CLAUSE {cid} {title}", flush=True)
+    except Failure as exc:
+        return _die(str(exc))
+    return 0
+
+
+def report(n: int | str, status: str, text: str) -> None:
     line = " ".join(text.split())
     print(f"CLAUSE {n} {status} {line}", flush=True)
+
+
+def _exit_status(failed: bool) -> int:
+    leftover_units = [
+        name for name in _list_foreman_units()
+        if any(sid in name for sid in _UNITS)
+    ]
+    if leftover_units:
+        print(f"foreman-proof: leftover units: {leftover_units}",
+              file=sys.stderr)
+        failed = True
+    if _TEMP is not None and _TEMP.exists():
+        print(f"foreman-proof: temp dir still present: {_TEMP}",
+              file=sys.stderr)
+        failed = True
+    return 1 if failed else 0
+
+
+def _run_loaded_clauses(files: list[Path], break_clause: object) -> int:
+    global _REAL_GROK
+    _REAL_GROK = shutil.which("grok", path=_ORIG_PATH)
+    root = Path(tempfile.mkdtemp(prefix="foreman-proof-"))
+    atexit.register(cleanup)
+    failed = False
+    try:
+        world = build_world(root)
+        for path in files:
+            try:
+                module = load_clause_file(path)
+                cid, _title = module.CLAUSE
+            except Failure as exc:
+                print(f"foreman-proof: {exc}", file=sys.stderr)
+                failed = True
+                continue
+            try:
+                if str(break_clause) == str(cid) and break_clause not in (0, "0", None, ""):
+                    raise Failure(f"deliberately broken (clause {cid})")
+                msg = module.run(world)
+                report(cid, "PASS", msg)
+            except Skip as exc:
+                report(cid, "SKIP", str(exc))
+            except Failure as exc:
+                report(cid, "FAIL", str(exc))
+                failed = True
+            except subprocess.TimeoutExpired as exc:
+                report(cid, "FAIL", f"timed out: {exc}")
+                failed = True
+            except Exception as exc:  # noqa: BLE001 - one line of evidence
+                report(cid, "FAIL", f"{type(exc).__name__}: {exc}")
+                failed = True
+    finally:
+        cleanup()
+    return _exit_status(failed)
+
+
+def _main_v5(args: argparse.Namespace) -> int:
+    files = discover_v5_files(args.milestone)
+    if args.milestone is not None and not files:
+        return _die(
+            f"unknown milestone {args.milestone}: no clause files in {V5_DIR_NAME}")
+    if args.list_only:
+        return list_v5_clauses(files)
+    return _run_loaded_clauses(files, args.break_clause)
 
 
 def main(argv: list[str] | None = None) -> int:
     global _REAL_GROK
     parser = argparse.ArgumentParser(
-        description="Run the trial-frictions done-when on an isolated world.")
-    parser.add_argument("front", help="front name (must be trial-frictions)")
+        description="Run a front's proof clauses on an isolated world.")
+    parser.add_argument("front", help="front name (trial-frictions or v5)")
     parser.add_argument(
         "--break", dest="break_clause", type=int, default=0,
         help="deliberately fail this clause (supervisor evidence that FAIL works)")
+    parser.add_argument(
+        "--milestone", type=int, default=None, metavar="N",
+        help="run only the v5 clause files of milestone N")
+    parser.add_argument(
+        "--list", action="store_true", dest="list_only",
+        help="print CLAUSE id title per v5 file and exit without a world")
     args = parser.parse_args(argv)
-    if args.front != FRONT:
-        return _die(f"unknown front {args.front!r}; only {FRONT} is implemented")
 
     # Never inherit the caller's world. The harness sets its own.
     for name in (SESSION_ENV, STATE_ENV, CONFIG_ENV):
         os.environ.pop(name, None)
+
+    if args.front == "v5":
+        return _main_v5(args)
+    if args.front != FRONT:
+        return _die(
+            f"unknown front {args.front!r}; only {FRONT} and v5 are implemented")
+    if args.list_only or args.milestone is not None:
+        return _die("--list and --milestone apply to front v5")
+
     _REAL_GROK = shutil.which("grok", path=_ORIG_PATH)
 
     root = Path(tempfile.mkdtemp(prefix="foreman-proof-"))
@@ -1397,19 +1535,7 @@ def main(argv: list[str] | None = None) -> int:
     finally:
         cleanup()
 
-    leftover_units = [
-        name for name in _list_foreman_units()
-        if any(sid in name for sid in _UNITS)
-    ]
-    if leftover_units:
-        print(f"foreman-proof: leftover units: {leftover_units}",
-              file=sys.stderr)
-        failed = True
-    if _TEMP is not None and _TEMP.exists():
-        print(f"foreman-proof: temp dir still present: {_TEMP}",
-              file=sys.stderr)
-        failed = True
-    return 1 if failed else 0
+    return _exit_status(failed)
 
 
 if __name__ == "__main__":
