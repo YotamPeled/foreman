@@ -11,10 +11,12 @@ questions, details and checkpoints come straight from the ledgers through
 ``paths.py`` — nothing here builds a path or opens a state file by hand.
 
 Two version notes. The front queue (front admission) has no writer in
-v0, so that block is left out entirely rather than printed empty. Every
-other block with nothing in it prints one line saying so, never an empty
-heading. Monitors (``measurements.jsonl``) render under each front in
-Working, one line per declared monitor plus the two free ones.
+v0, so that block is left out entirely rather than printed empty. A v5
+swarm prints ``queue:`` under the header: each queued front in order
+with why it waits, then each running front. Every other block with
+nothing in it prints one line saying so, never an empty heading.
+Monitors (``measurements.jsonl``) render under each front in Working,
+one line per declared monitor plus the two free ones.
 
 ``foreman status --fixture <dir>`` reads a state directory from that path
 instead of the real one. ``FOREMAN_NOW`` (an ISO timestamp) pins the clock
@@ -855,6 +857,43 @@ def _v5_queue_line(name: str, front_record: dict | None) -> str | None:
     return f"    queue: {waiting} waiting, {running} running"
 
 
+def _is_v5_swarm() -> bool:
+    return any((front_record_of(name) or {}).get("shape") == "v5"
+               for name in front_names())
+
+
+def _front_queue_block() -> list[str]:
+    """The swarm front queue: queued fronts with why they wait, then running.
+
+    Omitted on a v0 swarm with nothing queued, so the committed golden
+    file holds byte for byte. A v5 swarm always prints the heading.
+    """
+    from . import fronts as fronts_mod
+
+    queued = fronts_mod.queued_fronts()
+    running: list[dict] = []
+    for name in front_names():
+        record = front_record_of(name)
+        if not isinstance(record, dict):
+            continue
+        if record.get("state") == "active":
+            running.append(record)
+    if not queued and not running and not _is_v5_swarm():
+        return []
+    if not queued and not running:
+        return ["queue: empty."]
+    lines = ["queue:"]
+    for record in queued:
+        name = record.get("name") or ""
+        reason = fronts_mod.queue_wait_reason(record, queued)
+        lines.append(f"  {name}  {reason}")
+    running.sort(key=lambda rec: rec.get("name") or "")
+    for record in running:
+        name = record.get("name") or ""
+        lines.append(f"  {name}  running")
+    return lines
+
+
 def _working(roster: dict, observed: dict | None, now: datetime,
              loaded: list[tuple[str, list[dict], list[dict]]],
              inbox: list[dict]) -> list[str]:
@@ -1094,6 +1133,7 @@ def render(now: datetime | None = None) -> str:
     loaded, titles, jobs_by_session = _load_fronts()
     inbox = _open_inbox()
     blocks = [_header(roster, observed, moment),
+              *_front_queue_block(),
               *_needs_you(moment),
               *_problems(roster, jobs_by_session, moment),
               *_working(roster, observed, moment, loaded, inbox),
