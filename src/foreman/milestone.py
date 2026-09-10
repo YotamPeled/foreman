@@ -200,7 +200,8 @@ def milestone_add_main(front: str, title: str | None,
                        done_when: str | None, verify: str | None,
                        reason: str | None, break_: str | None,
                        order: int | None = None,
-                       force: bool = False) -> int:
+                       force: bool = False,
+                       milestone_id: str | None = None) -> int:
     verb = "milestone add"
     me, violations = caller.resolve(verb)
     front_name = (front or "").strip()
@@ -216,6 +217,7 @@ def milestone_add_main(front: str, title: str | None,
     verify_text = "" if verify is None else str(verify).strip()
     reason_text = "" if reason is None else str(reason).strip()
     break_text = "" if break_ is None else str(break_).strip()
+    given_id = "" if milestone_id is None else str(milestone_id).strip()
     if not title_text:
         violations.append("field '--title' is required")
     if not done_text:
@@ -231,6 +233,11 @@ def milestone_add_main(front: str, title: str | None,
     if record is not None:
         _raw, folded = _read(front_name)
         live = _live(folded)
+        if given_id:
+            by_id = {item["id"]: item for item in folded
+                     if isinstance(item.get("id"), str)}
+            if given_id in by_id:
+                violations.append(f"id '{given_id}' is already used")
         if title_text and title_text in _titles_on_fold(folded):
             violations.append(
                 f"title '{title_text}' is already on the fold")
@@ -246,12 +253,73 @@ def milestone_add_main(front: str, title: str | None,
         return _refuse(violations)
     assert record is not None
     who = caller.by_line(me)
-    assigned = order if isinstance(order, int) else _next_order(live)
+    assigned = order if isinstance(order, int) and not isinstance(order, bool) \
+        else _next_order(live)
     mid = _commit(
         front=front_name, op="add", order=assigned, title=title_text,
         done_when=done_text, verify=verify_text, reason=reason_text,
-        break_=break_text, from_ids=[], by=who, force=bool(force))
+        break_=break_text, from_ids=[], by=who, force=bool(force),
+        milestone_id=given_id or None)
     print(mid)
+    return 0
+
+
+def milestone_revise_main(
+        front: str, milestone_id: str | None, reason: str | None,
+        title: str | None = None, done_when: str | None = None,
+        verify: str | None = None, break_: str | None = None,
+        order: int | None = None) -> int:
+    """Append a revised copy of a milestone. Used by ``front import``."""
+    verb = "milestone revise"
+    me, violations, front_name, record = _gate_front(verb, front)
+    nid = "" if milestone_id is None else str(milestone_id).strip()
+    if not nid:
+        violations.append("field 'id' is required")
+    reason_text = _empty_field("--reason", reason, violations)
+    existing: dict | None = None
+    if record is not None:
+        _raw, folded = _read(front_name)
+        by_id = {item["id"]: item for item in folded
+                 if isinstance(item.get("id"), str)}
+        if nid:
+            existing = by_id.get(nid)
+            if existing is None:
+                violations.append(f"unknown milestone '{nid}'")
+            elif not _is_live(existing):
+                violations.append(f"milestone '{nid}' is not live")
+        title_text = None if title is None else str(title).strip()
+        if (existing is not None and title_text
+                and title_text != str(existing.get("title") or "").strip()
+                and title_text in _titles_on_fold(folded)):
+            violations.append(f"title '{title_text}' is already on the fold")
+    if violations:
+        return _refuse(violations)
+    assert record is not None and existing is not None
+    who = caller.by_line(me)
+    title_text = (str(title).strip() if title is not None
+                  else str(existing.get("title") or ""))
+    done_text = (str(done_when).strip() if done_when is not None
+                 else str(existing.get("done_when") or ""))
+    verify_text = (str(verify).strip() if verify is not None
+                   else str(existing.get("verify") or ""))
+    break_text = (str(break_).strip() if break_ is not None
+                  else str(existing.get("break") or ""))
+    existing_order = existing.get("order")
+    if order is not None and isinstance(order, int) and not isinstance(order, bool):
+        assigned = order
+    elif isinstance(existing_order, int) and not isinstance(existing_order, bool):
+        assigned = existing_order
+    else:
+        assigned = 1
+    from_ids = existing.get("from_ids")
+    from_ids = from_ids if isinstance(from_ids, list) else []
+    _commit(
+        front=front_name, op=str(existing.get("op") or "add"),
+        order=assigned, title=title_text, done_when=done_text,
+        verify=verify_text, reason=reason_text, break_=break_text,
+        from_ids=[item for item in from_ids if isinstance(item, str)],
+        by=who, milestone_id=nid)
+    print(nid)
     return 0
 
 
@@ -463,6 +531,8 @@ def add_milestone_arguments(sub: argparse.ArgumentParser) -> None:
     add.add_argument("--force", action="store_true",
                      help="lift the eight-live-milestone cap; "
                           "requires --reason")
+    add.add_argument("--id", dest="milestone_id", default=None,
+                     help="id to use instead of a minted mil- id")
     split = verbs.add_parser(
         "split", help="Split one live milestone into two or more.")
     split.add_argument("front", help="front the milestone belongs to")
@@ -504,7 +574,8 @@ def _milestone_entry(args: argparse.Namespace) -> int:
     if args.milestone_verb == "add":
         return milestone_add_main(
             args.front, args.title, args.done_when, args.verify,
-            args.reason, args.break_, order=args.order, force=args.force)
+            args.reason, args.break_, order=args.order, force=args.force,
+            milestone_id=args.milestone_id)
     if args.milestone_verb == "split":
         return milestone_split_main(
             args.front, args.id, args.into, args.part, args.reason)

@@ -1645,6 +1645,20 @@ def front_show_main(name: str, as_json: bool = False) -> int:
     return 0
 
 
+def front_import_main(front: str, directory: str | None,
+                      seen_at: str | None = None,
+                      commit: str | None = None,
+                      dry_run: bool = False) -> int:
+    """Read map.md, milestones.jsonl and tree.jsonl through the doors."""
+    verb = "front import"
+    me, violations = caller.resolve(verb)
+    caller.check_front_supervisor(me, (front or "").strip() or None, verb,
+                                  violations=violations)
+    from . import front_import as impl
+    return impl.front_import_main(
+        front, directory, seen_at=seen_at, commit=commit, dry_run=dry_run)
+
+
 def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     verbs = sub.add_subparsers(dest="front_verb", required=True)
     add = verbs.add_parser("add", help="Validate a brief and append its front.")
@@ -1692,10 +1706,25 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
         "done", help="Mark a front done once every task landed and every "
                      "monitor measured (the supervisor's verb).")
     done.add_argument("name", help="front name")
+    imp = verbs.add_parser(
+        "import", help="Read map.md, milestones.jsonl and tree.jsonl "
+                       "through the doors.")
+    imp.add_argument("front", help="front to import into")
+    imp.add_argument("directory",
+                     help="directory holding map.md, milestones.jsonl "
+                          "and tree.jsonl")
+    imp.add_argument("--seen-at", dest="seen_at", default=None,
+                     help="timestamp every imported map fact was observed "
+                          "(required when map.md exists)")
+    imp.add_argument("--commit", default=None,
+                     help="commit every imported map fact was read at "
+                          "(required when map.md exists)")
+    imp.add_argument("--dry-run", action="store_true",
+                     help="print the counts and write nothing")
 
 
 @cli.subcommand("front", help="Add, list, show, prefer, allocate, reserve, "
-                     "release, close, take or mark a front done.")
+                     "release, close, take, import or mark a front done.")
 def _front_entry(args: argparse.Namespace) -> int:
     if args.front_verb == "add":
         return front_add_main(args.directory, dry_run=args.dry_run,
@@ -1718,6 +1747,10 @@ def _front_entry(args: argparse.Namespace) -> int:
         return front_take_main(args.name)
     if args.front_verb == "done":
         return front_done_main(args.name)
+    if args.front_verb == "import":
+        return front_import_main(
+            args.front, args.directory, seen_at=args.seen_at,
+            commit=args.commit, dry_run=args.dry_run)
     raise AssertionError(f"unknown front verb {args.front_verb!r}")
 
 
