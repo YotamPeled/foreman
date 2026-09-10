@@ -63,9 +63,11 @@ from __future__ import annotations
 
 import argparse
 import ast
+import contextlib
 import difflib
 import errno
 import inspect
+import io
 import json
 import os
 import re
@@ -771,6 +773,190 @@ def _adapter_model(adapter, role: str) -> str:
         if isinstance(named, str) and named:
             return named
     return adapter.model
+
+
+def _queued_brief(node: dict, *, repo: str, branch: str) -> str:
+    """The worker spec for a queued tree node: the three fields, plus
+    the repository and the branch the worktree is cut on.
+
+    The role sheet is a later task; nothing else is interpolated here.
+    """
+    what = str(node.get("what") or "").strip()
+    must = str(node.get("must_not_touch") or "").strip()
+    verify = str(node.get("verify") or "").strip()
+    parts = [piece for piece in (what, f"Must not touch: {must}" if must
+                                 else "", verify) if piece]
+    parts.append(f"repository: {repo}")
+    parts.append(f"branch: {branch}")
+    return "\n\n".join(parts) + "\n"
+
+
+def _repo_entry(record: dict | None, node: dict) -> dict | None:
+    """The front's repository table matching the node's ``repo`` name."""
+    name = str(node.get("repo") or "").strip()
+    repos = (record or {}).get("repositories")
+    if not isinstance(repos, list):
+        return None
+    for entry in repos:
+        if not isinstance(entry, dict):
+            continue
+        if name and str(entry.get("name") or "").strip() != name:
+            continue
+        return entry
+    return None
+
+
+def _queued_repo_path(record: dict | None, node: dict) -> str:
+    """A local git directory to cut the worktree from.
+
+    A repository url that is already a directory (the tests' bare
+    clone, a local checkout) is used as-is; otherwise the launcher's
+    default of cwd applies, the same as a hand launch with no
+    ``--repo``.
+    """
+    entry = _repo_entry(record, node)
+    url = str((entry or {}).get("url") or "").strip()
+    if url and os.path.isdir(url):
+        return os.path.abspath(url)
+    return os.path.abspath(os.getcwd())
+
+
+def _queued_base_branch(record: dict | None, node: dict) -> str | None:
+    """The front's work branch, which a queued job is cut from."""
+    entry = _repo_entry(record, node)
+    if entry is None:
+        return None
+    work = str(entry.get("work") or "").strip()
+    return work or None
+
+
+def _team_pool(record: dict | None, node: dict) -> str | None:
+    """The pool of the team entry whose role matches the node's role."""
+    role = str(node.get("role") or "").strip()
+    team = (record or {}).get("team")
+    if isinstance(team, list):
+        for entry in team:
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("role") or "").strip() != role:
+                continue
+            pool = str(entry.get("pool") or "").strip()
+            if pool:
+                return pool
+    from . import progress as progress_mod
+
+    job_role = progress_mod._job_role_of_node(record, node)
+    if job_role:
+        return capacity.pool_for_role(job_role)
+    return None
+
+
+def _queued_job_role(record: dict | None, node: dict) -> str | None:
+    """The JOB_ROLES name ``cmd_launch`` takes for this node."""
+    from . import progress as progress_mod
+
+    role = progress_mod._job_role_of_node(record, node)
+    return role or None
+
+
+def _queue_spec_path(front: str, node_id: str) -> str:
+    directory = paths.state_dir() / "queue"
+    directory.mkdir(parents=True, exist_ok=True)
+    return str(directory / f"{front}-{node_id}.md")
+
+
+def _parse_launch_argv(argv: list[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(prog="foreman launch")
+    add_launch_arguments(parser)
+    return parser.parse_args(argv)
+
+
+def start_queued(front: str, node_id: str, *,
+                 by: str) -> tuple[str | None, str]:
+    """Turn a queued tree node into a running job through ``cmd_launch``.
+
+    Writes the worker brief from the node, calls the same launch path a
+    hand launch uses, records ``session`` and ``job`` on the node with
+    ``state = "running"``, and returns the job id. ``(None, reason)``
+    when the node is not queued or the launcher refuses.
+    """
+    from . import progress as progress_mod
+
+    front_name = (front or "").strip()
+    nid = (node_id or "").strip()
+    if not front_name or not nid:
+        return None, "front and node are required"
+    record = fronts.read_front_record(front_name)
+    if record is None:
+        return None, f"unknown front '{front_name}'"
+    _folded, by_id = node_mod._read_nodes(front_name)
+    existing = by_id.get(nid)
+    if existing is None:
+        return None, f"unknown node '{nid}'"
+    if str(existing.get("kind") or "") != "job":
+        return None, (f"{nid} is kind {existing.get('kind')}; "
+                      f"only a queued job is started")
+    if str(existing.get("state") or "") != "queued":
+        shown = str(existing.get("state") or "unstarted")
+        return None, f"{nid} is {shown}; only a queued job is started"
+    pool = _team_pool(record, existing)
+    role = _queued_job_role(record, existing)
+    if not pool or not role:
+        return None, f"{nid} has no team pool for role {existing.get('role')!r}"
+    if role not in JOB_ROLES:
+        return None, f"{nid} role {role!r} is not a launch role"
+    try:
+        adapter = get_pool(pool)
+    except ValueError as exc:
+        return None, str(exc)
+    repo_path = _queued_repo_path(record, existing)
+    repo_name = str(existing.get("repo") or "").strip() or repo_path
+    branch = f"job/{front_name}-{nid}"
+    base = _queued_base_branch(record, existing)
+    spec_path = _queue_spec_path(front_name, nid)
+    write_no_symlink(
+        spec_path, _queued_brief(existing, repo=repo_name, branch=branch))
+    job_id = ids.mint("job")
+    argv = [
+        role, pool, spec_path,
+        "--front", front_name,
+        "--kind", "implement",
+        "--branch", branch,
+        "--repo", repo_path,
+        "--job", job_id,
+        "--headless",
+        "--timeout", adapter.timeout_default,
+    ]
+    if base:
+        argv.extend(["--base", base])
+    parent = str(existing.get("parent") or "").strip()
+    if parent and lookup_task_id(front_name, parent) is not None:
+        argv.extend(["--task", parent])
+    args = _parse_launch_argv(argv)
+    buf_out, buf_err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf_out), \
+                contextlib.redirect_stderr(buf_err):
+            code = cmd_launch(args)
+    except Exception as exc:  # noqa: BLE001 - a refused start is a reason
+        return None, f"{type(exc).__name__}: {exc}"
+    if code != 0:
+        err = buf_err.getvalue().strip() or "launcher refused"
+        return None, err
+    _jobs, by_job = progress_mod._read_jobs(front_name)
+    job_rec = by_job.get(job_id)
+    session_id = (job_rec or {}).get("session")
+    if not isinstance(session_id, str) or not session_id:
+        for line in buf_out.getvalue().splitlines():
+            if line.startswith("session: "):
+                session_id = line.split("session: ", 1)[1].strip()
+                break
+    session_id = session_id if isinstance(session_id, str) and session_id \
+        else None
+    progress_mod._write_node_revise(
+        front_name, existing, by, "started",
+        state="running", session=session_id, job=job_id, waits="")
+    return job_id, ""
 
 
 @subcommand("launch", help="Mint a session, build its worktree, start its worker.")

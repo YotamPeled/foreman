@@ -444,6 +444,11 @@ class Node(Entity):
     waits: str = ""
     sheet_add: str = ""
     bumped_at: str | None = None
+    #: The session the collector (or a hand launch) started for this
+    #: queued job. Empty until then.
+    session: str | None = None
+    #: The jobs.jsonl id of that run. Empty until the node is started.
+    job: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -451,6 +456,10 @@ class Node(Entity):
             data.pop("prove", None)
         if not data.get("break_patch"):
             data.pop("break_patch", None)
+        if not data.get("session"):
+            data.pop("session", None)
+        if not data.get("job"):
+            data.pop("job", None)
         return data
 
 
