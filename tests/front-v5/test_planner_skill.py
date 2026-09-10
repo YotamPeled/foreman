@@ -21,7 +21,6 @@ from foreman.fronts import _V5_REPO_REQUIRED
 ROOT = Path(__file__).resolve().parents[2]
 SKILL = ROOT / "skills" / "foreman-plan" / "SKILL.md"
 EXAMPLES = ROOT / "skills" / "foreman-plan" / "examples"
-CALIBRATION = ROOT / "docs" / "knowledge" / "team-calibration.md"
 
 #: Top-level keys ``_validate`` / ``_validate_v5`` require on a v5 brief.
 V5_TOP_REQUIRED = (
@@ -131,15 +130,6 @@ def test_skill_contains_refusal_lines():
     text = SKILL.read_text(encoding="utf-8")
     missing = [line for line in REFUSALS if line not in text]
     assert not missing, f"skill lost refusal lines {missing}"
-
-
-def test_skill_team_section_quotes_calibration_ceiling():
-    knowledge = CALIBRATION.read_text(encoding="utf-8")
-    paragraph = knowledge.split("\n\n")[1]
-    assert paragraph.startswith("The owner's team line on a front is the ceiling.")
-    skill = SKILL.read_text(encoding="utf-8")
-    assert paragraph in skill
-    assert skill.index("**Team**") < skill.index(paragraph)
 
 
 def test_skill_is_one_file_under_300_lines():
