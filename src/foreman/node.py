@@ -21,7 +21,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import caller, cli, entities, fronts, ids, paths, store
+from . import caller, cli, entities, fronts, ids, paths, resources, store
 from .caller import Refusal
 from .entities import (
     CHILDLESS_NODE_KINDS, NODE_KINDS, NODE_SCOPES, NODE_STATES,
@@ -145,6 +145,7 @@ def node_add_main(
         after: list[str] | None = None, source: str | None = None,
         mechanical: bool = False, node_id: str | None = None,
         break_patch: str | None = None,
+        node_resources: list[str] | None = None,
         ) -> int:
     verb = "node add"
     me, violations = caller.resolve(verb)
@@ -194,6 +195,8 @@ def node_add_main(
     patch_text, patch_err = _read_break_patch(break_patch)
     if patch_err:
         violations.append(patch_err)
+    claimed = resources.collect_names(node_resources, violations)
+    resources.refuse_unknown(claimed, violations)
     given_id = "" if node_id is None else str(node_id).strip()
     by_id: dict[str, dict] = {}
     if record is not None:
@@ -255,6 +258,7 @@ def node_add_main(
             at=now,
             by=who,
             break_patch=patch_text,
+            resources=list(claimed),
         ).to_dict(),
         session_id=who,
     )
@@ -274,6 +278,7 @@ def node_revise_main(
         state: str | None = None,
         sheet_replace: str | None = None,
         sheet_reason: str | None = None,
+        node_resources: list[str] | None = None,
         ) -> int:
     verb = "node revise"
     me, violations = caller.resolve(verb)
@@ -331,6 +336,10 @@ def node_revise_main(
             unknown = _unknown_repo_violation(record, front_name, repo_name)
             if unknown:
                 violations.append(unknown)
+    claimed = None
+    if node_resources is not None:
+        claimed = resources.collect_names(node_resources, violations)
+        resources.refuse_unknown(claimed, violations)
     if violations:
         return _refuse(violations)
     assert record is not None and existing is not None
@@ -368,6 +377,8 @@ def node_revise_main(
         updated["sheet_replace"] = replace_text
     if reason_sheet is not None:
         updated["sheet_reason"] = reason_sheet
+    if claimed is not None:
+        updated["resources"] = list(claimed)
     updated["op"] = "revise"
     updated["reason_revised"] = reason_text
     updated["at"] = now
@@ -853,6 +864,10 @@ def add_node_arguments(sub: argparse.ArgumentParser) -> None:
                      help="this node is a mechanical leaf")
     add.add_argument("--id", dest="node_id", default=None,
                      help="id to use instead of a minted nod- id")
+    add.add_argument("--resource", dest="resources", action="append",
+                     default=None,
+                     help="shared resource this node holds while running "
+                          "(repeatable)")
     revise = verbs.add_parser(
         "revise", help="Append a revised copy of a tree node.")
     revise.add_argument("front", help="front the node belongs to")
@@ -890,6 +905,9 @@ def add_node_arguments(sub: argparse.ArgumentParser) -> None:
                         default=None,
                         help="why the default sheet is replaced "
                              "(required with --sheet-replace)")
+    revise.add_argument("--resource", dest="resources", action="append",
+                        default=None,
+                        help="replace the resources list (repeatable)")
     listing = verbs.add_parser(
         "list", help="Print the front's folded tree.")
     listing.add_argument("front", help="front whose tree to print")
@@ -921,7 +939,7 @@ def _node_entry(args: argparse.Namespace) -> int:
             what=args.what, property=args.property, scope=args.scope,
             role=args.role, after=args.after, source=args.source,
             mechanical=args.mechanical, node_id=args.node_id,
-            break_patch=args.break_patch)
+            break_patch=args.break_patch, node_resources=args.resources)
     if args.node_verb == "revise":
         return node_revise_main(
             args.front, args.id, args.reason, parent=args.parent,
@@ -931,7 +949,7 @@ def _node_entry(args: argparse.Namespace) -> int:
             scope=args.scope, role=args.role, after=args.after,
             source=args.source, mechanical=args.mechanical,
             state=args.state, sheet_replace=args.sheet_replace,
-            sheet_reason=args.sheet_reason)
+            sheet_reason=args.sheet_reason, node_resources=args.resources)
     if args.node_verb == "list":
         return node_list_main(args.front, under=args.under,
                               as_json=args.as_json)

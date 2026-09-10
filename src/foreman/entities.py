@@ -454,6 +454,8 @@ class Node(Entity):
     session: str | None = None
     #: The jobs.jsonl id of that run. Empty until the node is started.
     job: str | None = None
+    #: Shared resources this node holds while ``state`` is ``running``.
+    resources: list = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -465,6 +467,8 @@ class Node(Entity):
             data.pop("session", None)
         if not data.get("job"):
             data.pop("job", None)
+        if not data.get("resources"):
+            data.pop("resources", None)
         return data
 
 

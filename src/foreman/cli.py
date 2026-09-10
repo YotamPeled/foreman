@@ -60,6 +60,7 @@ def main(argv: list[str] | None = None) -> int:
     from . import migrate as _migrate  # noqa: F401
     from . import pool as _pool  # noqa: F401
     from . import progress as _progress  # noqa: F401
+    from . import resources as _resources  # noqa: F401
     from . import status as _status  # noqa: F401
     from . import verbs as _verbs  # noqa: F401
     from . import wait as _wait  # noqa: F401

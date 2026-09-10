@@ -112,6 +112,8 @@ class Config:
     """The merged configuration and where it came from."""
 
     pools: dict[str, dict[str, object]] = field(default_factory=dict)
+    #: Shared mutable resources from ``[resources]``: name -> count.
+    resources: dict[str, int] = field(default_factory=dict)
     path: Path | None = None
     #: False when the user's file was unreadable and the defaults answered.
     user_read: bool = True
@@ -158,6 +160,14 @@ class Config:
     def names(self) -> list[str]:
         return sorted(self.pools)
 
+    def resource_count(self, name: str) -> int | None:
+        """The resource's count, or None when ``[resources]`` does not name it."""
+        value = self.resources.get(name)
+        return value if isinstance(value, int) else None
+
+    def resource_names(self) -> list[str]:
+        return sorted(self.resources)
+
 
 def packaged_text() -> str:
     try:
@@ -190,11 +200,33 @@ def _pools_from(raw: object) -> dict[str, dict[str, object]]:
     return pools
 
 
+def _resources_from(raw: object) -> dict[str, int]:
+    """The ``[resources]`` table: name -> non-negative count."""
+    resources: dict[str, int] = {}
+    table = raw.get("resources") if isinstance(raw, dict) else None
+    if not isinstance(table, dict):
+        return resources
+    for name, value in table.items():
+        if not isinstance(name, str) or not name:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            continue
+        resources[name] = value
+    return resources
+
+
 def defaults() -> dict[str, dict[str, object]]:
     try:
         return _pools_from(tomllib.loads(packaged_text()))
     except tomllib.TOMLDecodeError:  # pragma: no cover - the shipped file
         return _pools_from(tomllib.loads(DEFAULT_TEXT))
+
+
+def defaults_resources() -> dict[str, int]:
+    try:
+        return _resources_from(tomllib.loads(packaged_text()))
+    except tomllib.TOMLDecodeError:  # pragma: no cover - the shipped file
+        return _resources_from(tomllib.loads(DEFAULT_TEXT))
 
 
 def ensure_user_config(create_dir: bool = False) -> Path:
@@ -244,16 +276,19 @@ def load() -> Config:
     file over them key by key. A file that does not parse warns once and
     the defaults answer."""
     merged = defaults()
+    resource_counts = defaults_resources()
     path = ensure_user_config()
     try:
         with open(path, "rb") as handle:
             raw = tomllib.load(handle)
     except FileNotFoundError:
-        return Config(pools=merged, path=path, user_read=True)
+        return Config(pools=merged, resources=resource_counts,
+                      path=path, user_read=True)
     except (tomllib.TOMLDecodeError, OSError, ValueError) as exc:
         print(f"foreman: warning: {path} does not parse ({exc}); "
               f"using the packaged defaults", file=sys.stderr)
-        return Config(pools=merged, path=path, user_read=False)
+        return Config(pools=merged, resources=resource_counts,
+                      path=path, user_read=False)
     for name, entry in _pools_from(raw).items():
         # A cap on a pool no adapter registers governs nothing, silently.
         # That is exactly the defect this file was just fixed for: the
@@ -269,7 +304,9 @@ def load() -> Config:
                   f"adapter registers, so that cap governs nothing",
                   file=sys.stderr)
         merged.setdefault(name, {}).update(entry)
-    return Config(pools=merged, path=path, user_read=True)
+    resource_counts.update(_resources_from(raw))
+    return Config(pools=merged, resources=resource_counts,
+                  path=path, user_read=True)
 
 
 # --------------------------------------------------------------------------
