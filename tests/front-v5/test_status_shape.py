@@ -32,7 +32,8 @@ def env(tmp_path, monkeypatch):
 
 
 def write_v5(name: str, builders: int = 1, pool: str = "grok",
-             prefer: int = 0, state: str = "queued") -> dict:
+             prefer: int = 0, state: str = "queued",
+             behind: str = "") -> dict:
     paths.front_dir(name).mkdir(parents=True, exist_ok=True)
     team = [
         {"agent": "grok-4.6", "pool": pool, "model": "grok-4.6",
@@ -42,7 +43,7 @@ def write_v5(name: str, builders: int = 1, pool: str = "grok",
     ]
     line = entities.Front(
         id=ids.mint("front"), name=name, state=state, shape="v5",
-        prefer=prefer,
+        prefer=prefer, behind=behind,
         goal="Show the v5 screen.", finish_line="The queue names both.",
         allocation={"grok": builders}, team=team,
         repositories=[{"name": "foreman", "target": "main",
@@ -51,6 +52,11 @@ def write_v5(name: str, builders: int = 1, pool: str = "grok",
     ).to_dict()
     store.append_ledger(paths.front_record_path(name), line)
     return line
+
+
+def append_tree(front: str, *records: dict) -> None:
+    for record in records:
+        store.append_ledger(paths.front_tree_path(front), record)
 
 
 def status_out(monkeypatch, capsys) -> str:
@@ -109,3 +115,104 @@ def test_capacity_line_prints_held_reserved_and_cap(env, monkeypatch, capsys):
     capsys.readouterr()
     out = status_out(monkeypatch, capsys)
     assert "held 0 / reserved 1 / cap 1" in out
+
+
+def tree_body(out: str) -> list[str]:
+    """Status tree lines with the front-block indent stripped."""
+    lines = out.splitlines()
+    start = None
+    for index, line in enumerate(lines):
+        if line == "    tree:":
+            start = index + 1
+            break
+    assert start is not None, f"no tree block in:\n{out}"
+    stop_prefixes = (
+        "landings:", "want:", "REMAINING", "ESTIMATE", "Blocked",
+        "doing now", "progress", "allocation:", "evidence:", "queue:",
+    )
+    body = []
+    for line in lines[start:]:
+        if not line.startswith("    "):
+            break
+        rest = line[4:]
+        if rest.startswith("M") and "pieces (split from" in rest:
+            break
+        if any(rest == prefix or rest.startswith(prefix)
+               for prefix in stop_prefixes):
+            break
+        body.append(rest)
+    return body
+
+
+def test_milestone_line_prints_pieces_and_split_count_after_split(
+        env, monkeypatch, capsys):
+    """After ``milestone split``, each live part names pieces and split from."""
+    write_v5("orbit", state="active")
+    assert cli.main([
+        "milestone", "add", "orbit",
+        "--title", "The screen",
+        "--done-when", "status shows the v5 shape",
+        "--verify", "python -m pytest tests -q",
+        "--reason", "decision 15",
+        "--break", "drop the split count",
+    ]) == 0
+    source = capsys.readouterr().out.strip()
+    assert cli.main([
+        "milestone", "split", "orbit", source,
+        "--into", "Part A", "--part",
+        "Part A|done when A|python -m pytest tests -q|break A",
+        "--into", "Part B", "--part",
+        "Part B|done when B|python -m pytest tests -q|break B",
+        "--reason", "split for size",
+    ]) == 0
+    part_a, part_b = capsys.readouterr().out.strip().split()
+    append_tree("orbit",
+                {"id": "tsk-a", "parent": part_a, "kind": "task",
+                 "title": "first piece", "state": "landed"},
+                {"id": "tsk-b", "parent": part_a, "kind": "task",
+                 "title": "second piece", "state": "ready"})
+    out = status_out(monkeypatch, capsys)
+    assert "M1 Part A: 1/2 pieces (split from 2)" in out
+    assert "M2 Part B: 0/0 pieces (split from 2)" in out
+
+
+def test_tree_block_matches_node_list_line_for_line(env, monkeypatch, capsys):
+    """The tree block is the checker fold, one status line per node-list line."""
+    write_v5("orbit", state="active")
+    append_tree(
+        "orbit",
+        {"id": "mil-1", "front": "orbit", "parent": "orbit",
+         "kind": "milestone", "title": "The screen"},
+        {"id": "tsk-1", "parent": "mil-1", "kind": "task",
+         "title": "status shape", "state": "queued"},
+        {"id": "job-1", "parent": "tsk-1", "kind": "job",
+         "title": "implement it", "state": "queued", "waits": "ready"},
+    )
+    assert cli.main(["node", "list", "orbit"]) == 0
+    node_lines = [line for line in capsys.readouterr().out.splitlines()
+                  if line.strip()]
+    out = status_out(monkeypatch, capsys)
+    got = tree_body(out)
+    assert len(got) == len(node_lines), f"{got!r} vs {node_lines!r}\n{out}"
+    for status_line, node_line in zip(got, node_lines):
+        assert status_line.startswith(node_line), (
+            f"{status_line!r} does not start with {node_line!r}")
+    queued = [line for line in got if "job-1" in line]
+    assert queued and "waits: ready" in queued[0]
+
+
+def test_landing_item_and_behind_warning_appear(env, monkeypatch, capsys):
+    """A script landing item prints its state; a behind sha warns with target."""
+    write_v5("orbit", state="active",
+             behind="abcdef1234567890abcdef1234567890")
+    append_tree(
+        "orbit",
+        {"id": "mil-1", "front": "orbit", "parent": "orbit",
+         "kind": "milestone", "title": "The screen"},
+        {"id": "job-land1", "parent": "mil-1", "kind": "job",
+         "title": "land implement it", "role": "script",
+         "lands": "job-1", "state": "queued", "waits": "ready"},
+    )
+    out = status_out(monkeypatch, capsys)
+    assert "      job-land1  queued" in out
+    assert "      behind main (abcdef1)" in out

@@ -894,6 +894,156 @@ def _front_queue_block() -> list[str]:
     return lines
 
 
+def _milestone_original(record: dict, by_id: dict[str, dict]) -> str:
+    """The unsplitting ancestor of ``record``, or its own id."""
+    current = record
+    seen: set[str] = set()
+    while True:
+        rid = current.get("id")
+        if not isinstance(rid, str) or not rid or rid in seen:
+            return rid if isinstance(rid, str) else ""
+        seen.add(rid)
+        from_ids = current.get("from_ids") or []
+        sources = [item for item in from_ids
+                   if isinstance(item, str) and item in by_id]
+        if not sources:
+            return rid
+        current = by_id[sources[0]]
+
+
+def _v5_milestone_lines(name: str) -> list[str]:
+    """One line per live milestone: pieces done and the split count."""
+    from . import milestone as milestone_mod
+
+    _raw, folded = milestone_mod._read(name)
+    live = milestone_mod._live(folded)
+    if not live:
+        return []
+    by_id = {item["id"]: item for item in folded
+             if isinstance(item.get("id"), str)}
+    originals = {item["id"]: _milestone_original(item, by_id)
+                 for item in live if isinstance(item.get("id"), str)}
+    groups: dict[str, int] = {}
+    for orig in originals.values():
+        groups[orig] = groups.get(orig, 0) + 1
+    live_sorted = sorted(
+        live,
+        key=lambda item: (
+            item.get("order") if isinstance(item.get("order"), int)
+            and not isinstance(item.get("order"), bool) else 0,
+            str(item.get("id") or ""),
+        ),
+    )
+    lines = []
+    for item in live_sorted:
+        order = item.get("order")
+        number = order if isinstance(order, int) \
+            and not isinstance(order, bool) else "?"
+        title = item.get("title") or ""
+        mid = item.get("id")
+        pieces = milestone_mod._pieces_done(
+            name, str(mid)) if isinstance(mid, str) else "-"
+        split_from = groups.get(originals.get(mid, ""), 1)
+        lines.append(
+            f"    M{number} {title}: {pieces} pieces "
+            f"(split from {split_from})")
+    return lines
+
+
+def _tree_node_suffix(node: dict) -> str:
+    """State, and ``waits: ...`` on a queued job, after the node-list line."""
+    state = str(node.get("state") or "")
+    extra = f"  {state}" if state else ""
+    if node.get("kind") == "job" and state == "queued":
+        extra += f"  waits: {node.get('waits') or ''}"
+    return extra
+
+
+def _v5_tree_lines(name: str) -> list[str]:
+    """The checker fold, indented by depth, matching ``node list``."""
+    from . import node as node_mod
+
+    folded, _by_id = node_mod._read_nodes(name)
+    rows, _ = node_mod._walk_tree(folded, name)
+    lines = ["    tree:"]
+    if not rows:
+        lines.append("      (no tree yet)")
+        return lines
+    children = node_mod._children_of(folded)
+    for node, depth in rows:
+        base = node_mod._format_node(node, depth, children)
+        lines.append(f"    {base}{_tree_node_suffix(node)}")
+    return lines
+
+
+def _is_script_item(node: dict) -> bool:
+    if str(node.get("role") or "") == "script":
+        return True
+    if str(node.get("lands") or ""):
+        return True
+    return str(node.get("kind") or "") in ("land", "rebase", "front-landing")
+
+
+def _landing_item_line(node: dict) -> str:
+    nid = node.get("id") or "?"
+    state = str(node.get("state") or "queued")
+    if state == "landed":
+        sha = str(node.get("landed_sha") or node.get("head") or "")
+        return f"      {nid}  landed {sha[:7]}"
+    if state == "failed":
+        reason = node.get("fail_reason") or ""
+        return f"      {nid}  failed: {reason}"
+    if state == "running":
+        return f"      {nid}  running"
+    return f"      {nid}  queued"
+
+
+def _behind_warning_line(front_record: dict | None) -> str | None:
+    """``behind <target> (<sha7>)`` when the front record says so."""
+    if not isinstance(front_record, dict):
+        return None
+    behind = str(front_record.get("behind") or "").strip()
+    if not behind:
+        return None
+    target = ""
+    repos = front_record.get("repositories")
+    if isinstance(repos, list):
+        for entry in repos:
+            if not isinstance(entry, dict):
+                continue
+            target = str(entry.get("target") or "").strip()
+            if target:
+                break
+    return f"      behind {target} ({behind[:7]})"
+
+
+def _v5_landing_lines(name: str, front_record: dict | None) -> list[str]:
+    from . import node as node_mod
+
+    folded, _by_id = node_mod._read_nodes(name)
+    items = [node for node in folded if _is_script_item(node)]
+    warning = _behind_warning_line(front_record)
+    if not items and warning is None:
+        return ["    landings: none"]
+    lines = ["    landings:"]
+    for node in items:
+        lines.append(_landing_item_line(node))
+    if warning is not None:
+        lines.append(warning)
+    return lines
+
+
+def _v5_front_shape_lines(name: str, front_record: dict | None) -> list[str]:
+    """Milestones, tree and landings for a v5 front; empty for any other."""
+    if (front_record or {}).get("shape") != "v5":
+        return []
+    lines = []
+    lines.extend(_v5_milestone_lines(name))
+    lines.extend(_v5_tree_lines(name))
+    lines.extend(_v5_landing_lines(name, front_record))
+    return lines
+
+
 def _working(roster: dict, observed: dict | None, now: datetime,
              loaded: list[tuple[str, list[dict], list[dict]]],
              inbox: list[dict]) -> list[str]:
@@ -947,6 +1097,7 @@ def _working(roster: dict, observed: dict | None, now: datetime,
             queue_line = _v5_queue_line(name, front_record)
             if queue_line is not None:
                 lines.append(queue_line)
+        lines.extend(_v5_front_shape_lines(name, front_record))
         try:
             evidence = store.read_ledger(paths.front_evidence_path(name))
         except OSError:
