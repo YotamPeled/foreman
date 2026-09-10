@@ -92,7 +92,8 @@ def _nonempty_str(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
-def _validate_v5(data: dict) -> list[str]:
+def _validate_v5(data: dict, *,
+                 allow_existing_work: bool = False) -> list[str]:
     """Every v5-shape violation at once, each naming the field it breaks."""
     violations: list[str] = []
 
@@ -163,7 +164,8 @@ def _validate_v5(data: dict) -> list[str]:
             name = repo.get("name")
             if _nonempty_str(name):
                 tag = f"repository '{name.strip()}'"
-            violations.extend(_v5_repository_violations(repo, tag))
+            violations.extend(_v5_repository_violations(
+                repo, tag, allow_existing_work=allow_existing_work))
     return violations
 
 
@@ -215,7 +217,9 @@ def _v5_team_violations(entry: object, tag: str) -> list[str]:
     return violations
 
 
-def _v5_repository_violations(repo: dict, tag: str) -> list[str]:
+def _v5_repository_violations(repo: dict, tag: str, *,
+                              allow_existing_work: bool = False
+                              ) -> list[str]:
     violations: list[str] = []
     for key in _V5_REPO_REQUIRED:
         value = repo.get(key)
@@ -236,12 +240,20 @@ def _v5_repository_violations(repo: dict, tag: str) -> list[str]:
         violations.append(f"{tag}: field 'pr-body' must be a string")
     url = repo.get("url")
     if _nonempty_str(url):
-        violations.extend(_v5_remote_violations(url.strip(), repo, tag))
+        violations.extend(_v5_remote_violations(
+            url.strip(), repo, tag, allow_existing_work=allow_existing_work))
     return violations
 
 
-def _v5_remote_violations(url: str, repo: dict, tag: str) -> list[str]:
-    """Refuse a work branch that already exists, or a missing base/target."""
+def _v5_remote_violations(url: str, repo: dict, tag: str, *,
+                          allow_existing_work: bool = False
+                          ) -> list[str]:
+    """Refuse a work branch that already exists, or a missing base/target.
+
+    ``allow_existing_work`` is the adopt path: the work branch is the
+    front's own, so its presence on the remote is expected, not a
+    violation. Base/target checks are unchanged.
+    """
     violations: list[str] = []
     work = repo.get("work")
     if _nonempty_str(work):
@@ -249,7 +261,7 @@ def _v5_remote_violations(url: str, repo: dict, tag: str) -> list[str]:
         if err is not None:
             violations.append(
                 f"{tag}: field 'work' cannot be checked: {err}")
-        elif sha is not None:
+        elif sha is not None and not allow_existing_work:
             violations.append(
                 f"{tag}: field 'work' branch '{work.strip()}' "
                 f"exists on the remote")
@@ -1046,7 +1058,8 @@ def _validate_identity(data: dict, existing: set[str]) -> list[str]:
 
 
 def _validate(data: dict, existing: set[str],
-              directory: str | None = None) -> list[str]:
+              directory: str | None = None, *,
+              allow_existing_work: bool = False) -> list[str]:
     """Every 4.3 violation at once, each naming the field or rule it breaks."""
     violations: list[str] = []
 
@@ -1085,7 +1098,8 @@ def _validate(data: dict, existing: set[str],
                 violations.append(f"field 'after' names unknown front '{entry}'")
 
     if _is_v5_brief(data):
-        violations.extend(_validate_v5(data))
+        violations.extend(
+            _validate_v5(data, allow_existing_work=allow_existing_work))
     else:
         violations.extend(_validate_v1_contract(data, directory))
 
@@ -1254,6 +1268,36 @@ def _build_v5(data: dict, name: str,
     return front_line, []
 
 
+def _build_adopt(data: dict, name: str, old: dict) -> dict:
+    """The front line adopting an old-shape front to v5 shape.
+
+    The brief supplies shape ``v5``, goal, finish line, decisions,
+    team, repositories and the derived working team (built exactly as
+    :func:`_build_v5` builds them). The running front keeps its id,
+    supervisor, state, order, prefer, after and allocation; no task
+    line is written and existing tasks, jobs, tree, map and milestones
+    stay untouched. Brief-silent record fields (merge, reviews,
+    monitors) stay as the front had them.
+    """
+    front_line, _ = _build_v5(
+        data, name, fixture=bool(old.get("fixture")))
+    front_line["id"] = old["id"]
+    front_line["supervisor"] = old.get("supervisor")
+    front_line["state"] = old.get("state") or "queued"
+    front_line["order"] = old.get("order", 0)
+    front_line["prefer"] = old.get("prefer", 0)
+    front_line["after"] = list(old.get("after") or [])
+    front_line["allocation"] = dict(old.get("allocation") or {})
+    if not data.get("merge") and old.get("merge"):
+        front_line["merge"] = old["merge"]
+    if not data.get("reviews") and old.get("reviews"):
+        front_line["reviews"] = old["reviews"]
+    if not data.get("monitor") and isinstance(
+            old.get("monitors"), list):
+        front_line["monitors"] = old["monitors"]
+    return front_line
+
+
 def _build(data: dict, name: str,
            fixture: bool = False) -> tuple[dict, list[dict]]:
     """The front line and task lines a validated brief becomes."""
@@ -1370,6 +1414,69 @@ def front_add_main(directory: str, dry_run: bool = False,
     store.append_ledger(paths.front_record_path(name), front_line, session_id=who)
     for line in task_lines:
         store.append_ledger(paths.front_tasks_path(name), line, session_id=who)
+    print(front_line["id"])
+    return 0
+
+
+def front_adopt_main(directory: str, dry_run: bool = False) -> int:
+    """Upgrade a running old-shape front to v5 shape in place.
+
+    Foreman-only, like ``front add``. Takes a v5-shape brief whose
+    ``name`` is an existing front that is old-shape and not done, and
+    appends one front line keeping the front's id, supervisor, state,
+    order, prefer, after and allocation while adding shape ``v5``,
+    goal, finish line, decisions, team, repositories and the derived
+    working team. No task line is written. ``--dry-run`` prints the
+    line that would be appended and writes nothing.
+    """
+    verb = "front add --adopt"
+    me, violations = caller.resolve(verb)
+    caller.check_role(me, verb, caller.FOREMAN, violations=violations)
+    data = _read_brief(directory, violations)
+    name: str | None = None
+    old: dict | None = None
+    if data is not None:
+        raw_name = data.get("name")
+        if isinstance(raw_name, str) and raw_name.strip():
+            name = raw_name.strip()
+            old = read_front_record(name)
+            if old is None:
+                violations.append(
+                    f"unknown front '{name}' "
+                    f"(field 'name' names no front on the ledger)")
+            else:
+                if old.get("shape") == "v5":
+                    violations.append(
+                        f"front '{name}' is already v5 shape "
+                        f"(field 'shape' is already 'v5')")
+                if old.get("state") == "done":
+                    violations.append(
+                        f"front '{name}' is done "
+                        f"(field 'state' must not be 'done')")
+        if not _is_v5_brief(data):
+            violations.append(
+                "brief is not v5 shape (field 'goal' is required)")
+        else:
+            existing = _existing_fronts() - ({name} if name else set())
+            violations.extend(
+                _validate(data, existing, directory,
+                          allow_existing_work=True))
+    if violations:
+        return Refusal(violations).report()
+    assert data is not None and name is not None and old is not None
+    front_line = _build_adopt(data, name, old)
+    if dry_run:
+        print(f"would write {paths.front_record_path(name)}:")
+        print(json.dumps(front_line))
+        return 0
+    who = caller.by_line(me)
+    dest_dir = paths.config_front_dir(name)
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(Path(directory) / "brief.toml", paths.brief_path(name))
+    if (Path(directory) / "plan.md").is_file():
+        shutil.copyfile(Path(directory) / "plan.md", paths.plan_path(name))
+    store.append_ledger(paths.front_record_path(name), front_line,
+                        session_id=who)
     print(front_line["id"])
     return 0
 
@@ -2237,6 +2344,9 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     add.add_argument("--closed", action="store_true",
                      help="a front that already ran and is done: the record "
                           "only, no tasks")
+    add.add_argument("--adopt", action="store_true",
+                     help="upgrade a running old-shape front to v5 shape in "
+                          "place from a v5 brief naming it")
     verbs.add_parser("list", help="Print one line per front.")
     verbs.add_parser(
         "queue",
@@ -2317,6 +2427,19 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
                      "front done.")
 def _front_entry(args: argparse.Namespace) -> int:
     if args.front_verb == "add":
+        if args.adopt:
+            if args.fixture or args.closed:
+                extra = []
+                if args.fixture:
+                    extra.append(
+                        "field '--fixture' may not be combined with "
+                        "'--adopt'")
+                if args.closed:
+                    extra.append(
+                        "field '--closed' may not be combined with "
+                        "'--adopt'")
+                return Refusal(extra).report()
+            return front_adopt_main(args.directory, dry_run=args.dry_run)
         return front_add_main(args.directory, dry_run=args.dry_run,
                               fixture=args.fixture, closed=args.closed)
     if args.front_verb == "list":
