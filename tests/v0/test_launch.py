@@ -117,6 +117,18 @@ def seed_rulings(*texts: str) -> None:
         )
 
 
+def seed_task(front: str, title: str, task_id: str = "tsk-seed01") -> None:
+    """A task ledger line so ``lookup_task_id`` finds ``title`` on ``front``."""
+    store.append_ledger(paths.front_tasks_path(front), {
+        "id": task_id,
+        "front": front,
+        "title": title,
+        "state": "ready",
+        "units_done": 0,
+        "units_total": 1,
+    })
+
+
 def launch(argv: list[str]) -> int:
     return cli.main(["launch", *argv])
 
@@ -132,6 +144,7 @@ def test_launch_records_session_worktree_log_and_roster(env, fake_pool, capsys):
     repo = make_repo(env / "repo")
     spec = write_spec(env, "spec.md", SPEC_OK)
     seed_rulings(RULING_A, RULING_B)
+    seed_task("corpus", "second reads")
     worktree = str(env / "wt-one")
 
     rc = launch(["muse", "fake", spec, "--repo", str(repo),
@@ -1034,6 +1047,7 @@ def test_launch_on_is_the_same_flag_as_task(env, fake_pool, capsys,
     """
     repo = make_repo(env / "repo")
     spec = write_spec(env, "spec.md", SPEC_OK)
+    seed_task("corpus", "second reads")
     seen = {}
     real = launch_module.build_job_file
 
@@ -1043,7 +1057,7 @@ def test_launch_on_is_the_same_flag_as_task(env, fake_pool, capsys,
 
     monkeypatch.setattr(launch_module, "build_job_file", capture)
     rc = launch(["muse", "fake", spec, "--repo", str(repo),
-                 "--on", "second reads", "--dry-run"])
+                 "--front", "corpus", "--on", "second reads", "--dry-run"])
     assert rc == 0
     capsys.readouterr()
     assert seen["task"] == "second reads"

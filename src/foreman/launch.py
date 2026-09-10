@@ -61,6 +61,7 @@ from __future__ import annotations
 
 import argparse
 import ast
+import difflib
 import errno
 import inspect
 import json
@@ -489,6 +490,25 @@ def lookup_task_id(front: str | None, task: str | None) -> str | None:
     return None
 
 
+def unknown_task_message(front: str, task: str) -> str:
+    """The one unknown-task refusal, with the nearest title.
+
+    Launch collects this with every other violated field. ``nearest`` is
+    the closest current title on the front, or ``(none)`` when the front
+    has no titles at all.
+    """
+    titles: list[str] = []
+    for record in store.fold_by_id(
+            store.read_ledger(paths.front_tasks_path(front))):
+        title = record.get("title")
+        if isinstance(title, str) and title:
+            titles.append(title)
+    matches = difflib.get_close_matches(task, titles, n=1, cutoff=0.0)
+    nearest = f"{matches[0]!r}" if matches else "(none)"
+    return (f"--task {task!r} names no task on front {front!r}; "
+            f"nearest: {nearest}")
+
+
 def lookup_scope(front: str | None, task: str | None) -> str | None:
     if not front or not task:
         return None
@@ -831,6 +851,15 @@ def cmd_launch(args: argparse.Namespace) -> int:
     repo = os.path.abspath(args.repo or os.getcwd())
     if not os.path.isdir(repo):
         problems.append(f"repo {repo!r} is not a directory")
+
+    # --task names a task that exists on a front. A title no task carries
+    # used to launch anyway, and only job verify refused afterwards.
+    if args.task and not args.front:
+        problems.append(
+            "--task is refused without --front: a task belongs to a front")
+    elif args.front and args.task and lookup_task_id(
+            args.front, args.task) is None:
+        problems.append(unknown_task_message(args.front, args.task))
 
     # --base against origin, when given. default_base is unchanged when
     # the flag is absent. Fetch failure joins this list so it is named

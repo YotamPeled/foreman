@@ -18,7 +18,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "v0"))
 
 from test_launch import (  # noqa: E402
-    SPEC_OK, env, fake_pool, launch, make_repo, write_spec,
+    SPEC_OK, env, fake_pool, launch, make_repo, seed_task, write_spec,
 )
 
 from foreman import entities, paths, store  # noqa: E402
@@ -114,6 +114,7 @@ def test_a_launched_job_records_the_units_it_was_given(env, fake_pool,
 
     repo = make_repo(env / "repo")
     spec = write_spec(env, "units.md", SPEC_OK)
+    seed_task("corpus", "second reads")
     assert launch(["muse", "fake", spec, "--repo", str(repo),
                    "--front", "corpus", "--task", "second reads",
                    "--units", "3"]) == 0
