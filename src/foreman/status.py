@@ -269,6 +269,25 @@ def _headless_tail(sid: str, record: dict, now: datetime) -> str:
     return " · " + " · ".join(parts)
 
 
+def _is_seeded(checkpoint: dict | None) -> bool:
+    return isinstance(checkpoint, dict) and checkpoint.get("seeded") is True
+
+
+def _checkpoint_age(checkpoint: dict | None, record: dict,
+                    sessions_view: dict, sid: str, now: datetime) -> str:
+    """Age of a seeded checkpoint: the file's `at`, then the collector,
+    then the roster stamp."""
+    at = (checkpoint or {}).get("at") if isinstance(checkpoint, dict) else None
+    if isinstance(at, str) and at.strip():
+        age = _since(at, now)
+        if age != "?":
+            return age
+    observed_age = sessions_view.get(sid, {}).get("seconds_since_declared")
+    if isinstance(observed_age, (int, float)):
+        return _age(observed_age)
+    return _since(record.get("last_declared_at"), now)
+
+
 def _doing_line(sid: str, record: dict, sessions_view: dict,
                 now: datetime) -> str | None:
     """The supervisor's doing-now with its age. The age is the collector's
@@ -283,6 +302,17 @@ def _doing_line(sid: str, record: dict, sessions_view: dict,
     else:
         age = _since(record.get("last_declared_at"), now)
     return f"{doing.strip()} ({age} ago)"
+
+
+def _doing_suffix(sid: str, record: dict, sessions_view: dict,
+                  now: datetime) -> str:
+    """The working-line tail: `doing now`, or the seeded orientation."""
+    checkpoint = session_checkpoint(sid)
+    if _is_seeded(checkpoint):
+        age = _checkpoint_age(checkpoint, record, sessions_view, sid, now)
+        return f" \u00b7 orienting (seeded {age} ago)"
+    doing = _doing_line(sid, record, sessions_view, now)
+    return f" \u00b7 doing now: {doing}" if doing else ""
 
 
 def _supervisor_for(front: str, roster: dict) -> tuple[str, dict] | None:
@@ -535,6 +565,9 @@ def _doing_monitor_line(name: str, roster: dict, sessions_view: dict,
         return "    doing now \u2014 no supervisor"
     sid, record = held
     checkpoint = session_checkpoint(sid)
+    if _is_seeded(checkpoint):
+        age = _checkpoint_age(checkpoint, record, sessions_view, sid, now)
+        return f"    orienting (seeded {age} ago)"
     doing = (checkpoint or {}).get("doing")
     if not (isinstance(doing, str) and doing.strip()):
         return "    doing now \u2014 no checkpoint yet"
@@ -825,8 +858,7 @@ def _working(roster: dict, observed: dict | None, now: datetime,
             lines.append(f"  {label} \u2014 no supervisor \u00b7 {progress}")
         else:
             sid, record = held
-            doing = _doing_line(sid, record, sessions_view, now)
-            tail = f" \u00b7 doing now: {doing}" if doing else ""
+            tail = _doing_suffix(sid, record, sessions_view, now)
             tail += _headless_tail(sid, record, now)
             lines.append(f"  {label} \u2014 supervisor attached "
                          f"\u00b7 {progress}{tail}")

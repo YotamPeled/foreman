@@ -2044,6 +2044,28 @@ def _supervisor_session(session_id: str, front: str | None, repo: str,
     )
 
 
+SEEDED_CHECKPOINT_DOING = "orienting: reading the role prompt and the front"
+SEEDED_CHECKPOINT_NEXT = "first checkpoint from the session itself"
+
+
+def seed_session_checkpoint(session_id: str) -> None:
+    """Write checkpoint.json after the roster line, before the process.
+
+    A fresh supervisor has no write of its own while it reads the role
+    prompt; the collector would open `supervisor silent` against that.
+    The session's own first `checkpoint` overwrites this file.
+    """
+    payload = entities.Checkpoint(
+        session=session_id,
+        doing=SEEDED_CHECKPOINT_DOING,
+        next=SEEDED_CHECKPOINT_NEXT,
+    ).to_dict()
+    payload["by"] = "launcher"
+    payload["seeded"] = True
+    payload["at"] = store.utcnow_iso()
+    store.write_snapshot(paths.checkpoint_path(session_id), payload)
+
+
 def _start_supervisor(session_id: str, *, repo: str, role_prompt: Path,
                       vendor_id: str, workspace: str | None,
                       model: str | None = None
@@ -2380,6 +2402,13 @@ def launch_supervisor_main(args: argparse.Namespace,
         return refuse(f"cannot record the session on the roster: "
                       f"{exc.strerror or exc}")
 
+    try:
+        seed_session_checkpoint(session_id)
+    except OSError as exc:
+        _record_failed(session_id)
+        return refuse(f"cannot seed the session checkpoint: "
+                      f"{exc.strerror or exc}")
+
     # From the roster write to the spawn, every step is inside this handler:
     # past this line the session exists, so a failure has to close it as
     # failed and refuse by name. A session left `starting` forever is a
@@ -2481,6 +2510,13 @@ def launch_supervisor_headless(args: argparse.Namespace, *, front: str,
         )
     except OSError as exc:
         return refuse(f"cannot record the session on the roster: "
+                      f"{exc.strerror or exc}")
+
+    try:
+        seed_session_checkpoint(session_id)
+    except OSError as exc:
+        _record_failed(session_id)
+        return refuse(f"cannot seed the session checkpoint: "
                       f"{exc.strerror or exc}")
 
     try:
@@ -3508,6 +3544,13 @@ def relaunch_main(session_id: str, *, workspace: str | None = None,
             stopped_at=now if old_alive else None),
         default={"sessions": {}},
     )
+
+    try:
+        seed_session_checkpoint(session_id)
+    except OSError as exc:
+        _record_failed(session_id)
+        return refuse(f"cannot seed the session checkpoint: "
+                      f"{exc.strerror or exc}")
 
     argv: list[str] = []
     inner = ""
