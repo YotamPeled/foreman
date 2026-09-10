@@ -67,6 +67,7 @@ def _ensure_verbs() -> None:
     from . import launch as _launch  # noqa: F401
     from . import migrate as _migrate  # noqa: F401
     from . import progress as _progress  # noqa: F401
+    from . import start as _start  # noqa: F401
     from . import status as _status  # noqa: F401
     from . import verbs as _verbs  # noqa: F401
     from . import wait as _wait  # noqa: F401
