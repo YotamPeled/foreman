@@ -5,13 +5,16 @@
     PYTHONPATH=src python bin/foreman-proof v5 --milestone N
     PYTHONPATH=src python bin/foreman-proof v5 --list
     PYTHONPATH=src python bin/foreman-proof v5 --milestone N --break ID
+    PYTHONPATH=src python bin/foreman-proof v5
 
 Drives this checkout's CLI against an isolated state directory, a fake
 worker, and two fixture repositories. Prints one ``CLAUSE id PASS|FAIL``
 line per done-when clause (trial-frictions clause 9 may SKIP when grok
 is not on PATH) and exits non-zero if any fails.
 
-v5 clauses live under ``proof/v5/m<N>_<slug>.py``, loaded by path.
+v5 clauses live under ``proof/v5/m<N>_<slug>.py`` (milestones) and
+``proof/v5/f<N>_<slug>.py`` (finish line), loaded by path. With no
+``--milestone``, milestone files run first, then the finish-line files.
 Standard library only. Never inherits FOREMAN_SESSION, FOREMAN_STATE or
 FOREMAN_CONFIG from the caller: it sets the world those verbs run in.
 """
@@ -1716,25 +1719,37 @@ CLAUSES = (
 V5_DIR_NAME = "proof/v5"
 V5_DIR = REPO / "proof" / "v5"
 CLAUSE_FILE_RE = re.compile(r"^m(\d+)_[A-Za-z0-9_]+\.py$")
+FINISH_FILE_RE = re.compile(r"^f(\d+)_[A-Za-z0-9_]+\.py$")
 
 
 def discover_v5_files(milestone: int | None = None,
                       directory: Path | None = None) -> list[Path]:
-    """Clause files named m<N>_<slug>.py, sorted by file name, never imported."""
+    """Milestone then finish-line clause files, sorted by file name.
+
+    ``m<N>_<slug>.py`` is a milestone clause. ``f<N>_<slug>.py`` is a
+    finish-line clause, included only when ``--milestone`` is omitted so
+    ``bin/foreman-proof v5`` runs milestones 0-6 then the finish line.
+    Never imported as a package.
+    """
     source = directory if directory is not None else V5_DIR
     if not source.is_dir():
         return []
-    found: list[Path] = []
+    milestone_files: list[Path] = []
+    finish_files: list[Path] = []
     for path in sorted(source.iterdir(), key=lambda p: p.name):
         if not path.is_file():
             continue
         match = CLAUSE_FILE_RE.match(path.name)
-        if match is None:
+        if match is not None:
+            if milestone is not None and int(match.group(1)) != milestone:
+                continue
+            milestone_files.append(path)
             continue
-        if milestone is not None and int(match.group(1)) != milestone:
+        if milestone is not None:
             continue
-        found.append(path)
-    return found
+        if FINISH_FILE_RE.match(path.name) is not None:
+            finish_files.append(path)
+    return milestone_files + finish_files
 
 
 def load_clause_file(path: Path):
