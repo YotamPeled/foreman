@@ -121,7 +121,7 @@ clause CONFIRMED by running on the live installation, with the proof recorded as
 29. The landing script refuses an empty range before running the check, re-runs the check AFTER the
     update on the tree that will land, records commits dropped by rebase, and a repository's policy may
     name a landing script (build, pin, dry run, rollout, assert) in place of a plain push or PR.
-30. Muse joins the team from 2026-09-14: three at high, for mechanical leaves only (one-page nodes whose
+30. Muse joins the team from 2026-09-14 (back 09-10): three, model muse-spark-1.3-contributor at reasoning effort xhigh always (never high; rul-frzifag), for mechanical leaves only (one-page nodes whose
     verify is a number, a diff or a golden file), each unit idempotent so a death costs one unit; never
     the sole author of a node's only test; never on auth-shaped text; until the reset the runtime shows
     the pool out and Grok takes those leaves.
@@ -155,7 +155,7 @@ clause CONFIRMED by running on the live installation, with the proof recorded as
 
 supervisor      fable-5.1:high:1
 builder         grok-4.6:high:2
-builder         muse:high:3          (mechanical leaves only; pool out until 2026-09-14)
+builder         muse-1.3-contributor:xhigh:3          (mechanical leaves only; pool out until 2026-09-14)
 backup-builder  opus-5:high:1        (only after a failed builder run)
 reviewer        astra-6:low:1        (on the supervisor's call)
 Muse is out until 2026-09-14 and takes nothing.

@@ -21,7 +21,7 @@ launch, not advice.
   unbounded scope; the untrusted-input / injection topic (vendor refuses it).
 - Cannot be messaged mid-run: the whole world goes in the file.
 
-## Muse (spark-1.3, high/xhigh) — builder for mechanical leaves
+## Muse (muse-spark-1.3-contributor, xhigh ALWAYS — owner ruling rul-frzifag 2026-09-10; never high) — builder for mechanical leaves
 - Honest self-reports on every claim checked across five fronts; cheap; obeys "do not write a summary,
   do not add a README, do not commit"; puts scratch in /tmp when told; censused 4,223 files correctly;
   found real harms with file-and-line proof; when handed an impossible check it said so instead of faking
