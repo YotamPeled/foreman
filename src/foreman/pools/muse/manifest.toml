@@ -16,4 +16,5 @@ model = "muse-spark-1.3-contributor"
 timeout_default = "20m"
 interactive = false
 roles = ["muse"]
+aliases = ["muse-spark"]
 adapter = "muse"

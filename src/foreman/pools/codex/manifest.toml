@@ -16,4 +16,5 @@ model = "gpt-6-astra"
 timeout_default = "25m"
 interactive = false
 roles = ["astra"]
+aliases = ["astra-6", "astra"]
 adapter = "codex"

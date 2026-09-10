@@ -22,6 +22,7 @@ import tomllib
 from pathlib import Path
 
 from . import caller, cli, config, entities, ids, monitors, paths, store
+from .pools import plugins as pool_plugins
 from .caller import Refusal
 from .entities import JOB_ROLES
 
@@ -158,6 +159,13 @@ def _validate_v5(data: dict) -> list[str]:
     return violations
 
 
+def _v5_unknown_agent(agent: str, tag: str) -> str | None:
+    if pool_plugins.resolve_agent(agent) is not None:
+        return None
+    return (f"{tag} unknown agent '{agent}'; "
+            f"{pool_plugins.known_agents_clause()}")
+
+
 def _v5_supervisor_violations(value: str, tag: str) -> list[str]:
     parts = value.split(":")
     if len(parts) != 2 or not parts[0] or not parts[1]:
@@ -168,6 +176,9 @@ def _v5_supervisor_violations(value: str, tag: str) -> list[str]:
         violations.append(
             f"{tag} effort must be {', '.join(_V5_EFFORTS)} "
             f"(got '{effort}')")
+    unknown = _v5_unknown_agent(agent, tag)
+    if unknown is not None:
+        violations.append(unknown)
     return violations
 
 
@@ -190,6 +201,9 @@ def _v5_team_violations(entry: object, tag: str) -> list[str]:
         violations.append(
             f"{tag} role must be {', '.join(_V5_TEAM_ROLES)} "
             f"(got '{role}')")
+    unknown = _v5_unknown_agent(agent, tag)
+    if unknown is not None:
+        violations.append(unknown)
     return violations
 
 

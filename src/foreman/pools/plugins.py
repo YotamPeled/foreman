@@ -82,6 +82,9 @@ class PoolManifest:
     timeout_default: str
     interactive: bool
     roles: tuple[str, ...] = ()
+    #: Extra names an agent string may use for this pool (a model
+    #: nickname, a role the owner types). Optional; validated like roles.
+    aliases: tuple[str, ...] = ()
     #: The registered packaged adapter implementing this pool, if any.
     adapter: str | None = None
     #: A directory-declared vendor command, if any; wins over ``adapter``.
@@ -174,6 +177,11 @@ def load_manifest(directory: Path | str) -> PoolManifest:
             not isinstance(role, str) or not role for role in roles):
         raise _invalid(f"{path} misnames 'roles' (must be a list of "
                        f"role names, got {roles!r})")
+    aliases = raw.get("aliases", [])
+    if not isinstance(aliases, list) or any(
+            not isinstance(alias, str) or not alias for alias in aliases):
+        raise _invalid(f"{path} misnames 'aliases' (must be a list of "
+                       f"names, got {aliases!r})")
     adapter = raw.get("adapter")
     if adapter is not None and not isinstance(adapter, str):
         raise _invalid(f"{path} misnames 'adapter' "
@@ -205,6 +213,7 @@ def load_manifest(directory: Path | str) -> PoolManifest:
     return PoolManifest(
         name=name, model=model, timeout_default=timeout,
         interactive=interactive, roles=tuple(roles),
+        aliases=tuple(aliases),
         adapter=adapter, vendor_argv=vendor_argv,
         vendor_stdin=vendor_stdin, directory=directory,
     )
@@ -266,6 +275,49 @@ def describe(name: str) -> tuple[PoolManifest | None, str]:
         return load_manifest(packaged_dir(name)), "packaged"
     except InvalidManifest:
         return None, "packaged"
+
+
+def iter_manifests() -> list[PoolManifest]:
+    """Every loadable pool, user copy winning, sorted by name."""
+    names = sorted(set(packaged_names()) | set(valid_user_names()))
+    found: list[PoolManifest] = []
+    for name in names:
+        manifest, _source = describe(name)
+        if manifest is not None:
+            found.append(manifest)
+    return found
+
+
+def resolve_agent(agent: str) -> PoolManifest | None:
+    """The pool ``agent`` names: pool name, then model, then an alias.
+
+    First match in that order, then sorted pool-name order, so two pools
+    sharing a fragment do not flip between runs. None when nothing matches.
+    """
+    needle = (agent or "").strip()
+    if not needle:
+        return None
+    manifests = iter_manifests()
+    for manifest in manifests:
+        if manifest.name == needle:
+            return manifest
+    for manifest in manifests:
+        if manifest.model == needle:
+            return manifest
+    for manifest in manifests:
+        if needle in manifest.aliases:
+            return manifest
+    return None
+
+
+def known_agents_clause() -> str:
+    """``known agents: name (model …, aliases …), …`` for a refusal."""
+    parts: list[str] = []
+    for manifest in iter_manifests():
+        aliases = ", ".join(manifest.aliases) if manifest.aliases else "(none)"
+        parts.append(
+            f"{manifest.name} (model {manifest.model}, aliases {aliases})")
+    return "known agents: " + (", ".join(parts) or "(none)")
 
 
 def _mapping(manifest: PoolManifest, ctx: LaunchContext) -> dict[str, str]:

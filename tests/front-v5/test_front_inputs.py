@@ -147,6 +147,22 @@ size = 1
     assert not paths.front_record_path("withtask").exists()
 
 
+def test_v5_unknown_agent_is_refused_naming_every_pool(env, capsys):
+    """An agent that is not a pool name, model or alias lists every pool."""
+    bare, _sha = make_bare(env)
+    text = V5_BRIEF.format(name="noagent", url=str(bare)).replace(
+        '"opus-5:high:1:backup-builder"',
+        '"no-such-agent:high:1:backup-builder"')
+    err = add_refused(capsys, write_v5(env, "noagent", str(bare), text),
+                      "team", "no-such-agent",
+                      "grok-4.6", "opus-5", "astra-6", "muse-spark")
+    assert "model grok-4.6" in err
+    assert "model claude-opus-5" in err
+    assert "aliases opus-5, opus" in err
+    assert "aliases astra-6, astra" in err
+    assert not paths.front_record_path("noagent").exists()
+
+
 def test_v5_shape_defects_join_one_refusal(env, capsys):
     """Missing finish-line and a leftover [[task]] are named together."""
     bare, _sha = make_bare(env)

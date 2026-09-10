@@ -16,4 +16,5 @@ model = "claude-opus-5"
 timeout_default = "20m"
 interactive = false
 roles = ["opus", "supervisor", "foreman"]
+aliases = ["opus-5", "opus"]
 adapter = "claude"
