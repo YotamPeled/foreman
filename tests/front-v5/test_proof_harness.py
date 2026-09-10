@@ -93,13 +93,6 @@ def test_v5_milestone_0_runs_and_exits_0():
     assert "/tmp/" not in lines[0]
 
 
-def test_v5_break_0_1_fails_and_exits_1():
-    proc = run_proof("v5", "--milestone", "0", "--break", "0.1")
-    assert proc.returncode == 1, proc.stderr + proc.stdout
-    lines = _clause_lines(proc.stdout, "CLAUSE 0.1 FAIL")
-    assert len(lines) == 1, proc.stdout
-
-
 def test_v5_unknown_milestone_exits_2_naming_proof_v5():
     proc = run_proof("v5", "--milestone", "9", compare_env=True)
     assert proc.returncode == 2, proc.stderr + proc.stdout

@@ -4,6 +4,7 @@
     PYTHONPATH=src python bin/foreman-proof trial-frictions
     PYTHONPATH=src python bin/foreman-proof v5 --milestone N
     PYTHONPATH=src python bin/foreman-proof v5 --list
+    PYTHONPATH=src python bin/foreman-proof v5 --milestone N --break ID
 
 Drives this checkout's CLI against an isolated state directory, a fake
 worker, and two fixture repositories. Prints one ``CLAUSE id PASS|FAIL``
@@ -74,6 +75,7 @@ _UNITS: set[str] = set()
 _HOLDS: list[subprocess.Popen] = []
 _REPOS: list[Path] = []
 _CLEANED = False
+_KEEP_ROOT = False
 
 
 def _die(message: str, code: int = 2) -> int:
@@ -122,9 +124,12 @@ def run_foreman(args: list[str], *, session: str | None = None,
                 cwd: Path | str | None = None,
                 timeout: float = 120,
                 extra_env: dict | None = None) -> subprocess.CompletedProcess:
-    """One verb: ``python -m foreman …`` from this checkout."""
+    """One verb: the world's ``foreman`` wrapper, else ``python -m foreman``."""
     assert_world()
-    cmd = [sys.executable, "-m", "foreman", *args]
+    if _BIN is None:
+        cmd = [sys.executable, "-m", "foreman", *args]
+    else:
+        cmd = [str(_BIN / "foreman"), *args]
     return subprocess.run(
         cmd, cwd=cwd or str(REPO), env=env_for(session=session, extra=extra_env),
         capture_output=True, text=True, timeout=timeout)
@@ -273,7 +278,7 @@ def cleanup() -> None:
             _stop_unit(name)
     _remove_worktrees()
     restore_claude_shim()
-    if _TEMP is not None and _TEMP.is_dir():
+    if _TEMP is not None and _TEMP.is_dir() and not _KEEP_ROOT:
         shutil.rmtree(_TEMP, ignore_errors=True)
 
 
@@ -386,6 +391,13 @@ def write_fake_binaries(bin_dir: Path) -> None:
         "exit 0\n",
         encoding="utf-8")
     grok.chmod(0o755)
+    # The world's foreman: a rename here is the harness clause's BREAK.
+    foreman = bin_dir / "foreman"
+    foreman.write_text(
+        "#!/bin/sh\n"
+        f"exec {json.dumps(sys.executable)} -m foreman \"$@\"\n",
+        encoding="utf-8")
+    foreman.chmod(0o755)
     inner = bin_dir / "fake-worker.py"
     inner.write_text(
         "import pathlib, re, subprocess, sys\n"
@@ -614,6 +626,7 @@ def build_world(root: Path) -> dict:
         "specs": specs,
         "started_at": started,
         "argv_log": _BIN / "vendor-argv.log",
+        "bin": _BIN,
     }
 
 
@@ -1359,12 +1372,14 @@ V5_DIR = REPO / "proof" / "v5"
 CLAUSE_FILE_RE = re.compile(r"^m(\d+)_[A-Za-z0-9_]+\.py$")
 
 
-def discover_v5_files(milestone: int | None = None) -> list[Path]:
+def discover_v5_files(milestone: int | None = None,
+                      directory: Path | None = None) -> list[Path]:
     """Clause files named m<N>_<slug>.py, sorted by file name, never imported."""
-    if not V5_DIR.is_dir():
+    source = directory if directory is not None else V5_DIR
+    if not source.is_dir():
         return []
     found: list[Path] = []
-    for path in sorted(V5_DIR.iterdir(), key=lambda p: p.name):
+    for path in sorted(source.iterdir(), key=lambda p: p.name):
         if not path.is_file():
             continue
         match = CLAUSE_FILE_RE.match(path.name)
@@ -1422,7 +1437,7 @@ def _exit_status(failed: bool) -> int:
         print(f"foreman-proof: leftover units: {leftover_units}",
               file=sys.stderr)
         failed = True
-    if _TEMP is not None and _TEMP.exists():
+    if not _KEEP_ROOT and _TEMP is not None and _TEMP.exists():
         print(f"foreman-proof: temp dir still present: {_TEMP}",
               file=sys.stderr)
         failed = True
@@ -1430,7 +1445,12 @@ def _exit_status(failed: bool) -> int:
 
 
 def make_world_root(explicit: Path | None) -> Path:
-    """World lives under <repo>/build/proof, never /tmp (decision 25)."""
+    """World lives under <repo>/build/proof, never /tmp (decision 25).
+
+    An explicit ``--root`` is owned by the caller and is not deleted.
+    """
+    global _KEEP_ROOT
+    _KEEP_ROOT = explicit is not None
     if explicit is not None:
         root = Path(explicit)
         root.mkdir(parents=True, exist_ok=True)
@@ -1446,6 +1466,83 @@ def _break_is(break_clause: object, cid: object) -> bool:
     if break_clause in (None, "", 0, "0"):
         return False
     return str(break_clause) == str(cid)
+
+
+def _run_one_clause(module, world) -> tuple[str, str]:
+    """Run module.run(world). Returns (PASS|FAIL|SKIP, message)."""
+    try:
+        msg = module.run(world)
+        return "PASS", str(msg)
+    except Skip as exc:
+        return "SKIP", str(exc)
+    except Failure as exc:
+        return "FAIL", str(exc)
+    except subprocess.TimeoutExpired as exc:
+        return "FAIL", f"timed out: {exc}"
+    except Exception as exc:  # noqa: BLE001 - one line of evidence
+        return "FAIL", f"{type(exc).__name__}: {exc}"
+
+
+def _clause_break(module, path_name: str):
+    """Return (line, apply, restore) or None when the clause has no BREAK."""
+    br = getattr(module, "BREAK", None)
+    if br is None:
+        return None
+    if not (isinstance(br, tuple) and len(br) == 3):
+        raise Failure(f"{path_name} BREAK must be (line, apply, restore)")
+    line, apply, restore = br
+    if not isinstance(line, str) or not line.strip():
+        raise Failure(f"{path_name} BREAK line must be a non-empty string")
+    if not callable(apply) or not callable(restore):
+        raise Failure(f"{path_name} BREAK apply and restore must be callable")
+    return " ".join(line.split()), apply, restore
+
+
+def _execute_break(cid, module, world, path_name: str) -> bool:
+    """Apply a clause's own BREAK. Return True when the overall run failed."""
+    try:
+        br = _clause_break(module, path_name)
+    except Failure as exc:
+        print(f"foreman-proof: {exc}", file=sys.stderr)
+        return True
+    if br is None:
+        report(cid, "FAIL", f"deliberately broken (clause {cid})")
+        return True
+    line, apply, restore = br
+    status, msg = _run_one_clause(module, world)
+    if status != "PASS":
+        report(cid, status, msg)
+        print(f"BREAK {cid} NOT-GREEN", flush=True)
+        return True
+    report(cid, "PASS", msg)
+    try:
+        apply(world)
+    except Exception as exc:  # noqa: BLE001 - apply is the clause's job
+        try:
+            restore(world)
+        except Exception:
+            pass
+        print(f"foreman-proof: BREAK {cid} apply failed: "
+              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        return True
+    restore_error = None
+    try:
+        status2, _msg2 = _run_one_clause(module, world)
+    finally:
+        try:
+            restore(world)
+        except Exception as exc:  # noqa: BLE001 - must not hide the second run
+            restore_error = exc
+    if restore_error is not None:
+        print(f"foreman-proof: BREAK {cid} restore failed: "
+              f"{type(restore_error).__name__}: {restore_error}",
+              file=sys.stderr)
+        return True
+    if status2 == "PASS":
+        print(f"BREAK {cid} SURVIVED {line}", flush=True)
+        return True
+    print(f"BREAK {cid} RED {line}", flush=True)
+    return False
 
 
 def _run_loaded_clauses(files: list[Path], break_clause: object,
@@ -1464,21 +1561,13 @@ def _run_loaded_clauses(files: list[Path], break_clause: object,
                 print(f"foreman-proof: {exc}", file=sys.stderr)
                 failed = True
                 continue
-            try:
-                if _break_is(break_clause, cid):
-                    raise Failure(f"deliberately broken (clause {cid})")
-                msg = module.run(world)
-                report(cid, "PASS", msg)
-            except Skip as exc:
-                report(cid, "SKIP", str(exc))
-            except Failure as exc:
-                report(cid, "FAIL", str(exc))
-                failed = True
-            except subprocess.TimeoutExpired as exc:
-                report(cid, "FAIL", f"timed out: {exc}")
-                failed = True
-            except Exception as exc:  # noqa: BLE001 - one line of evidence
-                report(cid, "FAIL", f"{type(exc).__name__}: {exc}")
+            if _break_is(break_clause, cid):
+                if _execute_break(cid, module, world, path.name):
+                    failed = True
+                continue
+            status, msg = _run_one_clause(module, world)
+            report(cid, status, msg)
+            if status == "FAIL":
                 failed = True
     finally:
         cleanup()
@@ -1486,10 +1575,14 @@ def _run_loaded_clauses(files: list[Path], break_clause: object,
 
 
 def _main_v5(args: argparse.Namespace) -> int:
-    files = discover_v5_files(args.milestone)
+    clauses_dir = args.clauses.resolve() if args.clauses is not None else None
+    if clauses_dir is not None and not clauses_dir.is_dir():
+        return _die(f"no such clauses directory: {clauses_dir}")
+    files = discover_v5_files(args.milestone, directory=clauses_dir)
+    source_name = str(clauses_dir) if clauses_dir is not None else V5_DIR_NAME
     if args.milestone is not None and not files:
         return _die(
-            f"unknown milestone {args.milestone}: no clause files in {V5_DIR_NAME}")
+            f"unknown milestone {args.milestone}: no clause files in {source_name}")
     if args.list_only:
         return list_v5_clauses(files)
     return _run_loaded_clauses(files, args.break_clause, make_world_root(args.root))
@@ -1502,13 +1595,17 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("front", help="front name (trial-frictions or v5)")
     parser.add_argument(
         "--break", dest="break_clause", default=None,
-        help="deliberately fail this clause id (integer still works for trial-frictions)")
+        help="run this clause's BREAK (apply/restore); a clause with no BREAK "
+             "is still deliberately failed (integer still works for trial-frictions)")
     parser.add_argument(
         "--milestone", type=int, default=None, metavar="N",
         help="run only the v5 clause files of milestone N")
     parser.add_argument(
         "--list", action="store_true", dest="list_only",
         help="print CLAUSE id title per v5 file and exit without a world")
+    parser.add_argument(
+        "--clauses", type=Path, default=None, metavar="DIR",
+        help="load v5 clause files from DIR instead of proof/v5")
     parser.add_argument(
         "--root", type=Path, default=None,
         help="world root (default: <repo>/build/proof/<utc timestamp>-<pid>)")
@@ -1523,8 +1620,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.front != FRONT:
         return _die(
             f"unknown front {args.front!r}; only {FRONT} and v5 are implemented")
-    if args.list_only or args.milestone is not None:
-        return _die("--list and --milestone apply to front v5")
+    if args.list_only or args.milestone is not None or args.clauses is not None:
+        return _die("--list, --milestone and --clauses apply to front v5")
 
     _REAL_GROK = shutil.which("grok", path=_ORIG_PATH)
 

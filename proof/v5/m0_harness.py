@@ -4,6 +4,26 @@ from pathlib import Path
 
 CLAUSE = ("0.1", "harness self-check")
 
+_FOREMAN = "foreman"
+_BROKEN = "foreman.broken"
+
+
+def _bin(world) -> Path:
+    return Path(world["bin"])
+
+
+def apply(world) -> None:
+    src = _bin(world) / _FOREMAN
+    src.rename(src.with_name(_BROKEN))
+
+
+def restore(world) -> None:
+    src = _bin(world) / _BROKEN
+    src.rename(src.with_name(_FOREMAN))
+
+
+BREAK = ("rename the fake foreman binary so version fails", apply, restore)
+
 
 def run(world) -> str:
     if not world:
