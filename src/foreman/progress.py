@@ -1190,6 +1190,8 @@ def _node_has_verified_job(front: str, node: dict) -> bool:
 
 #: A landing item still in flight: queued or running, not failed/landed.
 _OPEN_LANDING_STATES = ("queued", "running")
+#: A finish-blocking item: still in flight or already failed.
+_BLOCKING_SCRIPT_STATES = ("queued", "running", "failed")
 
 
 def _open_landing_item(folded: list[dict], node_id: str) -> dict | None:
@@ -1200,6 +1202,86 @@ def _open_landing_item(folded: list[dict], node_id: str) -> dict | None:
         if str(node.get("state") or "") in _OPEN_LANDING_STATES:
             return node
     return None
+
+
+def _open_script_item(folded: list[dict], kind: str,
+                      lands: str | None = None,
+                      states: tuple[str, ...] = _OPEN_LANDING_STATES
+                      ) -> dict | None:
+    """An item of ``kind`` in ``states``, optionally matching ``lands``."""
+    for node in folded:
+        if str(node.get("kind") or "") != kind:
+            continue
+        if lands is not None and str(node.get("lands") or "") != lands:
+            continue
+        if str(node.get("state") or "") in states:
+            return node
+    return None
+
+
+def _last_milestone(folded: list[dict], front_name: str) -> str:
+    """The last milestone node's id, or the front name when there is none."""
+    last = ""
+    for node in folded:
+        if str(node.get("kind") or "") == "milestone":
+            nid = str(node.get("id") or "")
+            if nid:
+                last = nid
+    return last or front_name
+
+
+def queue_script_item(front_name: str, record: dict, *,
+                      kind: str, title: str, repo: str, lands: str,
+                      who: str, target: str = "", onto: str = "") -> str:
+    """Append a queued script node under the front's last milestone."""
+    folded, by_id = node_mod._read_nodes(front_name)
+    parent = _last_milestone(folded, front_name)
+    lid = ids.mint("node")
+    now = store.utcnow_iso()
+    queued = {
+        "id": lid,
+        "front": front_name,
+        "parent": parent,
+        "kind": kind,
+        "title": title,
+        "repo": repo,
+        "what": title,
+        "verify": "true",
+        "must_not_touch": "the live state directory",
+        "reason": title,
+        "break": title,
+        "scope": "source-test",
+        "role": "script",
+        "after": [],
+        "lands": lands,
+        "target": target,
+        "onto": onto,
+        "state": "queued",
+        "queued_at": now,
+        "sheet_replace": "Run the landing script and record the head.",
+        "sheet_reason": "script items have no default sheet",
+        "at": now,
+        "by": who,
+    }
+    waits = compute_node_waits(front_name, queued, by_id, record)
+    queued["waits"] = waits
+    line = entities.Node.from_dict(queued).to_dict()
+    line["kind"] = kind
+    line["lands"] = lands
+    line["state"] = "queued"
+    line["queued_at"] = now
+    line["waits"] = waits
+    line["sheet_replace"] = queued["sheet_replace"]
+    line["sheet_reason"] = queued["sheet_reason"]
+    if target:
+        line["target"] = target
+    if onto:
+        line["onto"] = onto
+    line["at"] = now
+    line["by"] = who
+    store.append_ledger(
+        paths.front_tree_path(front_name), line, session_id=who)
+    return lid
 
 
 def compute_node_waits(front: str, node: dict, by_id: dict[str, dict],

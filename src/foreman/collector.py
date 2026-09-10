@@ -978,9 +978,10 @@ def _queue_tick(cstate: dict, now_iso: str) -> None:
 
     After observation and the anomaly passes. One model job per front
     goes through ``start_queued``. A ``script`` node with ``lands``
-    whose wait is empty goes through ``landing.run`` (no slot); one
-    script per repository per tick. Every other queued node gets a
-    revise line only when its reason changed.
+    (a job landing, a front-landing, or a rebase) whose wait is empty
+    goes through ``landing.run`` (no slot); one script per repository
+    per tick. Every other queued node gets a revise line only when its
+    reason changed.
     """
     from . import fronts as fronts_mod
     from . import landing as landing_mod
@@ -1000,8 +1001,9 @@ def _queue_tick(cstate: dict, now_iso: str) -> None:
             continue
         folded, by_id = node_mod._read_nodes(name)
         queued = [node for node in folded
-                  if node.get("kind") == "job"
-                  and str(node.get("state") or "") == "queued"]
+                  if str(node.get("state") or "") == "queued"
+                  and (node.get("kind") == "job"
+                       or node.get("kind") in landing_mod.SCRIPT_KINDS)]
         if not queued:
             continue
         started = False
@@ -1013,7 +1015,9 @@ def _queue_tick(cstate: dict, now_iso: str) -> None:
                 name, node, by_id, record)
             lands = str(node.get("lands") or "").strip()
             role = str(node.get("role") or "").strip()
-            if role == "script" and lands and waits in ("", "ready"):
+            kind = str(node.get("kind") or "").strip()
+            if (role == "script" and waits in ("", "ready")
+                    and (lands or kind in landing_mod.SCRIPT_KINDS)):
                 built = by_id.get(lands) or node
                 job = landing_mod._verified_job(name, built)
                 repo = landing_mod._landing_repo(name, record, built, job)

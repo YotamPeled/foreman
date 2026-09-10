@@ -1659,6 +1659,85 @@ def front_import_main(front: str, directory: str | None,
         front, directory, seen_at=seen_at, commit=commit, dry_run=dry_run)
 
 
+def _pick_repository(record: dict, repo: str | None) -> tuple[dict | None, str]:
+    """The matching ``[[repository]]`` entry, or a refusal reason."""
+    repos = record.get("repositories") or []
+    repos = [entry for entry in repos if isinstance(entry, dict)] if (
+        isinstance(repos, list)) else []
+    if not repos:
+        return None, "front names no repository"
+    want = (repo or "").strip()
+    if not want:
+        return repos[0], ""
+    for entry in repos:
+        name = str(entry.get("name") or "").strip()
+        url = str(entry.get("url") or "").strip()
+        if name == want or url == want:
+            return entry, ""
+    listed = ", ".join(
+        str(entry.get("name") or "").strip() or "(unnamed)"
+        for entry in repos) or "(none)"
+    return None, (
+        f"unknown repository '{want}' on front "
+        f"'{record.get('name') or ''}' (known: {listed})")
+
+
+def front_land_main(name: str, repo: str | None = None) -> int:
+    """Queue a front-landing script item under the last milestone.
+
+    Foreman or owner. ``lands`` is the work branch, ``target`` is the
+    target branch. Refused while a front-landing item for that work
+    branch is already open.
+    """
+    verb = "front land"
+    me, violations = caller.resolve(verb)
+    caller.check_role(me, verb, caller.FOREMAN, violations=violations)
+    record = _revised(name, violations)
+    entry: dict | None = None
+    if record is not None:
+        if str(record.get("shape") or "") != "v5":
+            violations.append(
+                f"front '{name.strip()}' is not v5; only a v5 front is landed")
+        else:
+            entry, why = _pick_repository(record, repo)
+            if why:
+                violations.append(why)
+            elif entry is not None:
+                work = str(entry.get("work") or "").strip()
+                target = str(entry.get("target") or "").strip()
+                if not work:
+                    violations.append("repository names no work branch")
+                if not target:
+                    violations.append("repository names no target branch")
+                if work:
+                    from . import node as node_mod
+                    from . import progress as progress_mod
+
+                    folded, _by_id = node_mod._read_nodes(name.strip())
+                    open_item = progress_mod._open_script_item(
+                        folded, "front-landing", lands=work)
+                    if open_item is not None:
+                        violations.append(
+                            f"landing item for {work} is already open "
+                            f"({open_item.get('id')})")
+    if violations:
+        return Refusal(violations).report()
+    assert record is not None and entry is not None
+    from . import progress as progress_mod
+
+    who = caller.by_line(me)
+    key = name.strip()
+    work = str(entry.get("work") or "").strip()
+    target = str(entry.get("target") or "").strip()
+    repo_name = str(entry.get("name") or "").strip()
+    lid = progress_mod.queue_script_item(
+        key, record, kind="front-landing",
+        title=f"land {key} onto {target}",
+        repo=repo_name, lands=work, who=who, target=target)
+    print(lid)
+    return 0
+
+
 def front_policy_main(front: str, repo: str) -> int:
     """Print the landing policy for a front and a repository, one field per line."""
     verb = "front policy"
@@ -1754,9 +1833,14 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
         "policy", help="Print the landing policy for a repository.")
     policy.add_argument("front", help="front name")
     policy.add_argument("repo", help="repository name or url")
+    land = verbs.add_parser(
+        "land", help="Queue a script that lands the front onto its target.")
+    land.add_argument("name", help="front name")
+    land.add_argument("--repo", default=None,
+                      help="repository name (default: the first)")
 
 
-@cli.subcommand("front", help="Add, list, show, policy, prefer, allocate, "
+@cli.subcommand("front", help="Add, list, show, policy, land, prefer, allocate, "
                      "reserve, release, close, take, import or mark a "
                      "front done.")
 def _front_entry(args: argparse.Namespace) -> int:
@@ -1787,6 +1871,8 @@ def _front_entry(args: argparse.Namespace) -> int:
             commit=args.commit, dry_run=args.dry_run)
     if args.front_verb == "policy":
         return front_policy_main(args.front, args.repo)
+    if args.front_verb == "land":
+        return front_land_main(args.name, repo=args.repo)
     raise AssertionError(f"unknown front verb {args.front_verb!r}")
 
 

@@ -88,6 +88,13 @@ class Front(Entity):
     decisions: list = field(default_factory=list)
     team: list = field(default_factory=list)
     repositories: list = field(default_factory=list)
+    #: The target sha this front last recorded (updated on a front
+    #: landing or rebase). Empty until then; readers fall back to the
+    #: first repository's ``base_sha``.
+    base_sha: str = ""
+    #: The target sha a rebase item is catching up to. Empty when the
+    #: front is not behind.
+    behind: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -96,6 +103,10 @@ class Front(Entity):
                         "team", "repositories"):
                 if not data.get(key):
                     data.pop(key, None)
+        if not data.get("base_sha"):
+            data.pop("base_sha", None)
+        if not data.get("behind"):
+            data.pop("behind", None)
         return data
 
 
@@ -457,7 +468,14 @@ class Node(Entity):
     #: Shared resources this node holds while ``state`` is ``running``.
     resources: list = field(default_factory=list)
     #: The tree node a landing item lands. Empty on every other job.
+    #: A front-landing or rebase item stores the work branch here.
     lands: str = ""
+    #: Target branch a front-landing item lands onto.
+    target: str = ""
+    #: Sha a rebase item rebases onto.
+    onto: str = ""
+    #: URL a ``land = pr`` front-landing recorded from ``gh pr create``.
+    pr_url: str = ""
     #: Sha the landing pushed, on the built node and the item.
     landed_sha: str = ""
     fail_reason: str = ""
@@ -483,6 +501,12 @@ class Node(Entity):
             data.pop("resources", None)
         if not data.get("lands"):
             data.pop("lands", None)
+        if not data.get("target"):
+            data.pop("target", None)
+        if not data.get("onto"):
+            data.pop("onto", None)
+        if not data.get("pr_url"):
+            data.pop("pr_url", None)
         if not data.get("landed_sha"):
             data.pop("landed_sha", None)
         if not data.get("fail_reason"):

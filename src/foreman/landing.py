@@ -7,7 +7,10 @@ desk reads this; it does not read ``foreman.toml`` first.
 
 ``run`` lands a job branch onto the front's work branch under a
 per-repository lock: fetch, refuse an empty range, rebase in a detached
-worktree, run the policy's check, push with a lease.
+worktree, run the policy's check, push with a lease. A ``front-landing``
+item does the same from the work branch onto the target; ``land = pr``
+pushes work and opens a pull request. A ``rebase`` item rebases work
+onto a moved target and pushes work.
 """
 
 from __future__ import annotations
@@ -23,6 +26,10 @@ from pathlib import Path
 from typing import Iterator
 
 from .caller import Refusal, SESSION_ENV
+
+#: Script items the queue tick runs without a slot. A job landing is
+#: kind ``job`` with ``role = script``; these two are their own kinds.
+SCRIPT_KINDS = ("front-landing", "rebase")
 
 
 @dataclass(frozen=True)
@@ -164,6 +171,7 @@ class LandingResult:
     base_sha: str = ""
     dropped: list[str] = field(default_factory=list)
     fail_reason: str = ""
+    pr_url: str = ""
 
 
 def lock_path_for(repo: str) -> Path:
@@ -283,6 +291,8 @@ def _record_item(front: str, item: dict, by: str, result: LandingResult) -> None
         changes["base_sha"] = result.base_sha
     if result.dropped:
         changes["dropped"] = list(result.dropped)
+    if result.pr_url:
+        changes["pr_url"] = result.pr_url
     progress_mod._write_node_revise(
         front, item, by, "landing", **changes)
 
@@ -300,6 +310,320 @@ def _fail(reason: str, **fields: object) -> LandingResult:
     for key, value in fields.items():
         setattr(result, key, value)
     return result
+
+
+def create_pr(*, base: str, head: str, title: str, body: str,
+              cwd: str) -> subprocess.CompletedProcess[str]:
+    """Open a pull request. Tests replace this function."""
+    return subprocess.run(
+        ["gh", "pr", "create",
+         "--base", base, "--head", head,
+         "--title", title, "--body", body],
+        cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True)
+
+
+def _pr_url_from_output(output: str) -> str:
+    for line in reversed((output or "").splitlines()):
+        text = line.strip()
+        if text.startswith("http://") or text.startswith("https://"):
+            return text
+    stripped = (output or "").strip()
+    if not stripped:
+        return ""
+    return stripped.splitlines()[-1].strip()
+
+
+def _origin_url(policy: Policy, fallback: str) -> str:
+    url = (policy.url or "").strip()
+    return url or fallback
+
+
+def _revise_front(front_name: str, record: dict, who: str,
+                  **changes: object) -> dict:
+    from . import entities, store
+    from . import paths as paths_mod
+
+    updated = dict(record)
+    updated.update(changes)
+    line = entities.Front.from_dict(updated).to_dict()
+    if "monitors" in record:
+        line["monitors"] = record["monitors"]
+    store.append_ledger(
+        paths_mod.front_record_path(front_name), line, session_id=who)
+    return line
+
+
+def _set_front_base(front_name: str, record: dict | None, who: str,
+                    *, repo_name: str, base_sha: str,
+                    behind: str | None = None) -> None:
+    if record is None:
+        return
+    repos = []
+    for entry in record.get("repositories") or []:
+        if not isinstance(entry, dict):
+            repos.append(entry)
+            continue
+        name = str(entry.get("name") or "").strip()
+        url = str(entry.get("url") or "").strip()
+        if repo_name and name != repo_name and url != repo_name:
+            repos.append(entry)
+            continue
+        repos.append(dict(entry, base_sha=base_sha))
+    changes: dict[str, object] = {
+        "repositories": repos, "base_sha": base_sha,
+    }
+    if behind is not None:
+        changes["behind"] = behind
+    _revise_front(front_name, record, who, **changes)
+
+
+def _setup_land_clone(url: str, area: str) -> str:
+    """Clone ``url`` into ``area``. Empty string on success, else a reason."""
+    from . import paths as paths_mod
+
+    paths_mod.remove_scratch(area)
+    cloned = subprocess.run(
+        ["git", "clone", "-q", url, area],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    if cloned.returncode != 0:
+        tail = (cloned.stderr.strip() or cloned.stdout.strip()).strip()
+        return f"cannot clone '{url}': {tail}".strip()
+    _git(area, "config", "user.email", "foreman@invalid")
+    _git(area, "config", "user.name", "foreman")
+    fetched = _git(area, "fetch", "-q", "origin")
+    if fetched.returncode != 0:
+        tail = (fetched.stderr.strip() or fetched.stdout.strip()).strip()
+        return f"git fetch origin failed: {tail}".strip()
+    return ""
+
+
+def _checkout_work(area: str, work: str) -> str:
+    checked = _git(area, "checkout", "-q", "-B", work, f"origin/{work}")
+    if checked.returncode != 0:
+        tail = (checked.stderr.strip() or checked.stdout.strip()).strip()
+        return f"work branch '{work}' does not resolve on origin: {tail}".strip()
+    return ""
+
+
+def _remote_sha(area: str, branch: str) -> str:
+    proc = _git(area, "rev-parse", f"origin/{branch}")
+    if proc.returncode != 0:
+        return ""
+    return proc.stdout.strip()
+
+
+def _run_check(area: str, command: str, item_id: str
+               ) -> tuple[int, float, str, str]:
+    from . import paths as paths_mod
+
+    child_env = _check_env(command)
+    started = time.perf_counter()
+    proc = subprocess.run(
+        command, shell=True, cwd=area,
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+        env=child_env)
+    elapsed = time.perf_counter() - started
+    output = proc.stdout or ""
+    log_path = paths_mod.landing_check_log_path(item_id)
+    log_path.parent.mkdir(parents=True, exist_ok=True)
+    log_path.write_text(output, encoding="utf-8")
+    exit_code = proc.returncode if proc.returncode is not None else 1
+    return exit_code, elapsed, str(log_path), output
+
+
+def _trailer_commit(area: str, front: str, target: str,
+                    trailers: list[str]) -> str:
+    if not trailers:
+        return ""
+    cmd = [
+        "-c", "user.email=foreman@invalid",
+        "-c", "user.name=foreman",
+        "commit", "--allow-empty",
+        "-m", f"land {front} onto {target}",
+    ]
+    for trailer in trailers:
+        cmd.extend(["--trailer", trailer])
+    committed = _git(area, *cmd)
+    if committed.returncode != 0:
+        tail = (committed.stderr.strip() or committed.stdout.strip()).strip()
+        return f"trailer commit failed: {tail}".strip()
+    return ""
+
+
+def _rebase_onto(area: str, onto: str, label: str) -> str:
+    rebase = _git(area, "rebase", onto)
+    if rebase.returncode == 0:
+        return ""
+    conflict = _first_conflict_file(area)
+    _git(area, "rebase", "--abort")
+    if conflict:
+        return conflict
+    tail = (rebase.stderr.strip() or rebase.stdout.strip()).strip()
+    return f"rebase of '{label}' onto '{onto}' failed: {tail}".strip()
+
+
+def _run_front_landing_locked(front: str, item: dict, *, by: str,
+                              front_record: dict | None,
+                              repo: str) -> LandingResult:
+    from . import paths as paths_mod
+
+    try:
+        policy = policy_for(
+            front, str(item.get("repo") or repo))
+    except Refusal as exc:
+        return _fail("; ".join(exc.violations))
+    work = policy.work
+    target = str(item.get("target") or policy.target or "").strip()
+    if not work:
+        return _fail("repository names no work branch")
+    if not target:
+        return _fail("repository names no target branch")
+    url = _origin_url(policy, repo)
+    item_id = str(item.get("id") or "land")
+    area = str(paths_mod.scratch_worktree_dir("front-land", item_id))
+    try:
+        err = _setup_land_clone(url, area)
+        if err:
+            return _fail(err)
+        err = _checkout_work(area, work)
+        if err:
+            return _fail(err)
+        base_sha = _remote_sha(area, target)
+        if not base_sha:
+            return _fail(f"target branch '{target}' does not resolve on origin")
+        work_sha = _remote_sha(area, work)
+        before = _rev_list(area, f"{base_sha}..HEAD")
+        if not before:
+            return _fail(
+                f"{work} adds nothing to {target}@ {base_sha}",
+                base_sha=base_sha)
+        err = _rebase_onto(area, base_sha, work)
+        if err:
+            return _fail(err, base_sha=base_sha)
+        err = _trailer_commit(area, front, target, policy.trailers)
+        if err:
+            return _fail(err, base_sha=base_sha)
+        after = _rev_list(area, f"{base_sha}..HEAD")
+        after_set = set(after)
+        dropped = [sha for sha in before if sha not in after_set]
+        command = policy.check
+        exit_code, elapsed, output_file, _output = _run_check(
+            area, command, item_id)
+        head_proc = _git(area, "rev-parse", "HEAD")
+        head = head_proc.stdout.strip() if head_proc.returncode == 0 else ""
+        fields = dict(
+            command=command, exit=exit_code, seconds=elapsed,
+            output_file=output_file, head=head, base_sha=base_sha,
+            dropped=dropped)
+        if exit_code != 0:
+            return _fail(
+                f"check '{command}' failed (exit {exit_code})",
+                **fields)
+        if policy.land == "pr":
+            lease = work_sha or work
+            push = _git(
+                area, "push",
+                f"--force-with-lease=refs/heads/{work}:{lease}",
+                "origin", f"HEAD:refs/heads/{work}")
+            if push.returncode != 0:
+                tail = (push.stderr.strip() or push.stdout.strip()).strip()
+                return _fail(
+                    f"push of '{work}' failed: {tail}".strip(), **fields)
+            title = ""
+            if front_record is not None:
+                title = str(front_record.get("goal") or "").strip()
+            if not title:
+                title = front
+            created = create_pr(
+                base=target, head=work, title=title,
+                body=policy.pr_body, cwd=area)
+            if created.returncode != 0:
+                tail = (created.stdout or "").strip()
+                return _fail(
+                    f"gh pr create failed: {tail}".strip(), **fields)
+            fields["pr_url"] = _pr_url_from_output(created.stdout or "")
+            return LandingResult(ok=True, **fields)
+        push = _git(
+            area, "push",
+            f"--force-with-lease=refs/heads/{target}:{base_sha}",
+            "origin", f"HEAD:refs/heads/{target}")
+        if push.returncode != 0:
+            tail = (push.stderr.strip() or push.stdout.strip()).strip()
+            return _fail(
+                f"push of '{target}' failed: {tail}".strip(), **fields)
+        result = LandingResult(ok=True, **fields)
+        _set_front_base(
+            front, front_record, by,
+            repo_name=str(item.get("repo") or ""),
+            base_sha=head)
+        return result
+    finally:
+        paths_mod.remove_scratch(area)
+
+
+def _run_rebase_locked(front: str, item: dict, *, by: str,
+                       front_record: dict | None,
+                       repo: str) -> LandingResult:
+    from . import paths as paths_mod
+
+    try:
+        policy = policy_for(
+            front, str(item.get("repo") or repo))
+    except Refusal as exc:
+        return _fail("; ".join(exc.violations))
+    work = policy.work
+    if not work:
+        return _fail("repository names no work branch")
+    onto = str(item.get("onto") or "").strip()
+    if not onto:
+        return _fail("rebase item names no onto sha")
+    url = _origin_url(policy, repo)
+    item_id = str(item.get("id") or "rebase")
+    area = str(paths_mod.scratch_worktree_dir("rebase", item_id))
+    try:
+        err = _setup_land_clone(url, area)
+        if err:
+            return _fail(err)
+        err = _checkout_work(area, work)
+        if err:
+            return _fail(err)
+        work_sha = _remote_sha(area, work)
+        before = _rev_list(area, f"{onto}..HEAD")
+        err = _rebase_onto(area, onto, work)
+        if err:
+            return _fail(err, base_sha=onto)
+        after = _rev_list(area, f"{onto}..HEAD")
+        after_set = set(after)
+        dropped = [sha for sha in before if sha not in after_set]
+        command = policy.check
+        exit_code, elapsed, output_file, _output = _run_check(
+            area, command, item_id)
+        head_proc = _git(area, "rev-parse", "HEAD")
+        head = head_proc.stdout.strip() if head_proc.returncode == 0 else ""
+        fields = dict(
+            command=command, exit=exit_code, seconds=elapsed,
+            output_file=output_file, head=head, base_sha=onto,
+            dropped=dropped)
+        if exit_code != 0:
+            return _fail(
+                f"check '{command}' failed (exit {exit_code})",
+                **fields)
+        lease = work_sha or work
+        push = _git(
+            area, "push",
+            f"--force-with-lease=refs/heads/{work}:{lease}",
+            "origin", f"HEAD:refs/heads/{work}")
+        if push.returncode != 0:
+            tail = (push.stderr.strip() or push.stdout.strip()).strip()
+            return _fail(f"push of '{work}' failed: {tail}".strip(), **fields)
+        _set_front_base(
+            front, front_record, by,
+            repo_name=str(item.get("repo") or ""),
+            base_sha=onto, behind="")
+        return LandingResult(ok=True, **fields)
+    finally:
+        paths_mod.remove_scratch(area)
 
 
 def _run_locked(front: str, item: dict, *, by: str,
@@ -400,18 +724,23 @@ def _run_locked(front: str, item: dict, *, by: str,
 def run(front: str, item: dict, *, by: str) -> LandingResult:
     """Land the item's job branch onto the front's work branch.
 
-    Holds the per-repository lock for the whole attempt. On failure the
-    item is ``failed`` with ``fail_reason`` and the built node is left
-    alone. The scratch worktree is gone on every path.
+    A ``front-landing`` item lands work onto the target; a ``rebase``
+    item rebases work onto a moved target. Holds the per-repository
+    lock for the whole attempt. On failure the item is ``failed`` with
+    ``fail_reason`` and the built node is left alone. The scratch
+    worktree is gone on every path.
     """
     from . import fronts
     from . import node as node_mod
 
     front_name = (front or "").strip()
     front_record = fronts.read_front_record(front_name) if front_name else None
+    kind = str(item.get("kind") or "").strip()
     lands_id = str(item.get("lands") or "").strip()
     built: dict | None = None
-    if front_record is not None and lands_id:
+    if kind in SCRIPT_KINDS:
+        built = item
+    elif front_record is not None and lands_id:
         _folded, by_id = node_mod._read_nodes(front_name)
         built = by_id.get(lands_id)
         if built is None:
@@ -424,11 +753,20 @@ def run(front: str, item: dict, *, by: str) -> LandingResult:
     repo = _landing_repo(front_name, front_record, built,
                          _verified_job(front_name, built))
     with _repo_lock(repo):
-        result = _run_locked(
-            front_name, item, by=by,
-            front_record=front_record, built=built)
+        if kind == "front-landing":
+            result = _run_front_landing_locked(
+                front_name, item, by=by,
+                front_record=front_record, repo=repo)
+        elif kind == "rebase":
+            result = _run_rebase_locked(
+                front_name, item, by=by,
+                front_record=front_record, repo=repo)
+        else:
+            result = _run_locked(
+                front_name, item, by=by,
+                front_record=front_record, built=built)
     _record_item(front_name, item, by, result)
-    if result.ok:
+    if result.ok and kind not in SCRIPT_KINDS:
         _mark_built_landed(front_name, built, by, result.head)
     return result
 
