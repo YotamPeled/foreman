@@ -1367,8 +1367,13 @@ def _read_brief(directory: str, violations: list[str]) -> dict | None:
 
 
 def front_add_main(directory: str, dry_run: bool = False,
-                   fixture: bool = False, closed: bool = False) -> int:
+                   fixture: bool = False, closed: bool = False,
+                   adopt: bool = False) -> int:
     """Add a front from its brief.
+
+    ``adopt`` upgrades a running old-shape front to v5 shape in place
+    (see :func:`front_adopt_main`); it may not combine with ``fixture``
+    or ``closed``.
 
     ``closed`` records a front that is already finished: the record goes on
     at state ``done`` and no task line is written. It exists because the
@@ -1378,6 +1383,19 @@ def front_add_main(directory: str, dry_run: bool = False,
     landed would be a claim the ledger has no evidence for; writing the
     front alone claims only what is true, that it ran and is done.
     """
+    if adopt:
+        if fixture or closed:
+            extra = []
+            if fixture:
+                extra.append(
+                    "field 'fixture' may not be combined with "
+                    "field 'adopt'")
+            if closed:
+                extra.append(
+                    "field 'closed' may not be combined with "
+                    "field 'adopt'")
+            return Refusal(extra).report()
+        return front_adopt_main(directory, dry_run=dry_run)
     me, violations = caller.resolve("front add")
     caller.check_role(me, "front add", violations=violations)
     data = _read_brief(directory, violations)
@@ -2427,21 +2445,9 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
                      "front done.")
 def _front_entry(args: argparse.Namespace) -> int:
     if args.front_verb == "add":
-        if args.adopt:
-            if args.fixture or args.closed:
-                extra = []
-                if args.fixture:
-                    extra.append(
-                        "field '--fixture' may not be combined with "
-                        "'--adopt'")
-                if args.closed:
-                    extra.append(
-                        "field '--closed' may not be combined with "
-                        "'--adopt'")
-                return Refusal(extra).report()
-            return front_adopt_main(args.directory, dry_run=args.dry_run)
         return front_add_main(args.directory, dry_run=args.dry_run,
-                              fixture=args.fixture, closed=args.closed)
+                              fixture=args.fixture, closed=args.closed,
+                              adopt=args.adopt)
     if args.front_verb == "list":
         return front_list_main()
     if args.front_verb == "queue":
