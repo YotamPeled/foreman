@@ -161,7 +161,7 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     # plus turn from the collector-carries job, the tick's hands; plus
     # wait from the ledger-waiter job, the collector's verdict.
     # Counted, not derived, so a verb added without intent fails here.
-    assert len(names) == 50
+    assert len(names) == 51
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):
