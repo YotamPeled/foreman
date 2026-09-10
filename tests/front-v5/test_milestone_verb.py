@@ -6,6 +6,7 @@ v5-shape front whose repository is named ``foreman``.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -256,3 +257,171 @@ def test_milestone_add_unknown_front_and_empty_fields_are_refused(
     assert "--reason" in err
     assert "--break" in err
     assert store.read_ledger(paths.front_milestones_path("v5shape")) == []
+
+
+def _add_one(monkeypatch, capsys, title="Front inputs"):
+    assert run(monkeypatch, add_argv(title=title), SUP) == 0
+    return capsys.readouterr().out.strip()
+
+
+def _split_argv(source, into_titles, reason="split for size"):
+    argv = ["milestone", "split", "v5shape", source, "--reason", reason]
+    for title in into_titles:
+        argv.extend(["--into", title])
+        argv.extend([
+            "--part",
+            f"{title}|done when {title}|python -m pytest tests -q|"
+            f"break {title}",
+        ])
+    return argv
+
+
+def test_milestone_split_into_two_then_merge_keeps_every_line(
+        env, monkeypatch, capsys):
+    """Split of one into two leaves three lines, two live, change count 1.
+
+    Merge of those two into one shows change count 2. The file only grows.
+    """
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    source = _add_one(monkeypatch, capsys)
+    assert run(monkeypatch, _split_argv(source, ["Part A", "Part B"]),
+               SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    new_ids = out.strip().split()
+    assert len(new_ids) == 2
+    assert all(item.startswith("mil-") for item in new_ids)
+    raw = store.read_ledger(paths.front_milestones_path("v5shape"))
+    assert len(raw) == 3
+    from foreman.milestone import _fold, _live, _change_count
+    folded = _fold(raw)
+    assert len(folded) == 3
+    live = _live(folded)
+    assert len(live) == 2
+    by_id = {item["id"]: item for item in folded}
+    assert by_id[source]["split_into"] == new_ids
+    assert {item["id"] for item in live} == set(new_ids)
+    assert _change_count(raw) == 1
+    assert run(monkeypatch, ["milestone", "list", "v5shape"], SUP) == 0
+    listed, err = capsys.readouterr()
+    assert err == ""
+    assert "change count 1" in listed
+    assert "Part A" in listed
+    assert "Part B" in listed
+    assert "pieces done -" in listed
+    assert run(monkeypatch, [
+        "milestone", "merge", "v5shape", new_ids[0], new_ids[1],
+        "--title", "Parts together",
+        "--done-when", "both parts are one again",
+        "--verify", "python -m pytest tests -q",
+        "--break", "drop the merge",
+        "--reason", "the split was too fine",
+    ], SUP) == 0
+    merged, err = capsys.readouterr()
+    assert err == ""
+    merged_id = merged.strip()
+    assert merged_id.startswith("mil-")
+    raw_after = store.read_ledger(paths.front_milestones_path("v5shape"))
+    assert len(raw_after) == 4
+    assert _change_count(raw_after) == 2
+    folded_after = _fold(raw_after)
+    live_after = _live(folded_after)
+    assert len(live_after) == 1
+    assert live_after[0]["id"] == merged_id
+    by_id_after = {item["id"]: item for item in folded_after}
+    assert by_id_after[new_ids[0]]["merged_into"] == [merged_id]
+    assert by_id_after[new_ids[1]]["merged_into"] == [merged_id]
+    assert run(monkeypatch, ["milestone", "list", "v5shape"], SUP) == 0
+    listed, err = capsys.readouterr()
+    assert err == ""
+    assert "change count 2" in listed
+    assert "Parts together" in listed
+    assert run(monkeypatch,
+               ["milestone", "list", "v5shape", "--history"], SUP) == 0
+    hist, err = capsys.readouterr()
+    assert err == ""
+    assert "history:" in hist
+    assert source in hist
+    assert new_ids[0] in hist
+    assert new_ids[1] in hist
+    assert merged_id in hist
+    assert len(hist.splitlines()) >= 5  # live + change + history: + 4 lines
+
+
+def test_milestone_list_json_and_pieces_from_the_tree(
+        env, monkeypatch, capsys):
+    """--json carries change count; pieces done come from the tree ledger."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    source = _add_one(monkeypatch, capsys)
+    assert run(monkeypatch, _split_argv(source, ["Part A", "Part B"]),
+               SUP) == 0
+    new_ids = capsys.readouterr().out.strip().split()
+    store.append_ledger(paths.front_tree_path("v5shape"), {
+        "id": "tsk-a", "parent": new_ids[0], "kind": "task",
+        "state": "landed",
+    }, session_id=SUP)
+    store.append_ledger(paths.front_tree_path("v5shape"), {
+        "id": "tsk-b", "parent": new_ids[0], "kind": "task",
+        "state": "ready",
+    }, session_id=SUP)
+    store.append_ledger(paths.front_tree_path("v5shape"), {
+        "id": "job-a", "parent": "tsk-a", "kind": "job",
+        "state": "landed",
+    }, session_id=SUP)
+    assert run(monkeypatch, ["milestone", "list", "v5shape", "--json"],
+               SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    payload = json.loads(out)
+    assert payload["change_count"] == 1
+    by_id = {item["id"]: item for item in payload["milestones"]}
+    assert by_id[new_ids[0]]["pieces_done"] == "1/2"
+    assert by_id[new_ids[1]]["pieces_done"] == "0/0"
+    assert run(monkeypatch, ["milestone", "list", "v5shape"], SUP) == 0
+    text, err = capsys.readouterr()
+    assert err == ""
+    assert "pieces done 1/2" in text
+    assert "pieces done 0/0" in text
+
+
+def test_milestone_split_other_supervisor_is_refused(
+        env, monkeypatch, capsys):
+    """A supervisor of another front is refused by name on split too."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    source = _add_one(monkeypatch, capsys)
+    seed_roster(session_entry(OTHER_SUP, "supervisor", "elsewhere"))
+    before = store.read_ledger(paths.front_milestones_path("v5shape"))
+    assert run(monkeypatch, _split_argv(source, ["Part A", "Part B"]),
+               OTHER_SUP) == 1
+    _, err = capsys.readouterr()
+    assert "elsewhere" in err
+    assert "v5shape" in err
+    assert store.read_ledger(paths.front_milestones_path("v5shape")) == before
+
+
+def test_milestone_split_merge_list_tools_are_listed_for_supervisor(
+        env, monkeypatch):
+    """split, merge and list are supervisor tools, hidden from a worker."""
+    seed_roster(
+        session_entry(SUP, "supervisor", "v5shape"),
+        session_entry(WORKER, "muse", "v5shape"),
+    )
+    monkeypatch.setenv(SESSION_ENV, SUP)
+    supervisor = {tool["name"] for tool in
+                  mcp_module.handle({"jsonrpc": "2.0", "id": 1,
+                                     "method": "tools/list",
+                                     "params": {}})["result"]["tools"]}
+    assert "milestone_split" in supervisor
+    assert "milestone_merge" in supervisor
+    assert "milestone_list" in supervisor
+    monkeypatch.setenv(SESSION_ENV, WORKER)
+    worker = {tool["name"] for tool in
+              mcp_module.handle({"jsonrpc": "2.0", "id": 1,
+                                 "method": "tools/list",
+                                 "params": {}})["result"]["tools"]}
+    assert "milestone_split" not in worker
+    assert "milestone_merge" not in worker
+    assert "milestone_list" not in worker

@@ -136,6 +136,10 @@ def front_milestones_path(name: str) -> Path:
     return front_dir(name) / "milestones.jsonl"
 
 
+def front_tree_path(name: str) -> Path:
+    return front_dir(name) / "tree.jsonl"
+
+
 def sessions_dir() -> Path:
     return state_dir() / "sessions"
 
