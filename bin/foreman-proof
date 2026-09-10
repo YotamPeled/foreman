@@ -70,6 +70,7 @@ _TEMP: Path | None = None
 _STATE: Path | None = None
 _CONFIG: Path | None = None
 _BIN: Path | None = None
+_CALLER_SESSION: str | None = None
 _ORIG_PATH = os.environ.get("PATH", "")
 _REAL_GROK: str | None = None
 _SHIM_CLAUDE: Path | None = None
@@ -137,6 +138,53 @@ def run_foreman(args: list[str], *, session: str | None = None,
     return subprocess.run(
         cmd, cwd=cwd or str(REPO), env=env_for(session=session, extra=extra_env),
         capture_output=True, text=True, timeout=timeout)
+
+
+def _evidence_path(front: str, *, live: bool) -> Path:
+    if live:
+        raw = os.environ.get(STATE_ENV)
+        root = Path(raw) if raw else Path.home() / ".local" / "state" / "foreman"
+    else:
+        if _STATE is None:
+            raise Failure("proof world is not set")
+        root = _STATE
+    return root / "fronts" / front / "evidence.jsonl"
+
+
+def _last_evidence_id(front: str, *, live: bool) -> str:
+    rows = read_jsonl(_evidence_path(front, live=live))
+    if not rows:
+        return ""
+    return str(rows[-1].get("id") or "")
+
+
+def record_confirmed(front: str, cid: object, msg: str, *,
+                     live: bool) -> str:
+    """Write one CONFIRMED evidence line; print and return its id."""
+    command = f"python bin/foreman-proof v5 clause {cid}"
+    argv = [
+        "evidence", "--on", front,
+        "--claim", f"clause {cid} CONFIRMED",
+        "--status", "CONFIRMED",
+        "--command", command,
+        "--output", msg,
+    ]
+    if live:
+        proc = run_live_foreman(argv)
+    else:
+        # Isolated world has its own roster; the caller's live session is
+        # not in it. The proof process is the owner at this terminal.
+        proc = run_foreman(argv, session=None)
+    if proc.returncode != 0:
+        raise Failure(
+            f"evidence --on {front} failed: "
+            f"{(proc.stderr or proc.stdout)[-800:]}")
+    eid = _last_evidence_id(front, live=live)
+    if eid:
+        print(f"evidence {cid} {eid}", flush=True)
+    else:
+        print(f"evidence {cid}", flush=True)
+    return eid
 
 
 def _live_bin() -> list[str]:
@@ -1930,8 +1978,24 @@ def _execute_break(cid, module, world, path_name: str) -> bool:
     return False
 
 
+def _maybe_record(cid: object, status: str, msg: str, *,
+                  evidence: bool, front: str, live: bool) -> bool:
+    """Record a CONFIRMED finish-line clause. True when recording failed."""
+    if not evidence or status != "PASS":
+        return False
+    if not str(cid).startswith("f"):
+        return False
+    try:
+        record_confirmed(front, cid, msg, live=live)
+    except Failure as exc:
+        print(f"foreman-proof: {exc}", file=sys.stderr)
+        return True
+    return False
+
+
 def _run_loaded_clauses(files: list[Path], break_clause: object,
-                        root: Path) -> int:
+                        root: Path, *, evidence: bool = False,
+                        evidence_front: str = "v5") -> int:
     global _REAL_GROK
     _REAL_GROK = shutil.which("grok", path=_ORIG_PATH)
     atexit.register(cleanup)
@@ -1953,6 +2017,9 @@ def _run_loaded_clauses(files: list[Path], break_clause: object,
             status, msg = _run_one_clause(module, world)
             report(cid, status, msg)
             if status == "FAIL":
+                failed = True
+            if _maybe_record(cid, status, msg, evidence=evidence,
+                             front=evidence_front, live=False):
                 failed = True
     finally:
         cleanup()
@@ -1989,6 +2056,10 @@ def _run_live_clauses(files: list[Path], args: argparse.Namespace) -> int:
         try:
             msg = run_live(front)
             report(cid, "PASS", str(msg))
+            if _maybe_record(cid, "PASS", str(msg),
+                             evidence=args.evidence,
+                             front=front, live=True):
+                failed = True
         except Skip as exc:
             report(cid, "SKIP", str(exc))
         except Failure as exc:
@@ -2018,7 +2089,10 @@ def _main_v5(args: argparse.Namespace) -> int:
         return list_v5_clauses(files)
     if args.live:
         return _run_live_clauses(files, args)
-    return _run_loaded_clauses(files, args.break_clause, make_world_root(args.root))
+    return _run_loaded_clauses(
+        files, args.break_clause, make_world_root(args.root),
+        evidence=args.evidence,
+        evidence_front=(args.live_front or "v5").strip() or "v5")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -2049,14 +2123,24 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--front", dest="live_front", default="v5",
         help="live front to read with --live (default v5)")
+    parser.add_argument(
+        "--evidence", action="store_true",
+        help="record each CONFIRMED finish-line clause through "
+             "foreman evidence --on <front>")
     args = parser.parse_args(argv)
+
+    global _CALLER_SESSION
+    _CALLER_SESSION = os.environ.get(SESSION_ENV)
 
     # Isolated-world runs never inherit the caller's world. --live reads
     # the installation through the caller's environment and must not
-    # clear FOREMAN_STATE.
+    # clear FOREMAN_STATE. --evidence keeps the caller's session so the
+    # evidence line is by that session.
     if not args.live:
-        for name in (SESSION_ENV, STATE_ENV, CONFIG_ENV):
+        for name in (STATE_ENV, CONFIG_ENV):
             os.environ.pop(name, None)
+        if not args.evidence:
+            os.environ.pop(SESSION_ENV, None)
 
     if args.front == "v5":
         return _main_v5(args)
