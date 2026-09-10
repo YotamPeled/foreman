@@ -1,18 +1,20 @@
 """Progress verbs: a task moves because a supervisor said so, with evidence.
 
-``job verify --confirmed`` appends CONFIRMED evidence, marks the job
-verified and adds its units to the task; ``job verify --run`` executes
-the task's verify in a detached worktree of the job's head and, on
-exit 0, does the same; ``job fail`` marks the job failed with a finding
-on the task; ``job fail --closed`` records a job on a done front as
-history and writes no finding, because the task may no longer be on the
-ledger and the work already landed; ``job repoint`` moves a finished
-job onto a different task on the same front, and when the job was
-verified its units move with it; ``task built`` and ``task landed``
-move the task once every unit is accounted for; ``evidence`` and
-``finding`` append free-standing records to the front's ledgers. A
-CONFIRMED claim with no command behind it is refused: running the
-command is what turns a claim into evidence.
+``job queue`` appends a revise line that marks a tree job queued and
+records why it waits; ``job verify --confirmed`` appends CONFIRMED
+evidence, marks the job verified and adds its units to the task;
+``job verify --run`` executes the task's verify in a detached worktree
+of the job's head and, on exit 0, does the same; ``job fail`` marks
+the job failed with a finding on the task; ``job fail --closed``
+records a job on a done front as history and writes no finding,
+because the task may no longer be on the ledger and the work already
+landed; ``job repoint`` moves a finished job onto a different task on
+the same front, and when the job was verified its units move with it;
+``task built`` and ``task landed`` move the task once every unit is
+accounted for; ``evidence`` and ``finding`` append free-standing
+records to the front's ledgers. A CONFIRMED claim with no command
+behind it is refused: running the command is what turns a claim into
+evidence.
 
 Every verb that moves work refuses a caller who is not the front's
 supervisor. ``finding`` is the exception: it records something seen and
@@ -31,8 +33,12 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import caller, cli, entities, fronts, hooks, ids, paths, store, wait
+from . import (
+    caller, capacity, cli, entities, fronts, hooks, ids, node as node_mod,
+    paths, store, wait,
+)
 from .caller import MERGE_DESK, OWNER, SUPERVISOR, Refusal
+from .entities import JOB_ROLES
 
 CONFIRMED = "CONFIRMED"
 PLAUSIBLE = "PLAUSIBLE"
@@ -1107,8 +1113,157 @@ def finding_main(on: str, class_: str, title: str,
     return 0
 
 
+def _job_role_of_node(record: dict | None, node: dict) -> str:
+    """The JOB_ROLES name a tree node's team role occupies on this front.
+
+    A node that already names a job role (``grok``) keeps it. A team
+    role (``builder``) maps through the front's team entry to that
+    entry's pool, then to the job role the pool serves. No mapping is
+    an empty string, not a guess: a ceiling keyed by ``builder`` would
+    always read as fully held.
+    """
+    role = str(node.get("role") or "").strip()
+    if role in JOB_ROLES:
+        return role
+    team = record.get("team") if isinstance(record, dict) else None
+    if not isinstance(team, list):
+        return ""
+    for entry in team:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("role") or "") != role:
+            continue
+        pool = str(entry.get("pool") or "")
+        mapped = fronts._job_role_for_pool(pool) if pool else None
+        return mapped or pool
+    return ""
+
+
+def compute_node_waits(front: str, node: dict, by_id: dict[str, dict],
+                       record: dict | None) -> str:
+    """Why a queued job is not starting: dependency, no slot, or ready.
+
+    An ``after`` node that is missing or not ``landed`` is a dependency.
+    Otherwise the front's reserved (or allocated) count for the node's
+    job role, compared with what is held, is ``no slot`` when full.
+    """
+    for dep in node.get("after") or []:
+        dep_id = str(dep).strip()
+        if not dep_id:
+            continue
+        other = by_id.get(dep_id)
+        if other is None or str(other.get("state") or "") != "landed":
+            return f"dependency {dep_id}"
+    job_role = _job_role_of_node(record, node)
+    if job_role:
+        limit = capacity.ceiling(front, job_role)
+        held = capacity.held_by_front_role().get((front, job_role), 0)
+        if limit is not None and held >= limit:
+            return "no slot"
+    return "ready"
+
+
+def _merge_after(existing: dict, extra: list[str]) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for item in list(existing.get("after") or []) + extra:
+        text = str(item).strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        merged.append(text)
+    return merged
+
+
+def _write_node_revise(front_name: str, existing: dict, who: str,
+                       reason: str, **changes: object) -> dict:
+    now = store.utcnow_iso()
+    updated = dict(existing)
+    updated.update(changes)
+    updated["op"] = "revise"
+    updated["reason_revised"] = reason
+    updated["at"] = now
+    updated["by"] = who
+    line = entities.Node.from_dict(updated).to_dict()
+    line["op"] = "revise"
+    line["reason_revised"] = reason
+    line["at"] = now
+    line["by"] = who
+    store.append_ledger(
+        paths.front_tree_path(front_name), line, session_id=who)
+    return line
+
+
+def job_queue_main(front: str, node_id: str | None,
+                   after: list[str] | None = None,
+                   sheet_add: str | None = None) -> int:
+    """Queue a tree job. Front supervisor only; never writes ``running``."""
+    verb = "job queue"
+    me, violations = caller.resolve(verb)
+    front_name = (front or "").strip()
+    if not front_name:
+        violations.append("field 'front' is required")
+    record = fronts.read_front_record(front_name) if front_name else None
+    if front_name and record is None:
+        violations.append(f"unknown front '{front_name}'")
+    _check(me, front_name or None, verb, violations)
+    nid = "" if node_id is None else str(node_id).strip()
+    if not nid:
+        violations.append("field 'node' is required")
+    extra_after = [str(item).strip() for item in (after or [])]
+    extra_after = [item for item in extra_after if item]
+    for raw in after or []:
+        if not str(raw).strip():
+            violations.append("field '--after' names an empty node id")
+    existing: dict | None = None
+    by_id: dict[str, dict] = {}
+    if record is not None:
+        _folded, by_id = node_mod._read_nodes(front_name)
+        if nid:
+            existing = by_id.get(nid)
+            if existing is None:
+                violations.append(f"unknown node '{nid}'")
+            else:
+                kind = str(existing.get("kind") or "")
+                if kind != "job":
+                    violations.append(
+                        f"{nid} is kind {kind}; only a job is queued")
+                state = str(existing.get("state") or "")
+                if state:
+                    violations.append(
+                        f"{nid} is {state}; only a job with no state "
+                        f"is queued")
+        for after_id in extra_after:
+            if after_id not in by_id:
+                violations.append(
+                    f"field '--after' names unknown node '{after_id}'")
+    if violations:
+        return _refuse(violations)
+    assert record is not None and existing is not None
+    who = caller.by_line(me)
+    now = store.utcnow_iso()
+    after_ids = _merge_after(existing, extra_after)
+    sheet = "" if sheet_add is None else str(sheet_add)
+    queued = dict(existing, after=after_ids, state="queued")
+    waits = compute_node_waits(front_name, queued, by_id, record)
+    _write_node_revise(
+        front_name, existing, who, "queued",
+        state="queued", queued_at=now, after=after_ids,
+        sheet_add=sheet, waits=waits)
+    print(f"queued {nid} (waits: {waits})")
+    return 0
+
+
 def add_job_arguments(sub: argparse.ArgumentParser) -> None:
     verbs = sub.add_subparsers(dest="job_verb", required=True)
+    queue = verbs.add_parser(
+        "queue", help="Queue a tree job; the tree records why it waits.")
+    queue.add_argument("front", help="front the node belongs to")
+    queue.add_argument("node", help="job node to queue")
+    queue.add_argument("--after", action="append", default=None,
+                       help="node id this one waits on (repeatable)")
+    queue.add_argument("--sheet-add", dest="sheet_add", default=None,
+                       help="text added to the job's sheet (stored only)")
     verify = verbs.add_parser("verify", help="Verify a returned job.")
     verify.add_argument("job", help="job id")
     verify.add_argument("--confirmed", action="store_true",
@@ -1145,8 +1300,11 @@ def add_job_arguments(sub: argparse.ArgumentParser) -> None:
                          help="why the job is being re-pointed (required)")
 
 
-@cli.subcommand("job", help="Verify, fail or repoint a job.")
+@cli.subcommand("job", help="Queue, verify, fail or repoint a job.")
 def _job_entry(args: argparse.Namespace) -> int:
+    if args.job_verb == "queue":
+        return job_queue_main(args.front, args.node, after=args.after,
+                              sheet_add=args.sheet_add)
     if args.job_verb == "verify":
         return job_verify_main(args.job, args.confirmed,
                                command=args.command, output=args.output,

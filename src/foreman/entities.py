@@ -28,6 +28,10 @@ INBOX_KINDS = ("money", "irreversible", "scope", "error")
 NODE_KINDS = ("milestone", "task", "job", "derived")
 NODE_SCOPES = ("source-test", "fixture", "live", "production-load")
 CHILDLESS_NODE_KINDS = ("job", "derived")
+#: Folded tree-node states. Empty is unstarted; ``node revise --state``
+#: refuses any word not in this list.
+NODE_STATES = ("", "queued", "running", "returned", "verified",
+               "landed", "failed", "cancelled")
 
 
 class Entity:
@@ -436,6 +440,10 @@ class Node(Entity):
     reason_revised: str = ""
     prove: dict = field(default_factory=dict)
     break_patch: str = ""
+    queued_at: str | None = None
+    waits: str = ""
+    sheet_add: str = ""
+    bumped_at: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()

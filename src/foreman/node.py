@@ -23,7 +23,9 @@ from pathlib import Path
 
 from . import caller, cli, entities, fronts, ids, paths, store
 from .caller import Refusal
-from .entities import CHILDLESS_NODE_KINDS, NODE_KINDS, NODE_SCOPES
+from .entities import (
+    CHILDLESS_NODE_KINDS, NODE_KINDS, NODE_SCOPES, NODE_STATES,
+)
 from .pools._common import timeout_seconds
 
 MAX_DEPTH = 3
@@ -280,6 +282,11 @@ def node_revise_main(
         violations.append(
             "field '--scope' must be source-test, fixture, live "
             "or production-load")
+    state_text = None if state is None else str(state).strip()
+    if state is not None and state_text not in NODE_STATES:
+        violations.append(
+            "field '--state' must be queued, running, returned, "
+            "verified, landed, failed, cancelled or empty")
     by_id: dict[str, dict] = {}
     existing: dict | None = None
     if record is not None:
@@ -332,8 +339,8 @@ def node_revise_main(
         updated["source"] = str(source).strip()
     if mechanical:
         updated["mechanical"] = True
-    if state is not None:
-        updated["state"] = str(state).strip()
+    if state_text is not None:
+        updated["state"] = state_text
     updated["op"] = "revise"
     updated["reason_revised"] = reason_text
     updated["at"] = now
@@ -846,7 +853,8 @@ def add_node_arguments(sub: argparse.ArgumentParser) -> None:
     revise.add_argument("--mechanical", action="store_true",
                         help="mark the node mechanical")
     revise.add_argument("--state", default=None,
-                        help="set state (landed, until landing lands)")
+                        help="queued, running, returned, verified, "
+                             "landed, failed, cancelled or empty")
     listing = verbs.add_parser(
         "list", help="Print the front's folded tree.")
     listing.add_argument("front", help="front whose tree to print")
