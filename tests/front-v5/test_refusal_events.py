@@ -24,11 +24,13 @@ from foreman.pools import muse as muse_pool
 from foreman.pools._common import parse_quota_refusal
 
 
-REFUSAL = (
-    "API error 429: Subscription quota exhausted. Your usage window resets "
-    "at 2026-09-14T00:00:00Z. (rate_limit_error)"
-)
 RESET = "2026-09-14T00:00:00Z"
+# Built from parts at runtime (ruling rul-35drl5v): the phrase is never
+# whole in this file, so a worker reading it cannot echo a refusal.
+REFUSAL = " ".join([
+    "API error", "4" + "29:", "Subscription quota exhausted.",
+    "Your usage window", "res" + "ets at", RESET + ".", "(rate_limit_error)",
+])
 
 
 def _muse_event(kind: str, record: dict) -> dict:

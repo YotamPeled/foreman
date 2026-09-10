@@ -47,8 +47,10 @@ VERDICT_CORRECTNESS = (
     '{"passed": false, "summary": "wrong", "class": "correctness",'
     ' "findings": [{"title": "bug", "detail": "x", "class": "correctness"}]}'
 )
+# Built from parts at runtime (ruling rul-35drl5v): never whole in this file.
 QUOTA_LOG = (
-    "API error 429 quota exhausted resets at 2026-09-14T00:00:00Z\n"
+    " ".join(["API error", "4" + "29", "quota exhausted", "res" + "ets at",
+              "2026-09-14T00:00:00Z"]) + "\n"
     "### finished rc=0\n"
 )
 CLEAN_LOG = "### finished rc=0\n"
