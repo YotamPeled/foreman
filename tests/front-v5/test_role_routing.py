@@ -166,3 +166,25 @@ def test_a_muse_builder_takes_behaviour_nodes_where_muse_replaces_grok(front):
     node = dict(job_1(), front="museonly")
     assert launch._team_pool(record, node) == "muse"
     assert progress.muse_mechanical_refusal(record, node) is None
+
+
+@BUILT_BY_8_1A
+def test_the_working_team_gives_a_muse_only_builder_slots_for_behaviour_nodes(front):
+    # rul-j734hyt: with Muse the only builder, decision 31's mechanical-share
+    # threshold may not leave the front with no builder at all.
+    from foreman import team as team_mod
+    bare = front / "remote.git"
+    brief = front / "brief-museteam"
+    brief.mkdir()
+    (brief / "brief.toml").write_text(
+        MUSE_ONLY_BRIEF.replace("museonly", "museteam").format(url=bare),
+        encoding="utf-8")
+    assert fronts.front_add_main(str(brief)) == 0
+    record = fronts.read_front_record("museteam")
+    tree = [dict(row, front="museteam") for row in store.fold_by_id(
+        store.read_ledger(paths.front_tree_path("routes")))]
+    derived = team_mod.derive_team(record, tree, [])
+    builders = [e for e in derived
+                if (e.get("role") if isinstance(e, dict) else e.role) == "builder"]
+    counts = [(e.get("count") if isinstance(e, dict) else e.count) for e in builders]
+    assert builders and max(counts) >= 1, derived
