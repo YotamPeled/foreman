@@ -10,4 +10,5 @@ assignment section. A test in the repository fails when a skill and its knowledg
 - models.md — how each model behaves as a worker, reviewer or supervisor; what to give it; what to forbid.
 - team-calibration.md — how the foreman derives a front's working team, and the signals that change it.
 - verification.md — what counts as proof; red-then-green, the break, silence, evidence binding.
+- supervising.md — how a supervisor spends its turn: waiting, and rules enforced at launch rather than remembered.
 - rulings-2026-09-10.md — the owner's rulings from the survey, verbatim, with ledger ids.
