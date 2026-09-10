@@ -142,10 +142,13 @@ def add_front(root: Path, name: str) -> None:
 
 
 def launch(root: Path, *extra: str, role: str = "muse", pool: str = "fake",
-           front: str = "alpha") -> int:
-    return cli.main(["launch", role, pool, str(root / "spec.md"),
-                     "--repo", str(root), "--front", front,
-                     "--task", "first work", *extra])
+           front: str = "alpha", task: str | None = "first work") -> int:
+    argv = ["launch", role, pool, str(root / "spec.md"),
+            "--repo", str(root), "--front", front]
+    if task:
+        argv.extend(["--task", task])
+    argv.extend(extra)
+    return cli.main(argv)
 
 
 def session_of(out: str) -> str:
@@ -257,9 +260,9 @@ def test_a_front_with_no_record_is_checked_against_the_pool_cap_alone(
     assert cli.main(["cap", "fake", "1"]) == 0
     capsys.readouterr()
     assert capacity.ceiling("ghost", "muse") is None
-    launched(env, capsys, front="ghost")
+    launched(env, capsys, front="ghost", task=None)
 
-    err = refused(env, capsys, front="ghost")
+    err = refused(env, capsys, front="ghost", task=None)
 
     assert "role 'muse' on front 'ghost': 1 held in pool 'fake', cap 1" in err
     assert "ceiling" not in err
@@ -281,9 +284,9 @@ def test_a_dry_run_runs_every_check_and_grants_no_slot(env, capsys):
     assert ledger_lines() == 0
 
     launched(env, capsys)
-    err = refused(env, capsys, front="ghost")
+    err = refused(env, capsys, front="ghost", task=None)
     assert "role 'muse' on front 'ghost': 1 held in pool 'fake', cap 1" in err
-    assert launch(env, "--dry-run", front="ghost") != 0
+    assert launch(env, "--dry-run", front="ghost", task=None) != 0
     assert "role 'muse' on front 'ghost': 1 held in pool 'fake', cap 1" in capsys.readouterr().err
 
 
