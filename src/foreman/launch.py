@@ -1922,6 +1922,8 @@ def _start_supervisor(session_id: str, *, repo: str, role_prompt: Path,
     inner = ""
     try:
         mcp_config = mcp_module.write_mcp_config(session_id)
+    except Refused as exc:
+        return argv, inner, None, str(exc)
     except OSError as exc:
         return argv, inner, None, f"OSError: cannot write MCP config: {exc}"
     # A relaunch reuses the session id, so the pid file may still hold the
@@ -2188,6 +2190,8 @@ def launch_supervisor_main(args: argparse.Namespace,
 
         try:
             mcp_config = mcp_module.write_mcp_config(session_id)
+        except Refused as exc:
+            return refuse(str(exc))
         except OSError as exc:
             return refuse(f"cannot write launch files: {exc.strerror or exc}")
         inner = supervisor_inner_command(
@@ -3282,6 +3286,8 @@ def relaunch_main(session_id: str, *, workspace: str | None = None,
 
         try:
             mcp_config = mcp_module.write_mcp_config(session_id)
+        except Refused as exc:
+            return refuse(str(exc))
         except OSError as exc:
             return refuse(f"cannot write launch files: {exc.strerror or exc}")
         inner = supervisor_inner_command(

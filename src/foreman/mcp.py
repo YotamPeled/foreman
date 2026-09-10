@@ -27,6 +27,8 @@ import argparse
 import io
 import json
 import os
+import shutil
+import subprocess
 import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
@@ -41,6 +43,10 @@ SERVER_NAME = "foreman"
 MCP_CONFIG_FILENAME = "mcp.json"
 #: The protocol version this server answers with.
 PROTOCOL_VERSION = "2024-11-05"
+#: Probe each candidate with this snippet before writing the config.
+_PROBE_CODE = "import foreman"
+#: Seconds a hung interpreter may sit on the probe.
+_PROBE_TIMEOUT = 10
 
 
 def _ensure_verbs() -> None:
@@ -102,20 +108,20 @@ def mcp_server_env(session_id: str) -> dict[str, str]:
     return env
 
 
-def mcp_config_text(session_id: str) -> str:
+def mcp_config_text(session_id: str, command: str,
+                    args: list[str]) -> str:
     """The file content: this server over stdio, as this session.
 
-    Names the absolute interpreter running this launch
-    (``sys.executable -m foreman``), never a bare ``foreman`` off PATH:
-    a session summoned from a branch checkout runs that branch's verbs
-    over MCP too, via ``PYTHONPATH`` (see :func:`mcp_server_env`).
+    ``command`` and ``args`` are the pair :func:`write_mcp_config` probed:
+    this interpreter with ``-m foreman mcp`` when it can import the
+    package, or the installed ``foreman mcp`` when it cannot.
     """
     return json.dumps(
         {"mcpServers": {
             SERVER_NAME: {
                 "type": "stdio",
-                "command": str(Path(sys.executable).resolve()),
-                "args": ["-m", "foreman", "mcp"],
+                "command": command,
+                "args": args,
                 "env": mcp_server_env(session_id),
             },
         }},
@@ -123,11 +129,68 @@ def mcp_config_text(session_id: str) -> str:
     ) + "\n"
 
 
+def _probe_import(command: str, extra_env: dict[str, str]) -> str | None:
+    """None if ``command -c 'import foreman'`` exits 0; else the error."""
+    env = os.environ.copy()
+    env.update(extra_env)
+    try:
+        proc = subprocess.run(
+            [command, "-c", _PROBE_CODE],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=_PROBE_TIMEOUT,
+            env=env,
+        )
+    except subprocess.TimeoutExpired:
+        return f"timed out after {_PROBE_TIMEOUT}s"
+    except OSError as exc:
+        return str(exc)
+    if proc.returncode == 0:
+        return None
+    detail = (proc.stderr or proc.stdout or f"exit {proc.returncode}").strip()
+    return detail or f"exit {proc.returncode}"
+
+
+def _resolve_mcp_server(session_id: str) -> tuple[str, list[str]]:
+    """The command and args a probed interpreter can start with.
+
+    Raises ``Refused`` when neither this launch's interpreter nor an
+    installed ``foreman`` can import the package.
+    """
+    from .launch import Refused
+
+    extra_env = mcp_server_env(session_id)
+    interpreter = str(Path(sys.executable).resolve())
+    first_error = _probe_import(interpreter, extra_env)
+    if first_error is None:
+        return interpreter, ["-m", "foreman", "mcp"]
+    installed = shutil.which("foreman")
+    installed_name = installed or "foreman"
+    if installed is not None:
+        second_error = _probe_import(installed, extra_env)
+        if second_error is None:
+            return installed, ["mcp"]
+    else:
+        second_error = "not on PATH"
+    raise Refused(
+        f"no MCP interpreter can import foreman: {interpreter} "
+        f"({first_error}); {installed_name} ({second_error})")
+
+
 def write_mcp_config(session_id: str) -> Path:
-    """Write the session's MCP file. Same helper for every summon."""
+    """Write the session's MCP file. Same helper for every summon.
+
+    Probes the interpreter (then an installed ``foreman``) before
+    writing, so a summon never starts a window with a config it knows
+    is dead.
+    """
+    command, args = _resolve_mcp_server(session_id)
     path = mcp_config_path(session_id)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(mcp_config_text(session_id), encoding="utf-8")
+    path.write_text(
+        mcp_config_text(session_id, command, args), encoding="utf-8")
     return path
 
 
