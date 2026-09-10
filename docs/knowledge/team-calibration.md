@@ -55,3 +55,12 @@ Change model DOWN when: a review found nothing twice in a row; jobs return in un
 
 Two fail-backs on the same seam mean the spec is wrong, not the worker: stop and re-investigate.
 A mutation surviving on landed code means add a job, not a worker.
+
+## When a pool runs out (owner rulings 2026-09-10)
+- Grok out (real quota refusal): Muse 1.3-contributor at xhigh builds in its place on every front,
+  behaviour nodes included; the node is split until it fits one page, its test is written by the
+  supervisor or Opus (Muse is never the sole author), units stay idempotent. Opus 5 high remains the
+  backup after a failed Muse run.
+- Fable: retired 2026-09-10; Opus 5 high holds every place it held.
+- A pool marked out by a FALSE detection (a refusal phrase quoted in a file or a transcript) is cleared
+  by the foreman, not worked around: check the pools ledger's reason before rerostering a front.
