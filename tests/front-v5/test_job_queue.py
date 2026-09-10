@@ -311,7 +311,7 @@ def test_node_revise_unknown_state_is_refused(env, monkeypatch, capsys):
 
 
 def test_job_queue_tool_is_listed_for_supervisor(env, monkeypatch):
-    """job queue is a supervisor tool, hidden from a worker."""
+    """The queue verbs are supervisor tools, hidden from a worker."""
     seed_roster(
         session_entry(SUP, "supervisor", "v5shape"),
         session_entry(WORKER, "muse", "v5shape"),
@@ -321,10 +321,147 @@ def test_job_queue_tool_is_listed_for_supervisor(env, monkeypatch):
                   mcp_module.handle({"jsonrpc": "2.0", "id": 1,
                                      "method": "tools/list",
                                      "params": {}})["result"]["tools"]}
-    assert "job_queue" in supervisor
+    for name in ("job_queue", "job_cancel", "job_front", "job_edit",
+                 "job_list"):
+        assert name in supervisor
     monkeypatch.setenv(SESSION_ENV, WORKER)
     worker = {tool["name"] for tool in
               mcp_module.handle({"jsonrpc": "2.0", "id": 1,
                                  "method": "tools/list",
                                  "params": {}})["result"]["tools"]}
-    assert "job_queue" not in worker
+    for name in ("job_queue", "job_cancel", "job_front", "job_edit",
+                 "job_list"):
+        assert name not in worker
+
+
+def test_job_cancel_front_edit_change_the_fold_and_refuse_running(
+        env, monkeypatch, capsys):
+    """Cancel, front and edit rewrite a queued job and name a running one."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, job = add_chain(monkeypatch, capsys, job_id="job-a")
+    other = add_ok(monkeypatch, capsys, parent="tsk-1", kind="job",
+                   title="the next unit", role="builder", node_id="job-b")
+    assert run(monkeypatch, ["job", "queue", "v5shape", job], SUP) == 0
+    assert run(monkeypatch, ["job", "queue", "v5shape", other], SUP) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["job", "cancel", "v5shape", job], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.strip() == f"cancelled {job}"
+    assert folded_tree()[job]["state"] == "cancelled"
+    assert run(monkeypatch, ["job", "front", "v5shape", other], SUP) == 0
+    capsys.readouterr()
+    assert folded_tree()[other]["bumped_at"]
+    assert folded_tree()[other]["state"] == "queued"
+    assert run(monkeypatch,
+               ["job", "edit", "v5shape", other, "--what", "narrower unit",
+                "--sheet-add", "cite the map"], SUP) == 0
+    capsys.readouterr()
+    edited = folded_tree()[other]
+    assert edited["what"] == "narrower unit"
+    assert edited["sheet_add"] == "cite the map"
+    assert edited["waits"] == "ready"
+    running = add_ok(monkeypatch, capsys, parent="tsk-1", kind="job",
+                     title="running one", role="builder", node_id="job-r")
+    assert run(monkeypatch, ["node", "revise", "v5shape", running,
+                             "--state", "running",
+                             "--reason", "started by hand"], SUP) == 0
+    capsys.readouterr()
+    before = store.read_ledger(paths.front_tree_path("v5shape"))
+    for verb, action in (("cancel", "cancelled"),
+                         ("front", "moved to the front"),
+                         ("edit", "edited")):
+        argv = ["job", verb, "v5shape", running]
+        if verb == "edit":
+            argv.extend(["--what", "no"])
+        assert run(monkeypatch, argv, SUP) == 1
+        _, err = capsys.readouterr()
+        assert (f"{running} is running; only a queued job is {action}"
+                in err)
+    assert store.read_ledger(paths.front_tree_path("v5shape")) == before
+
+
+def test_job_edit_recomputes_waits_from_after(env, monkeypatch, capsys):
+    """Edit with --after of an unlanded node stores waits: dependency."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, first = add_chain(monkeypatch, capsys, job_id="job-a")
+    second = add_ok(monkeypatch, capsys, parent="tsk-1", kind="job",
+                    title="the next unit", role="builder", node_id="job-b")
+    assert run(monkeypatch, ["job", "queue", "v5shape", second], SUP) == 0
+    capsys.readouterr()
+    assert folded_tree()[second]["waits"] == "ready"
+    assert run(monkeypatch,
+               ["job", "edit", "v5shape", second, "--after", first],
+               SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert f"edited {second} (waits: dependency {first})" in out
+    node = folded_tree()[second]
+    assert node["after"] == [first]
+    assert node["waits"] == f"dependency {first}"
+
+
+def test_job_list_order_after_front(env, monkeypatch, capsys):
+    """job list is bumped newest first, then queued_at oldest first."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    clock = {"n": 0}
+
+    def fake_now():
+        clock["n"] += 1
+        return (NOW + timedelta(seconds=clock["n"])).isoformat()
+
+    monkeypatch.setattr(store, "utcnow_iso", fake_now)
+    mil = add_ok(monkeypatch, capsys, title="milestone one",
+                 node_id="mil-1")
+    tsk = add_ok(monkeypatch, capsys, parent=mil, kind="task",
+                 title="the door", node_id="tsk-1")
+    a = add_ok(monkeypatch, capsys, parent=tsk, kind="job",
+               title="unit a", role="builder", node_id="job-a")
+    b = add_ok(monkeypatch, capsys, parent=tsk, kind="job",
+               title="unit b", role="builder", node_id="job-b")
+    c = add_ok(monkeypatch, capsys, parent=tsk, kind="job",
+               title="unit c", role="builder", node_id="job-c")
+    assert run(monkeypatch, ["job", "queue", "v5shape", a], SUP) == 0
+    assert run(monkeypatch, ["job", "queue", "v5shape", b], SUP) == 0
+    assert run(monkeypatch, ["job", "queue", "v5shape", c], SUP) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["job", "list", "v5shape"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.splitlines() == [
+        f"{a}  builder  grok  waits: ready",
+        f"{b}  builder  grok  waits: ready",
+        f"{c}  builder  grok  waits: ready",
+    ]
+    assert run(monkeypatch, ["job", "front", "v5shape", a], SUP) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["job", "list", "v5shape"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.splitlines() == [
+        f"{a}  builder  grok  waits: ready",
+        f"{b}  builder  grok  waits: ready",
+        f"{c}  builder  grok  waits: ready",
+    ]
+    assert run(monkeypatch, ["job", "front", "v5shape", c], SUP) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["job", "list", "v5shape"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.splitlines() == [
+        f"{c}  builder  grok  waits: ready",
+        f"{a}  builder  grok  waits: ready",
+        f"{b}  builder  grok  waits: ready",
+    ]
+    assert run(monkeypatch, ["job", "cancel", "v5shape", b], SUP) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["job", "list", "v5shape"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.splitlines() == [
+        f"{c}  builder  grok  waits: ready",
+        f"{a}  builder  grok  waits: ready",
+    ]

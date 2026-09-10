@@ -1254,6 +1254,162 @@ def job_queue_main(front: str, node_id: str | None,
     return 0
 
 
+def _queue_order(nodes: list[dict]) -> list[dict]:
+    """Bumped items newest first, then the rest by queued_at oldest first."""
+    bumped = [node for node in nodes if node.get("bumped_at")]
+    rest = [node for node in nodes if not node.get("bumped_at")]
+    bumped.sort(key=lambda node: str(node.get("bumped_at") or ""),
+                reverse=True)
+    rest.sort(key=lambda node: str(node.get("queued_at") or ""))
+    return bumped + rest
+
+
+def _load_queued_job(front_name: str, node_id: str | None, verb: str,
+                     action: str, me, violations: list[str]
+                     ) -> tuple[dict | None, dict | None, dict[str, dict]]:
+    """Resolve a queued job for cancel, front or edit.
+
+    Refuses a running, returned or landed node naming the state:
+    ``nod-x is running; only a queued job is edited``.
+    """
+    record = fronts.read_front_record(front_name) if front_name else None
+    if front_name and record is None:
+        violations.append(f"unknown front '{front_name}'")
+    caller.check_front_supervisor(me, front_name or None, verb,
+                                  violations=violations)
+    nid = "" if node_id is None else str(node_id).strip()
+    if not nid:
+        violations.append("field 'node' is required")
+    existing: dict | None = None
+    by_id: dict[str, dict] = {}
+    if record is not None and nid:
+        _folded, by_id = node_mod._read_nodes(front_name)
+        existing = by_id.get(nid)
+        if existing is None:
+            violations.append(f"unknown node '{nid}'")
+        else:
+            state = str(existing.get("state") or "")
+            if state != "queued":
+                shown = state if state else "unstarted"
+                violations.append(
+                    f"{nid} is {shown}; only a queued job is {action}")
+    return record, existing, by_id
+
+
+def job_cancel_main(front: str, node_id: str | None) -> int:
+    verb = "job cancel"
+    me, violations = caller.resolve(verb)
+    front_name = (front or "").strip()
+    if not front_name:
+        violations.append("field 'front' is required")
+    record, existing, _by_id = _load_queued_job(
+        front_name, node_id, verb, "cancelled", me, violations)
+    if violations:
+        return _refuse(violations)
+    assert record is not None and existing is not None
+    who = caller.by_line(me)
+    nid = str(existing["id"])
+    _write_node_revise(
+        front_name, existing, who, "cancelled", state="cancelled")
+    print(f"cancelled {nid}")
+    return 0
+
+
+def job_front_main(front: str, node_id: str | None) -> int:
+    verb = "job front"
+    me, violations = caller.resolve(verb)
+    front_name = (front or "").strip()
+    if not front_name:
+        violations.append("field 'front' is required")
+    record, existing, _by_id = _load_queued_job(
+        front_name, node_id, verb, "moved to the front", me, violations)
+    if violations:
+        return _refuse(violations)
+    assert record is not None and existing is not None
+    who = caller.by_line(me)
+    nid = str(existing["id"])
+    _write_node_revise(
+        front_name, existing, who, "moved to the front",
+        bumped_at=store.utcnow_iso())
+    print(f"front {nid}")
+    return 0
+
+
+def job_edit_main(front: str, node_id: str | None,
+                  what: str | None = None, verify: str | None = None,
+                  must_not_touch: str | None = None,
+                  after: list[str] | None = None,
+                  sheet_add: str | None = None) -> int:
+    verb = "job edit"
+    me, violations = caller.resolve(verb)
+    front_name = (front or "").strip()
+    if not front_name:
+        violations.append("field 'front' is required")
+    extra_after = [str(item).strip() for item in (after or [])]
+    extra_after = [item for item in extra_after if item]
+    for raw in after or []:
+        if not str(raw).strip():
+            violations.append("field '--after' names an empty node id")
+    record, existing, by_id = _load_queued_job(
+        front_name, node_id, verb, "edited", me, violations)
+    if record is not None:
+        for after_id in extra_after:
+            if after_id not in by_id:
+                violations.append(
+                    f"field '--after' names unknown node '{after_id}'")
+    if violations:
+        return _refuse(violations)
+    assert record is not None and existing is not None
+    who = caller.by_line(me)
+    nid = str(existing["id"])
+    changes: dict[str, object] = {}
+    if what is not None:
+        changes["what"] = str(what)
+    if verify is not None:
+        changes["verify"] = str(verify).strip()
+    if must_not_touch is not None:
+        changes["must_not_touch"] = str(must_not_touch).strip()
+    if after is not None:
+        changes["after"] = _merge_after(existing, extra_after)
+    if sheet_add is not None:
+        changes["sheet_add"] = str(sheet_add)
+    edited = dict(existing, **changes)
+    waits = compute_node_waits(front_name, edited, by_id, record)
+    changes["waits"] = waits
+    _write_node_revise(front_name, existing, who, "edited", **changes)
+    print(f"edited {nid} (waits: {waits})")
+    return 0
+
+
+def job_list_main(front: str) -> int:
+    verb = "job list"
+    me, violations = caller.resolve(verb)
+    front_name = (front or "").strip()
+    if not front_name:
+        violations.append("field 'front' is required")
+    record = fronts.read_front_record(front_name) if front_name else None
+    if front_name and record is None:
+        violations.append(f"unknown front '{front_name}'")
+    _check(me, front_name or None, verb, violations)
+    if violations:
+        return _refuse(violations)
+    assert record is not None
+    folded, _by_id = node_mod._read_nodes(front_name)
+    queued = [node for node in folded
+              if node.get("kind") == "job"
+              and str(node.get("state") or "") == "queued"]
+    lines = []
+    for node in _queue_order(queued):
+        nid = node.get("id")
+        team_role = node.get("role") or ""
+        job_role = _job_role_of_node(record, node)
+        waits = node.get("waits") or ""
+        lines.append(f"{nid}  {team_role}  {job_role}  waits: {waits}")
+    if lines:
+        print("\n".join(lines))
+    return 0
+
+
 def add_job_arguments(sub: argparse.ArgumentParser) -> None:
     verbs = sub.add_subparsers(dest="job_verb", required=True)
     queue = verbs.add_parser(
@@ -1264,6 +1420,29 @@ def add_job_arguments(sub: argparse.ArgumentParser) -> None:
                        help="node id this one waits on (repeatable)")
     queue.add_argument("--sheet-add", dest="sheet_add", default=None,
                        help="text added to the job's sheet (stored only)")
+    cancel = verbs.add_parser(
+        "cancel", help="Cancel a queued tree job.")
+    cancel.add_argument("front", help="front the node belongs to")
+    cancel.add_argument("node", help="queued job to cancel")
+    front_verb = verbs.add_parser(
+        "front", help="Move a queued tree job to the front of the queue.")
+    front_verb.add_argument("front", help="front the node belongs to")
+    front_verb.add_argument("node", help="queued job to bump")
+    edit = verbs.add_parser(
+        "edit", help="Edit a queued tree job and recompute waits.")
+    edit.add_argument("front", help="front the node belongs to")
+    edit.add_argument("node", help="queued job to edit")
+    edit.add_argument("--what", default=None, help="new body")
+    edit.add_argument("--verify", default=None, help="new verify command")
+    edit.add_argument("--must-not-touch", dest="must_not_touch",
+                      default=None, help="new must-not-touch")
+    edit.add_argument("--after", action="append", default=None,
+                      help="node id this one waits on (repeatable)")
+    edit.add_argument("--sheet-add", dest="sheet_add", default=None,
+                      help="text added to the job's sheet (stored only)")
+    listing = verbs.add_parser(
+        "list", help="Print the front's queued jobs in queue order.")
+    listing.add_argument("front", help="front whose queue to print")
     verify = verbs.add_parser("verify", help="Verify a returned job.")
     verify.add_argument("job", help="job id")
     verify.add_argument("--confirmed", action="store_true",
@@ -1300,11 +1479,22 @@ def add_job_arguments(sub: argparse.ArgumentParser) -> None:
                          help="why the job is being re-pointed (required)")
 
 
-@cli.subcommand("job", help="Queue, verify, fail or repoint a job.")
+@cli.subcommand("job", help="Queue, list, verify, fail or repoint a job.")
 def _job_entry(args: argparse.Namespace) -> int:
     if args.job_verb == "queue":
         return job_queue_main(args.front, args.node, after=args.after,
                               sheet_add=args.sheet_add)
+    if args.job_verb == "cancel":
+        return job_cancel_main(args.front, args.node)
+    if args.job_verb == "front":
+        return job_front_main(args.front, args.node)
+    if args.job_verb == "edit":
+        return job_edit_main(args.front, args.node, what=args.what,
+                             verify=args.verify,
+                             must_not_touch=args.must_not_touch,
+                             after=args.after, sheet_add=args.sheet_add)
+    if args.job_verb == "list":
+        return job_list_main(args.front)
     if args.job_verb == "verify":
         return job_verify_main(args.job, args.confirmed,
                                command=args.command, output=args.output,
