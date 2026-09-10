@@ -414,14 +414,19 @@ def _relaunch_dead_supervisor(sid: str, record: dict, cstate: dict,
         return (f"supervisor {sid} dead after {count} automatic relaunch(es) "
                 f"in the last {config.relaunch_window_seconds / 60:.0f} "
                 f"minutes; a person must relaunch it from its checkpoint")
+    from . import clockwork
     from . import launch as launch_module
 
+    began = time.monotonic()
     try:
         code = launch_module.relaunch_main(sid, by=COLLECTOR_SUBJECT,
                                            quiet=True)
         detail = "the launcher refused it"
     except Exception as exc:  # noqa: BLE001 - a failed relaunch is a line,
         code, detail = 1, f"{type(exc).__name__}: {exc}"  # never a dead daemon
+    # The relaunch is the clockwork's first item: every attempt is a line.
+    clockwork.record_run("relaunch", f"foreman relaunch {sid}", code,
+                         time.monotonic() - began, at=now_iso, session=sid)
     if code != 0:
         return (f"supervisor {sid} dead and the automatic relaunch failed "
                 f"({detail}); a person must relaunch it from its checkpoint")
@@ -1748,6 +1753,14 @@ def _tick_inner(moment: datetime, now_iso: str,
 
         store.update_snapshot(paths.roster_path(), apply,
                               default={"sessions": {}})
+
+    # Decision 9: the clockwork items, after the roster write so a session
+    # this tick marked exited is seen exited. Its anomalies are opened
+    # through note_open and are not in REASSERT_KINDS: the pass above
+    # never resolves them, the clockwork does on the item's next green.
+    from . import clockwork as _clockwork
+
+    _clockwork.tick(moment, now_iso, cstate, note_open, open_now)
 
     # Baselines for sessions that left the roster would only grow.
     for sid in list(baselines):

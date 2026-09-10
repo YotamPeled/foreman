@@ -23,7 +23,9 @@ schedule is never invented. The content of each command is the owner's.
 from __future__ import annotations
 
 import argparse
+import os
 import re
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -137,6 +139,171 @@ def last_runs() -> dict[str, dict]:
         if isinstance(name, str) and name:
             latest[name] = record
     return latest
+
+
+def _pool_reset(moment: datetime, now_iso: str) -> int:
+    """A pool whose ``out_until`` has passed gets one line clearing it.
+
+    Folded last-wins, the clearing line carries ``out_until null``, so
+    the next tick finds nothing past its reset and appends nothing.
+    """
+    from . import capacity
+
+    reset = 0
+    for record in capacity.folded_pools():
+        pool = record.get("id")
+        until = capacity._parse_iso(record.get("out_until"))
+        if not isinstance(pool, str) or not pool or until is None \
+                or moment < until:
+            continue
+        store.append_ledger(paths.pools_path(), {
+            "id": pool, "pool": pool, "out_until": None,
+            "because": "reset reached",
+            "detail": f"out until {record.get('out_until')} passed",
+            "at": now_iso, "by": COLLECTOR_SUBJECT,
+        })
+        record_run("pool-reset", f"pool {pool} out_until null", 0, 0.0,
+                   at=now_iso, pool=pool)
+        reset += 1
+    return reset
+
+
+def _git(worktree: str, *args: str) -> str | None:
+    import subprocess
+
+    try:
+        proc = subprocess.run(["git", "-C", worktree, *args],
+                              capture_output=True, text=True, timeout=30)
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return proc.stdout.strip() if proc.returncode == 0 else None
+
+
+def remove_session_files(sid: str, record: dict) -> str | None:
+    """The one disk door: remove a session's worktree and scratch.
+
+    None when done, else why not. Only a linked worktree is removed, and
+    through the launcher's own undo with its branch kept: the branch may
+    hold work not yet landed, and a main checkout is never a session's to
+    delete. Tests replace this function.
+    """
+    import shutil
+
+    from . import launch as launch_module
+
+    problem = None
+    worktree = str(record.get("worktree") or "")
+    if worktree and os.path.isdir(worktree):
+        common = _git(worktree, "rev-parse", "--path-format=absolute",
+                      "--git-common-dir")
+        own = _git(worktree, "rev-parse", "--path-format=absolute",
+                   "--git-dir")
+        if not common or not own:
+            problem = f"{worktree} is not a git worktree"
+        elif os.path.realpath(common) == os.path.realpath(own):
+            problem = f"{worktree} is a main checkout, not a linked worktree"
+        else:
+            repo = os.path.dirname(common) \
+                if os.path.basename(common) == ".git" else common
+            launch_module.remove_launch_worktree(
+                repo, str(record.get("branch") or ""), worktree,
+                delete_branch=False)
+            if os.path.isdir(worktree):
+                problem = f"git worktree remove left {worktree} in place"
+    shutil.rmtree(paths.session_scratch_dir(sid), ignore_errors=True)
+    return problem
+
+
+def _sessions_tick(moment: datetime, now_iso: str,
+                   config: ClockworkConfig) -> None:
+    """``clean`` and ``dead-sessions``: the roster's exited, tidied.
+
+    A session the roster calls exited or killed gets ``exited_at`` the
+    first tick that sees it so. Past ``clean_after`` from then, a
+    worker's worktree and scratch go through :func:`remove_session_files`
+    (one ``clean`` line per tick naming the count) and every such entry
+    is marked ``history`` (one ``dead-sessions`` line), so neither is
+    looked at again.
+    """
+    from .collector import TERMINAL_SESSION_STATES, WORKER_EXEMPT_ROLES
+
+    roster = store.read_snapshot(paths.roster_path(), default=None)
+    sessions = roster.get("sessions") if isinstance(roster, dict) else None
+    if not isinstance(sessions, dict):
+        return
+    stamp: list[str] = []
+    old: list[str] = []
+    for sid, record in sessions.items():
+        if not isinstance(record, dict) or \
+                record.get("state") not in TERMINAL_SESSION_STATES:
+            continue
+        exited = _parse_time(record.get("exited_at"))
+        if exited is None:
+            stamp.append(sid)
+        elif (moment - exited).total_seconds() > config.clean_after:
+            old.append(sid)
+    cleaned, failed = [], []
+    for sid in old:
+        record = sessions[sid]
+        if (record.get("role") or "") in WORKER_EXEMPT_ROLES:
+            continue
+        worktree = str(record.get("worktree") or "")
+        if not (worktree and os.path.isdir(worktree)) and \
+                not paths.session_scratch_dir(sid).is_dir():
+            continue
+        try:
+            problem = remove_session_files(sid, record)
+        except Exception as exc:  # noqa: BLE001 - a failed removal is a
+            problem = f"{type(exc).__name__}: {exc}"  # line, not a dead tick
+        (failed if problem else cleaned).append((sid, problem))
+    if cleaned or failed:
+        record_run(
+            "clean",
+            f"remove {len(cleaned) + len(failed)} worktree(s) exited over "
+            f"{config.clean_after_text}", 1 if failed else 0, 0.0,
+            at=now_iso, count=len(cleaned),
+            sessions=[sid for sid, _ in cleaned],
+            failed={sid: problem for sid, problem in failed})
+    if not stamp and not old:
+        return
+
+    def apply(current):
+        entries = current.get("sessions") if isinstance(current, dict) \
+            else None
+        if not isinstance(entries, dict):
+            return current
+        for sid in stamp:
+            entry = entries.get(sid)
+            if isinstance(entry, dict) and "exited_at" not in entry:
+                entry["exited_at"] = now_iso
+        for sid in old:
+            entry = entries.get(sid)
+            if isinstance(entry, dict) and \
+                    entry.get("state") in TERMINAL_SESSION_STATES:
+                entry["state"] = "history"
+                entry["history_at"] = now_iso
+        return current
+
+    store.update_snapshot(paths.roster_path(), apply,
+                          default={"sessions": {}})
+    if old:
+        record_run("dead-sessions",
+                   f"mark {len(old)} session(s) history", 0, 0.0,
+                   at=now_iso, count=len(old), sessions=old)
+
+
+def tick(moment: datetime, now_iso: str, cstate: dict, note_open,
+         open_now: dict, config: ClockworkConfig | None = None) -> None:
+    """One pass of every item. Called by the collector's tick, under its
+    lock, after the roster write; nothing here raises into the tick."""
+    config = config or load_config()
+    for step in (lambda: _pool_reset(moment, now_iso),
+                 lambda: _sessions_tick(moment, now_iso, config)):
+        try:
+            step()
+        except Exception as exc:  # noqa: BLE001 - the daemon stays up
+            print(f"foreman clockwork: {type(exc).__name__}: {exc}",
+                  file=sys.stderr)
 
 
 def _last_text(record: dict | None) -> str:
