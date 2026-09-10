@@ -443,6 +443,11 @@ class Node(Entity):
     queued_at: str | None = None
     waits: str = ""
     sheet_add: str = ""
+    #: Full replacement of the runtime's default role sheet. Empty means
+    #: the default (plus ``sheet_add``) is used. A non-empty value is
+    #: refused unless ``sheet_reason`` is also set.
+    sheet_replace: str = ""
+    sheet_reason: str = ""
     bumped_at: str | None = None
     #: The session the collector (or a hand launch) started for this
     #: queued job. Empty until then.

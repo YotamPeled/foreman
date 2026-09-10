@@ -272,6 +272,8 @@ def node_revise_main(
         role: str | None = None, after: list[str] | None = None,
         source: str | None = None, mechanical: bool | None = None,
         state: str | None = None,
+        sheet_replace: str | None = None,
+        sheet_reason: str | None = None,
         ) -> int:
     verb = "node revise"
     me, violations = caller.resolve(verb)
@@ -303,6 +305,11 @@ def node_revise_main(
         violations.append(
             "field '--state' must be queued, running, returned, "
             "verified, landed, failed, cancelled or empty")
+    replace_text = None if sheet_replace is None else str(sheet_replace)
+    reason_sheet = None if sheet_reason is None else str(sheet_reason).strip()
+    if replace_text is not None and str(replace_text).strip():
+        if not reason_sheet:
+            violations.append("field '--sheet-reason' is required")
     by_id: dict[str, dict] = {}
     existing: dict | None = None
     if record is not None:
@@ -357,6 +364,10 @@ def node_revise_main(
         updated["mechanical"] = True
     if state_text is not None:
         updated["state"] = state_text
+    if replace_text is not None:
+        updated["sheet_replace"] = replace_text
+    if reason_sheet is not None:
+        updated["sheet_reason"] = reason_sheet
     updated["op"] = "revise"
     updated["reason_revised"] = reason_text
     updated["at"] = now
@@ -871,6 +882,14 @@ def add_node_arguments(sub: argparse.ArgumentParser) -> None:
     revise.add_argument("--state", default=None,
                         help="queued, running, returned, verified, "
                              "landed, failed, cancelled or empty")
+    revise.add_argument("--sheet-replace", dest="sheet_replace",
+                        default=None,
+                        help="replace the role's default sheet "
+                             "(requires --sheet-reason)")
+    revise.add_argument("--sheet-reason", dest="sheet_reason",
+                        default=None,
+                        help="why the default sheet is replaced "
+                             "(required with --sheet-replace)")
     listing = verbs.add_parser(
         "list", help="Print the front's folded tree.")
     listing.add_argument("front", help="front whose tree to print")
@@ -911,7 +930,8 @@ def _node_entry(args: argparse.Namespace) -> int:
             repo=args.repo, what=args.what, property=args.property,
             scope=args.scope, role=args.role, after=args.after,
             source=args.source, mechanical=args.mechanical,
-            state=args.state)
+            state=args.state, sheet_replace=args.sheet_replace,
+            sheet_reason=args.sheet_reason)
     if args.node_verb == "list":
         return node_list_main(args.front, under=args.under,
                               as_json=args.as_json)

@@ -614,6 +614,82 @@ def render_role_template(role: str, mapping: dict[str, str]) -> str:
     return text
 
 
+#: Runtime-owned default sheets for the fixed roles. ``backup-builder``
+#: is a builder, so it reads the builder sheet. Any other role has no
+#: default and needs ``sheet_replace``.
+SHEET_ROLES = {
+    "builder": "builder",
+    "backup-builder": "builder",
+    "reviewer": "reviewer",
+    "supervisor": "supervisor",
+}
+
+SHEET_ADD_HEADING = "Added by the supervisor"
+
+NO_SHEET_MESSAGE = (
+    "role {role} has no sheet; add one with node revise --sheet-replace"
+)
+
+
+def _sheet_role(role: str) -> str:
+    text = (role or "").strip()
+    return SHEET_ROLES.get(text, text)
+
+
+def default_sheet_path(role: str) -> Path | None:
+    """The default sheet file for ``role``, or None when the role has none."""
+    name = _sheet_role(role)
+    if not name:
+        return None
+    path = TEMPLATE_DIR / f"sheet.{name}.md"
+    return path if path.is_file() else None
+
+
+def missing_sheet_message(role: str, node: dict | None = None) -> str | None:
+    """The refusal a node with no sheet owes, or None when it has one.
+
+    A non-empty ``sheet_replace`` counts only with a non-empty
+    ``sheet_reason``; otherwise the missing field is named.
+    """
+    record = node if isinstance(node, dict) else {}
+    replace = str(record.get("sheet_replace") or "").strip()
+    if replace:
+        if not str(record.get("sheet_reason") or "").strip():
+            return "field 'sheet_reason' is required"
+        return None
+    if default_sheet_path(role) is not None:
+        return None
+    shown = (role or "").strip() or "(none)"
+    return NO_SHEET_MESSAGE.format(role=shown)
+
+
+def role_sheet(role: str, node: dict | None = None) -> str:
+    """The page's role sheet: default plus ``sheet_add``, or a replacement.
+
+    A node with ``sheet_replace`` set returns that text alone, and only
+    when ``sheet_reason`` is non-empty; otherwise :class:`Refused` names
+    the field. A role with no default sheet and no replacement is
+    refused with the no-sheet sentence.
+    """
+    record = node if isinstance(node, dict) else {}
+    problem = missing_sheet_message(role, record)
+    if problem:
+        raise Refused(problem)
+    replace = str(record.get("sheet_replace") or "").strip()
+    if replace:
+        return replace if replace.endswith("\n") else replace + "\n"
+    path = default_sheet_path(role)
+    assert path is not None
+    default = path.read_text(encoding="utf-8")
+    if not default.endswith("\n"):
+        default += "\n"
+    added = str(record.get("sheet_add") or "").strip()
+    if not added:
+        return default
+    extra = added if added.endswith("\n") else added + "\n"
+    return f"{default.rstrip()}\n\n## {SHEET_ADD_HEADING}\n\n{extra}"
+
+
 def worker_template(role: str, kind: str | None) -> str:
     """The template name for one worker launch: role, then job kind.
 
