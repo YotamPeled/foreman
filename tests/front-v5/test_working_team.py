@@ -24,6 +24,12 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.delenv(SESSION_ENV, raising=False)
     paths.config_dir().mkdir(parents=True, exist_ok=True)
+    (tmp_path / "config" / "foreman.toml").write_text(
+        "[pool.grok]\ncap = 6\nroles = [\"grok\"]\n"
+        "[pool.muse]\ncap = 6\nroles = [\"muse\"]\n"
+        "[pool.claude]\ncap = 4\nroles = [\"opus\"]\n"
+        "[pool.codex]\ncap = 4\nroles = [\"astra\"]\n",
+        encoding="utf-8")
     return tmp_path
 
 
@@ -157,6 +163,41 @@ def test_queued_front_records_working_team_with_no_tree(env):
     assert grok.reason == "no tree yet"
     supervisor = [e for e in entries if e.role == "supervisor"][0]
     assert supervisor.count == 1
+
+
+def open_for(front: str) -> list[dict]:
+    return [rec for rec in fronts.open_reservations()
+            if rec.get("front") == front]
+
+
+def reserved_count(front: str, role: str) -> int:
+    return fronts.reserved_by_front_role().get((front, role), 0)
+
+
+def test_reservation_holds_the_derived_count_not_the_ceiling(env, capsys):
+    """Ceiling 3, four leaves derive 2: the reservation is 2, not 3."""
+    write_front("alpha", grok=3)
+    write_leaves("alpha", 4)
+    assert cli.main(["front", "team", "alpha"]) == 0
+    capsys.readouterr()
+    assert cli.main(["front", "reserve", "alpha"]) == 0
+    out = capsys.readouterr().out
+    assert "reserved grok 2 (builders)" in out
+    assert reserved_count("alpha", "grok") == 2
+    recs = [r for r in open_for("alpha")
+            if r.get("pool") == "grok" and r.get("role") == "grok"]
+    assert len(recs) == 1
+    assert recs[0]["count"] == 2
+
+
+def test_no_tree_reserves_supervisor_and_one_builder(env, capsys):
+    write_front("alpha", grok=3)
+    assert cli.main(["front", "team", "alpha"]) == 0
+    capsys.readouterr()
+    assert cli.main(["front", "reserve", "alpha"]) == 0
+    capsys.readouterr()
+    assert reserved_count("alpha", "grok") == 1
+    assert reserved_count("alpha", "supervisor") == 1
 
 
 def test_milestone_land_records_working_team_again(env, capsys):

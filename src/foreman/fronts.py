@@ -581,33 +581,42 @@ def _wanted_reservations(record: dict,
                          phases: tuple[str, ...]) -> list[tuple[str, str, int, str]]:
     """(pool, job-role, count, phase) this front would reserve.
 
-    v5 fronts walk ``team``: builder and backup-builder are the builders
-    phase, reviewer the reviewers phase, supervisor nothing. Entries of
-    the same pool and phase sum. An old-shape front reserves its
-    ``allocation`` as the builders phase, keyed by the allocation's job
-    role.
+    v5 fronts walk ``working_team`` when it has been recorded, otherwise
+    ``team``: builder and backup-builder are the builders phase,
+    reviewer the reviewers phase. A recorded working team also reserves
+    its supervisor (a front with no tree yet holds the supervisor and
+    one builder). Entries of the same pool, phase and job-role sum. An
+    old-shape front reserves its ``allocation`` as the builders phase,
+    keyed by the allocation's job role.
     """
-    wanted: dict[tuple[str, str], list] = {}
+    wanted: dict[tuple[str, str, str], int] = {}
     if record.get("shape") == "v5":
-        team = record.get("team")
-        team = team if isinstance(team, list) else []
+        source = record.get("working_team")
+        using_working = isinstance(source, list) and any(
+            isinstance(entry, dict) for entry in source)
+        if not using_working:
+            source = record.get("team")
+            source = source if isinstance(source, list) else []
         for phase in phases:
-            roles = _phase_team_roles(phase)
-            for entry in team:
+            roles = set(_phase_team_roles(phase))
+            if using_working and phase == "builders":
+                roles.add("supervisor")
+            for entry in source:
                 if not isinstance(entry, dict):
                     continue
-                if entry.get("role") not in roles:
+                role = entry.get("role")
+                if role not in roles:
                     continue
                 pool = entry.get("pool")
                 count = _count_int(entry.get("count"))
                 if not (isinstance(pool, str) and pool) or count is None:
                     continue
-                job_role = _job_role_for_pool(pool) or pool
-                key = (pool, phase)
-                if key in wanted:
-                    wanted[key][1] += count
+                if role == "supervisor":
+                    job_role = "supervisor"
                 else:
-                    wanted[key] = [job_role, count]
+                    job_role = _job_role_for_pool(pool) or pool
+                key = (pool, phase, job_role)
+                wanted[key] = wanted.get(key, 0) + count
     elif "builders" in phases:
         allocation = record.get("allocation")
         allocation = allocation if isinstance(allocation, dict) else {}
@@ -616,13 +625,10 @@ def _wanted_reservations(record: dict,
             if not (isinstance(role, str) and role) or count is None:
                 continue
             pool = config.load().pool_for_role(role) or role
-            key = (pool, "builders")
-            if key in wanted:
-                wanted[key][1] += count
-            else:
-                wanted[key] = [role, count]
+            key = (pool, "builders", role)
+            wanted[key] = wanted.get(key, 0) + count
     return [(pool, job_role, count, phase)
-            for (pool, phase), (job_role, count) in wanted.items()]
+            for (pool, phase, job_role), count in wanted.items()]
 
 
 def _others_on_pool(open_recs: list[dict], pool: str,
