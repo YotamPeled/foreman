@@ -8,9 +8,11 @@ missing refusal in the verbs themselves.
 
 from __future__ import annotations
 
+import datetime as _dt
+
 import pytest
 
-from foreman import cli, entities, paths, store
+from foreman import cli, entities, paths, store, verbs
 from foreman.caller import SESSION_ENV
 
 SUP = "ses-sup0001"
@@ -98,6 +100,17 @@ def test_ask_refuses_missing_recommendation(state, monkeypatch, capsys):
 
 
 def test_ask_and_inbox_list_oldest_first(state, monkeypatch, capsys):
+    # The test owns both clocks: asks are stamped at ASKED and the inbox
+    # reads its age at ASKED + 7s, so the age is exact on any machine.
+    asked = _dt.datetime(2026, 1, 2, 3, 4, 5, tzinfo=_dt.timezone.utc)
+
+    class _Later(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return asked + _dt.timedelta(seconds=7)
+
+    monkeypatch.setattr(store, "utcnow_iso", lambda: asked.isoformat())
+    monkeypatch.setattr(verbs, "datetime", _Later)
     assert run(monkeypatch, ["ask", "--kind", "money", "--recommend", "yes",
                              "spend $5?"], session=SUP) == 0
     first = capsys.readouterr().out.strip()
@@ -109,7 +122,8 @@ def test_ask_and_inbox_list_oldest_first(state, monkeypatch, capsys):
     assert len(lines) == 2
     assert lines[0].startswith(first) and "spend $5?" in lines[0]
     assert lines[1].startswith(second) and "job died" in lines[1]
-    assert "[money]" in lines[0] and "0s" in lines[0]
+    assert "[money]" in lines[0] and " 7s " in lines[0]
+    assert " 7s " in lines[1]
 
 
 def test_answer_creates_ruling_in_same_call(state, monkeypatch, capsys):
