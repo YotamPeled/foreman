@@ -10,6 +10,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import sys
 import tempfile
 from contextlib import contextmanager
 from datetime import datetime, timezone
@@ -18,9 +19,34 @@ from typing import Any, Iterator
 
 from . import paths
 
+#: The running process's build, filled on first stamp. An installed wheel
+#: with no checkout records an empty commit; the interpreter and package
+#: directory are always the ones serving this import.
+_BUILD: dict[str, str] | None = None
+
 
 def utcnow_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def current_build() -> dict[str, str]:
+    """Commit, interpreter and package directory of this process.
+
+    The commit is the git HEAD of the checkout this package was imported
+    from, read the same way the collector records its startup version, and
+    cached for the life of the process. An installed wheel with no
+    checkout records ``""``.
+    """
+    global _BUILD
+    if _BUILD is None:
+        from .collector import _git_head, _package_dir
+        head = _git_head()
+        _BUILD = {
+            "commit": head if isinstance(head, str) else "",
+            "interpreter": sys.executable,
+            "package": str(_package_dir()),
+        }
+    return dict(_BUILD)
 
 
 #: Set by every write below, read and cleared by the caller that refreshes
@@ -61,6 +87,8 @@ def append_ledger(path: str | Path, record: dict, session_id: str | None = None)
     entry.setdefault("at", utcnow_iso())
     if session_id is not None:
         entry.setdefault("by", session_id)
+    if "build" not in entry:
+        entry["build"] = current_build()
     line = json.dumps(entry) + "\n"
     ledger = Path(path)
     ledger.parent.mkdir(parents=True, exist_ok=True)

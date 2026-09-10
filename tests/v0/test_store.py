@@ -84,11 +84,20 @@ def test_missing_files_return_defaults(tmp_path, monkeypatch):
 def test_append_stamps_only_when_absent(tmp_path, monkeypatch):
     monkeypatch.setenv("FOREMAN_STATE", str(tmp_path))
     ledger = paths.inbox_path()
+    given_build = {"commit": "abc", "interpreter": "/x", "package": "/p"}
     entry = store.append_ledger(
-        ledger, {"at": "2001-01-01T00:00:00+00:00", "by": "ses-x", "q": 1}
+        ledger,
+        {"at": "2001-01-01T00:00:00+00:00", "by": "ses-x", "q": 1,
+         "build": given_build},
     )
-    assert entry == {"at": "2001-01-01T00:00:00+00:00", "by": "ses-x", "q": 1}
+    assert entry == {
+        "at": "2001-01-01T00:00:00+00:00", "by": "ses-x", "q": 1,
+        "build": given_build,
+    }
     assert store.read_ledger(ledger) == [entry]
+    stamped = store.append_ledger(ledger, {"q": 2})
+    assert stamped["build"] == store.current_build()
+    assert "at" in stamped
 
 
 def _stamp_many(path: str, key: str, count: int) -> None:
