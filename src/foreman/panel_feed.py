@@ -450,6 +450,215 @@ def _units(value: object) -> int:
     return value if _number(value) else 0
 
 
+def _pieces_pair(pieces: object) -> tuple[int, int]:
+    """``landed/leaves`` from :func:`foreman.milestone._pieces_done`."""
+    if not isinstance(pieces, str) or "/" not in pieces:
+        return 0, 0
+    left, right = pieces.split("/", 1)
+    try:
+        landed, leaves = int(left), int(right)
+    except ValueError:
+        return 0, 0
+    return landed, leaves
+
+
+def _reserved_for_front(front: str) -> dict[str, int]:
+    """Open job-slot reservations for ``front``, keyed by pool.
+
+    Same skip as :func:`foreman.fronts.reserved_by_pool`: a supervisor
+    reservation is a ceiling, not a pool job slot.
+    """
+    from . import fronts as fronts_mod
+
+    held: dict[str, int] = {}
+    for record in fronts_mod.open_reservations():
+        if record.get("front") != front:
+            continue
+        count = fronts_mod._job_reservation_count(record)
+        pool = record.get("pool")
+        if not (isinstance(pool, str) and pool) or count is None:
+            continue
+        held[pool] = held.get(pool, 0) + count
+    return held
+
+
+def _milestone_rows(name: str) -> list[dict]:
+    """The live milestone fold :func:`foreman.status._v5_milestone_lines` prints."""
+    from . import milestone as milestone_mod
+
+    _raw, folded = milestone_mod._read(name)
+    live = milestone_mod._live(folded)
+    if not live:
+        return []
+    by_id = {item["id"]: item for item in folded
+             if isinstance(item.get("id"), str)}
+    originals = {item["id"]: status._milestone_original(item, by_id)
+                 for item in live if isinstance(item.get("id"), str)}
+    groups: dict[str, int] = {}
+    for orig in originals.values():
+        groups[orig] = groups.get(orig, 0) + 1
+    live_sorted = sorted(
+        live,
+        key=lambda item: (
+            item.get("order") if isinstance(item.get("order"), int)
+            and not isinstance(item.get("order"), bool) else 0,
+            str(item.get("id") or ""),
+        ),
+    )
+    rows = []
+    for item in live_sorted:
+        mid = item.get("id")
+        pieces = milestone_mod._pieces_done(
+            name, str(mid)) if isinstance(mid, str) else "-"
+        landed, leaves = _pieces_pair(pieces)
+        rows.append({
+            "id": _text(mid),
+            "title": _text(item.get("title")),
+            "landed": landed,
+            "leaves": leaves,
+            "split_from": groups.get(originals.get(mid, ""), 1),
+        })
+    return rows
+
+
+def _tree_rows(name: str) -> list[dict]:
+    """The checker fold :func:`foreman.status._v5_tree_lines` prints."""
+    from . import node as node_mod
+
+    folded, _by_id = node_mod._read_nodes(name)
+    walked, _ = node_mod._walk_tree(folded, name)
+    rows = []
+    for node, depth in walked or []:
+        rows.append({
+            "id": _text(node.get("id")),
+            "depth": depth if _number(depth) else 0,
+            "kind": _text(node.get("kind")),
+            "title": _text(node.get("title")),
+            "state": _text(node.get("state")),
+            "waits": _text(node.get("waits")),
+        })
+    return rows
+
+
+def _landing_rows(name: str, front_record: dict | None) -> list[dict]:
+    """Script landing items and the behind warning, as status prints them."""
+    from . import node as node_mod
+
+    folded, _by_id = node_mod._read_nodes(name)
+    items = [node for node in folded if status._is_script_item(node)]
+    warning = status._behind_warning_line(front_record)
+    rows = []
+    for node in items:
+        rows.append({
+            "id": _text(node.get("id")),
+            "kind": _text(node.get("kind")),
+            "state": _text(node.get("state")) or "queued",
+            "sha": _text(node.get("landed_sha") or node.get("head")),
+            "reason": _text(node.get("fail_reason")),
+            "behind": "",
+        })
+    if warning is not None:
+        behind = ""
+        target = ""
+        if isinstance(front_record, dict):
+            behind = str(front_record.get("behind") or "").strip()
+            repos = front_record.get("repositories")
+            if isinstance(repos, list):
+                for entry in repos:
+                    if not isinstance(entry, dict):
+                        continue
+                    target = str(entry.get("target") or "").strip()
+                    if target:
+                        break
+        rows.append({
+            "id": "",
+            "kind": "behind",
+            "state": "",
+            "sha": behind,
+            "reason": f"behind {target}" if target else "behind",
+            "behind": behind,
+        })
+    return rows
+
+
+def _v5_front_shape(name: str, record: dict) -> dict:
+    """Per-front v5 blocks; empty lists for any other shape."""
+    empty = {"milestones": [], "tree": [], "landings": []}
+    if record.get("shape") != "v5":
+        return empty
+    return {
+        "milestones": _milestone_rows(name),
+        "tree": _tree_rows(name),
+        "landings": _landing_rows(name, record),
+    }
+
+
+def _v5_front_queue(world: _World) -> dict:
+    """The swarm queue status prints: queued fronts with why, then running.
+
+    Empty on a v0 swarm so the existing ``frontQueue`` block stays the
+    one the panel draws against the committed fixtures.
+    """
+    from . import fronts as fronts_mod
+
+    if not status._is_v5_swarm():
+        return {"count": 0, "rows": []}
+    queued = fronts_mod.queued_fronts()
+    rows = []
+    for record in queued:
+        name = _text(record.get("name"))
+        rows.append({
+            "front": name,
+            "state": _text(record.get("state")) or "queued",
+            "reason": fronts_mod.queue_wait_reason(record, queued),
+            "reserved": _reserved_for_front(name),
+        })
+    running: list[dict] = []
+    for name in world.fronts:
+        record = status.front_record_of(name)
+        if not isinstance(record, dict):
+            continue
+        if record.get("state") == "active":
+            running.append(record)
+    running.sort(key=lambda rec: rec.get("name") or "")
+    for record in running:
+        name = _text(record.get("name"))
+        rows.append({
+            "front": name,
+            "state": "active",
+            "reason": "running",
+            "reserved": _reserved_for_front(name),
+        })
+    return {"count": len(rows), "rows": rows}
+
+
+def _v5_capacity_rows() -> list[dict]:
+    """Held / reserved / cap per pool, from the folds status prints."""
+    from . import capacity as capacity_mod
+    from . import fronts as fronts_mod
+
+    held_pool = capacity_mod.held_by_pool()
+    reserved_pool = fronts_mod.reserved_by_pool()
+    names = set(held_pool)
+    names.update(reserved_pool)
+    for _front, role, _n in capacity_mod.front_allocations():
+        names.add(capacity_mod.pool_for_role(role))
+    rows = []
+    for pool in sorted(names):
+        held = held_pool.get(pool, 0)
+        reserved = reserved_pool.get(pool, 0)
+        cap = capacity_mod.effective_cap(pool)
+        if cap is None and held == 0 and reserved == 0:
+            continue
+        rows.append({
+            "pool": pool,
+            "held": held,
+            "reserved": reserved,
+            "cap": cap if _number(cap) else None,
+        })
+    return rows
+
+
 def _front_rows(world: _World) -> tuple[list[dict], list[dict],
                                         list[dict], dict[str, str]]:
     """Every front as one row, split into what is running and what waits.
@@ -542,6 +751,7 @@ def _front_rows(world: _World) -> tuple[list[dict], list[dict],
             "monitors": _monitor_rows(world, _fold_by(
                 _records(paths.front_measurements_path(name)),
                 lambda line: _text(line.get("monitor")))),
+            **_v5_front_shape(name, record),
             # Not a block fact: the job queue walks the same jobs, and
             # re-reading the ledger for it would double the work.
             "_jobs": jobs,
@@ -631,6 +841,20 @@ def _capacity(world: _World, queued_jobs: list[dict]) -> dict:
             "p90S": entry["p90_s"] if _number(entry.get("p90_s")) else None,
             "waiting": waiting_by.get(name, 0),
         })
+    v5 = _v5_capacity_rows()
+    if not rows:
+        return {"count": len(v5), "rows": v5}
+    by_pool = {row["pool"]: row for row in v5}
+    for row in rows:
+        extra = by_pool.get(row["pool"], {})
+        row["reserved"] = extra["reserved"] if _number(
+            extra.get("reserved")) else 0
+        if "cap" in extra:
+            row["cap"] = extra["cap"]
+        elif _number(row.get("total")):
+            row["cap"] = row["total"]
+        else:
+            row["cap"] = None
     return {"count": len(rows), "rows": rows}
 
 
@@ -639,6 +863,7 @@ def gather() -> dict:
     world = _World()
     working, queued, everything, titles = _front_rows(world)
     job_queue = _job_queue(world, everything)
+    front_queue = _v5_front_queue(world)
     for row in everything:
         del row["_jobs"]
     return {
@@ -651,6 +876,7 @@ def gather() -> dict:
         "working": {"count": len(working), "rows": working},
         "jobQueue": job_queue,
         "frontQueue": {"count": len(queued), "rows": queued},
+        "front_queue": front_queue,
         "mergeQueue": _merge_queue(world, titles),
         "capacity": _capacity(world, job_queue["rows"]),
         # Every front, running or queued or done: the Working block draws

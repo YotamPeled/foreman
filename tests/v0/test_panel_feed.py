@@ -43,6 +43,15 @@ RENDERED = ["header", "needsYou", "problems", "working", "jobQueue",
 #: derives these itself from `collectorAt`, so they carry no expectation.
 WALL_CLOCK = ("collectorAt", "collectorAgeS", "collectorAlive")
 
+#: v5 fields the golden never held: stripped so this file still pins the
+#: eight original blocks. tests/front-v5/test_panel_feed_shape.py owns them.
+V5_FRONT_KEYS = ("milestones", "tree", "landings")
+V5_CAPACITY_KEYS = ("reserved", "cap")
+
+
+def _without(row: dict, keys: tuple[str, ...]) -> dict:
+    return {key: value for key, value in row.items() if key not in keys}
+
 
 def rendered(feed: dict) -> dict:
     """The summary reduced to what the old model held, so the two compare."""
@@ -52,7 +61,18 @@ def rendered(feed: dict) -> dict:
                       if row["label"] != "collector"]
     out = {"header": header}
     for name in RENDERED[1:]:
-        out[name] = feed[name]
+        value = feed[name]
+        if name == "fronts":
+            value = [_without(row, V5_FRONT_KEYS) for row in value]
+        elif name == "working":
+            value = {"count": value["count"],
+                     "rows": [_without(row, V5_FRONT_KEYS)
+                              for row in value["rows"]]}
+        elif name == "capacity":
+            value = {"count": value["count"],
+                     "rows": [_without(row, V5_CAPACITY_KEYS)
+                              for row in value["rows"]]}
+        out[name] = value
     return out
 
 
