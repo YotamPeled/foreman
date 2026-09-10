@@ -7,6 +7,7 @@ Layout follows docs/DESIGN.md section 6.
 from __future__ import annotations
 
 import os
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -170,6 +171,25 @@ def session_turns_path(session_id: str) -> Path:
 
 def session_scratch_dir(session_id: str) -> Path:
     return session_dir(session_id) / "scratch"
+
+
+def scratch_worktree_dir(kind: str, name: str) -> Path:
+    """``<state>/worktrees/scratch/<kind>-<name>``, parents created.
+
+    ``kind`` is ``verify`` or ``land``; ``name`` is the job or merge id.
+    The leaf is left uncreated so ``git worktree add`` can own it.
+    """
+    path = state_dir() / "worktrees" / "scratch" / f"{kind}-{name}"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def remove_scratch(path: Path | str) -> None:
+    """Remove a scratch worktree directory, or do nothing if it is gone."""
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        return
 
 
 def merge_check_log_path(session_id: str, merge_id: str) -> Path:
