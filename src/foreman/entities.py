@@ -406,7 +406,8 @@ class Node(Entity):
     ``kind`` is milestone, task, job or derived. A revised line carries
     ``op = "revise"``. ``break_`` is the one-line change that must make
     verify go red. ``prove`` is the red-then-green record written by
-    ``node prove``.
+    ``node prove``. ``break_patch`` is the unified diff ``node prove``
+    applies on a proven head.
     """
 
     _aliases: ClassVar[dict[str, str]] = {"break_": "break"}
@@ -434,11 +435,14 @@ class Node(Entity):
     state: str = ""
     reason_revised: str = ""
     prove: dict = field(default_factory=dict)
+    break_patch: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
         if not data.get("prove"):
             data.pop("prove", None)
+        if not data.get("break_patch"):
+            data.pop("break_patch", None)
         return data
 
 

@@ -97,7 +97,8 @@ def make_proof_repo(root: Path) -> tuple[Path, str, str]:
     git(repo, "commit", "-qm", "base")
     base = git(repo, "rev-parse", "HEAD")
     (repo / "proof.txt").write_text("proof\n", encoding="utf-8")
-    git(repo, "add", "proof.txt")
+    (repo / "notes.txt").write_text("# note\n", encoding="utf-8")
+    git(repo, "add", "proof.txt", "notes.txt")
     git(repo, "commit", "-qm", "head")
     head = git(repo, "rev-parse", "HEAD")
     return repo, base, head
@@ -156,6 +157,8 @@ def add_argv(front="v5shape", parent="v5shape", kind="milestone",
             "--repo", flags.get("repo", "foreman")]
     if flags.get("node_id") is not None:
         argv.extend(["--id", flags["node_id"]])
+    if flags.get("break_patch") is not None:
+        argv.extend(["--break-patch", flags["break_patch"]])
     return argv
 
 
@@ -169,10 +172,27 @@ def folded_node(front: str, nid: str) -> dict:
     return {line["id"]: line for line in folded}[nid]
 
 
-def add_task(monkeypatch, capsys, verify=PROOF_VERIFY, node_id="nod-prove1"):
+def add_task(monkeypatch, capsys, verify=PROOF_VERIFY, node_id="nod-prove1",
+             break_patch=None):
     mil = add_ok(monkeypatch, capsys, title="milestone one")
     return add_ok(monkeypatch, capsys, parent=mil, kind="task",
-                  title="the proof", verify=verify, node_id=node_id)
+                  title="the proof", verify=verify, node_id=node_id,
+                  break_patch=break_patch)
+
+
+def worktree_diff(repo: Path, mutate) -> str:
+    """Unstaged unified diff of ``mutate`` against the current HEAD."""
+    mutate(repo)
+    proc = subprocess.run(
+        ["git", "-C", str(repo), "diff"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert proc.returncode == 0, proc.stderr
+    git(repo, "checkout", "--", ".")
+    subprocess.run(
+        ["git", "-C", str(repo), "clean", "-fdq"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+    assert proc.stdout.strip(), "mutate produced an empty diff"
+    return proc.stdout
 
 
 def test_node_prove_records_base_red_head_green_proven(
@@ -187,13 +207,15 @@ def test_node_prove_records_base_red_head_green_proven(
         "--base", base, "--head", head, "--repo", str(repo),
     ], SUP) == 0
     out, err = capsys.readouterr()
-    assert err == ""
     assert "proven" in out
+    assert "no break_patch" in err
+    assert "prose by hand" in err
     record = folded_node("v5shape", nid)
     prove = record["prove"]
     assert prove["base"]["saw"] == "red"
     assert prove["head"]["saw"] == "green"
     assert prove["verdict"] == "proven"
+    assert prove["break"] == {"verdict": "prose only"}
     assert prove["at"]
     assert prove["base"]["exit"] != 0
     assert prove["head"]["exit"] == 0
@@ -270,3 +292,64 @@ def test_node_prove_missing_program_is_silent_unproven(
     assert "resolve" in log
     assert not paths.scratch_worktree_dir("prove", f"{nid}-base").exists()
     assert not paths.scratch_worktree_dir("prove", f"{nid}-head").exists()
+
+
+def test_node_prove_break_patch_deleting_proof_is_red(
+        env, monkeypatch, capsys):
+    """A patch that deletes proof.txt makes the break red and exits 0."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    repo, base, head = make_proof_repo(env)
+    patch = worktree_diff(repo, lambda r: (r / "proof.txt").unlink())
+    patch_file = env / "delete.patch"
+    patch_file.write_text(patch, encoding="utf-8")
+    nid = add_task(monkeypatch, capsys, node_id="nod-del1",
+                   break_patch=str(patch_file))
+    stored = folded_node("v5shape", nid)
+    assert stored["break_patch"] == patch
+    assert run(monkeypatch, [
+        "node", "prove", "v5shape", nid,
+        "--base", base, "--head", head, "--repo", str(repo),
+    ], SUP) == 0
+    capsys.readouterr()
+    prove = folded_node("v5shape", nid)["prove"]
+    assert prove["verdict"] == "proven"
+    assert prove["break"]["saw"] == "red"
+    assert prove["break"]["verdict"] == "red"
+    assert not paths.scratch_worktree_dir("prove", f"{nid}-base").exists()
+    assert not paths.scratch_worktree_dir("prove", f"{nid}-head").exists()
+    assert not paths.scratch_worktree_dir("prove", f"{nid}-break").exists()
+    assert git(repo, "rev-parse", base) == base
+    assert git(repo, "rev-parse", head) == head
+    assert (repo / "proof.txt").is_file()
+
+
+def test_node_prove_comment_only_patch_survives_exits_3(
+        env, monkeypatch, capsys):
+    """A patch that only changes a comment survives: classify line, exit 3."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    repo, base, head = make_proof_repo(env)
+
+    def change_comment(path: Path) -> None:
+        (path / "notes.txt").write_text("# other\n", encoding="utf-8")
+
+    patch = worktree_diff(repo, change_comment)
+    patch_file = env / "comment.patch"
+    patch_file.write_text(patch, encoding="utf-8")
+    nid = add_task(monkeypatch, capsys, node_id="nod-cmt1",
+                   break_patch=str(patch_file))
+    assert run(monkeypatch, [
+        "node", "prove", "v5shape", nid,
+        "--base", base, "--head", head, "--repo", str(repo),
+    ], SUP) == 3
+    out, _err = capsys.readouterr()
+    assert "BREAK SURVIVED:" in out
+    assert "node revise --break-class gap|ineffective|vacuous --reason" in out
+    prove = folded_node("v5shape", nid)["prove"]
+    assert prove["verdict"] == "proven"
+    assert prove["break"]["verdict"] == "survived"
+    assert not paths.scratch_worktree_dir("prove", f"{nid}-break").exists()
+    assert git(repo, "rev-parse", base) == base
+    assert git(repo, "rev-parse", head) == head
+    assert (repo / "notes.txt").read_text(encoding="utf-8") == "# note\n"

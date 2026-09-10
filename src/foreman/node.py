@@ -6,7 +6,8 @@ refuses every violation at once and names each rejected field.
 ``node revise`` appends a revised copy with ``op = revise``. The ledger
 is append-only and folded last-wins on read. ``node list`` prints the
 fold indented by depth. ``node prove`` runs the node's verify on
-``--base`` then ``--head`` and records what each saw.
+``--base`` then ``--head`` and records what each saw; on a proven node
+it applies ``break_patch`` if one is stored.
 """
 
 from __future__ import annotations
@@ -16,6 +17,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -102,6 +104,19 @@ def _required(flag: str, value: str | None, violations: list[str]) -> str:
     return text
 
 
+def _read_break_patch(path: str | None) -> tuple[str, str | None]:
+    """File contents of ``--break-patch``, or an empty string when omitted."""
+    if path is None:
+        return "", None
+    text = str(path).strip()
+    if not text:
+        return "", "field '--break-patch' is required"
+    try:
+        return Path(text).read_text(encoding="utf-8"), None
+    except OSError:
+        return "", f"cannot read --break-patch {text!r}"
+
+
 def node_add_main(
         front: str, parent: str | None, kind: str | None,
         title: str | None, verify: str | None,
@@ -111,6 +126,7 @@ def node_add_main(
         scope: str | None = None, role: str | None = None,
         after: list[str] | None = None, source: str | None = None,
         mechanical: bool = False, node_id: str | None = None,
+        break_patch: str | None = None,
         ) -> int:
     verb = "node add"
     me, violations = caller.resolve(verb)
@@ -157,6 +173,9 @@ def node_add_main(
     for raw in after or []:
         if not str(raw).strip():
             violations.append("field '--after' names an empty node id")
+    patch_text, patch_err = _read_break_patch(break_patch)
+    if patch_err:
+        violations.append(patch_err)
     given_id = "" if node_id is None else str(node_id).strip()
     by_id: dict[str, dict] = {}
     if record is not None:
@@ -217,6 +236,7 @@ def node_add_main(
             op="",
             at=now,
             by=who,
+            break_patch=patch_text,
         ).to_dict(),
         session_id=who,
     )
@@ -508,6 +528,37 @@ def _close_worktree(repo: str, area: str) -> None:
     paths.remove_scratch(area)
 
 
+def _execute_in(area: str, command: str, timeout_s: int
+                ) -> tuple[int | None, str, bool]:
+    """Run ``command`` in ``area``. Returns exit, output, timed_out."""
+    try:
+        proc = subprocess.run(
+            command, shell=True, cwd=area,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, env=_prove_env(command), timeout=timeout_s)
+        output_body = proc.stdout or ""
+        exit_code = proc.returncode if proc.returncode is not None else 1
+        return exit_code, output_body, False
+    except subprocess.TimeoutExpired as exc:
+        raw = exc.stdout or ""
+        if isinstance(raw, bytes):
+            output_body = raw.decode("utf-8", errors="replace")
+        else:
+            output_body = raw
+        return None, output_body, True
+
+
+def _open_worktree(repo: str, ref: str, key: str) -> tuple[str | None, str]:
+    area = str(paths.scratch_worktree_dir("prove", key))
+    added = _git_at(repo, "worktree", "add", "--detach", area, ref)
+    if added.returncode != 0:
+        tail = (added.stdout or "").strip()
+        paths.remove_scratch(area)
+        return None, (
+            f"cannot open a prove worktree for '{ref}': {tail}".strip())
+    return area, ""
+
+
 def _run_verify_at(repo: str, ref: str, command: str, dest_dir: Path,
                    timeout_s: int, key: str, label: str
                    ) -> tuple[dict | None, str]:
@@ -526,31 +577,14 @@ def _run_verify_at(repo: str, ref: str, command: str, dest_dir: Path,
             "output_ref": dest,
             "saw": "silent",
         }, "")
-    area = str(paths.scratch_worktree_dir("prove", key))
-    output_body = ""
-    exit_code: int | None = None
-    timed_out = False
+    area, err = _open_worktree(repo, ref, key)
+    if err:
+        return None, err
+    assert area is not None
     started = time.monotonic()
     try:
-        added = _git_at(repo, "worktree", "add", "--detach", area, ref)
-        if added.returncode != 0:
-            tail = (added.stdout or "").strip()
-            return None, (
-                f"cannot open a prove worktree for '{ref}': {tail}".strip())
-        try:
-            proc = subprocess.run(
-                command, shell=True, cwd=area,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, env=_prove_env(command), timeout=timeout_s)
-            output_body = proc.stdout or ""
-            exit_code = proc.returncode if proc.returncode is not None else 1
-        except subprocess.TimeoutExpired as exc:
-            timed_out = True
-            raw = exc.stdout or ""
-            if isinstance(raw, bytes):
-                output_body = raw.decode("utf-8", errors="replace")
-            else:
-                output_body = raw
+        exit_code, output_body, timed_out = _execute_in(
+            area, command, timeout_s)
     finally:
         _close_worktree(repo, area)
     seconds = int(round(time.monotonic() - started))
@@ -561,6 +595,54 @@ def _run_verify_at(repo: str, ref: str, command: str, dest_dir: Path,
         "output_ref": dest,
         "saw": _classify_saw(
             exit_code, output_body, resolved=True, timed_out=timed_out),
+    }, "")
+
+
+SURVIVED_LINE = (
+    "BREAK SURVIVED: classify with node revise "
+    "--break-class gap|ineffective|vacuous --reason"
+)
+
+
+def _run_break_at(repo: str, ref: str, command: str, dest_dir: Path,
+                  timeout_s: int, key: str, patch: str
+                  ) -> tuple[dict | None, str]:
+    """Apply ``patch`` on a head worktree, run verify, restore.
+
+    Returns ``({saw, verdict}, error)``. The worktree is gone afterwards.
+    """
+    area, err = _open_worktree(repo, ref, key)
+    if err:
+        return None, err
+    assert area is not None
+    started = time.monotonic()
+    try:
+        applied = subprocess.run(
+            ["git", "-C", area, "apply", "-"],
+            input=patch, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True)
+        if applied.returncode != 0:
+            tail = (applied.stdout or "").strip()
+            return None, f"cannot apply break_patch: {tail}".strip()
+        exit_code, output_body, timed_out = _execute_in(
+            area, command, timeout_s)
+        _git_at(area, "checkout", "--", ".")
+        _git_at(area, "clean", "-fd")
+    finally:
+        _close_worktree(repo, area)
+    seconds = int(round(time.monotonic() - started))
+    dest = _write_prove_log(dest_dir, "break", output_body)
+    saw = _classify_saw(
+        exit_code, output_body, resolved=True, timed_out=timed_out)
+    verdict = "red" if exit_code not in (0, None) else "survived"
+    if timed_out:
+        verdict = "survived"
+    return ({
+        "saw": saw,
+        "verdict": verdict,
+        "exit": exit_code,
+        "seconds": seconds,
+        "output_ref": dest,
     }, "")
 
 
@@ -662,9 +744,37 @@ def node_prove_main(front: str, node_id: str | None,
         "verdict": verdict,
         "at": now,
     }
+    exit_code = 0 if verdict == "proven" else 1
+    if verdict == "proven":
+        patch = str(existing.get("break_patch") or "")
+        if not patch:
+            prove["break"] = {"verdict": "prose only"}
+            print(f"{nid} {verdict}")
+            print(
+                "warning: no break_patch; until the patch exists "
+                "the supervisor applies the prose by hand",
+                file=sys.stderr)
+            _append_prove(existing, front_name, prove, who, now)
+            return 0
+        broke, err = _run_break_at(
+            repo_path, head_ref, command, dest_dir, timeout_s,
+            f"{nid}-break", patch)
+        if err:
+            return _refuse([err])
+        assert broke is not None
+        prove["break"] = {
+            "saw": broke["saw"],
+            "verdict": broke["verdict"],
+        }
+        _append_prove(existing, front_name, prove, who, now)
+        print(f"{nid} {verdict}")
+        if broke["verdict"] == "survived":
+            print(SURVIVED_LINE)
+            return 3
+        return 0
     _append_prove(existing, front_name, prove, who, now)
     print(f"{nid} {verdict}")
-    return 0 if verdict == "proven" else 1
+    return exit_code
 
 
 def add_node_arguments(sub: argparse.ArgumentParser) -> None:
@@ -687,6 +797,8 @@ def add_node_arguments(sub: argparse.ArgumentParser) -> None:
     add.add_argument("--break", dest="break_", default=None,
                      help="the one-line change that must make verify "
                           "go red (required)")
+    add.add_argument("--break-patch", dest="break_patch", default=None,
+                     help="unified diff that must make verify go red")
     add.add_argument("--repo", default=None,
                      help="repository name (required)")
     add.add_argument("--what", default=None,
@@ -765,7 +877,8 @@ def _node_entry(args: argparse.Namespace) -> int:
             args.must_not_touch, args.reason, args.break_, args.repo,
             what=args.what, property=args.property, scope=args.scope,
             role=args.role, after=args.after, source=args.source,
-            mechanical=args.mechanical, node_id=args.node_id)
+            mechanical=args.mechanical, node_id=args.node_id,
+            break_patch=args.break_patch)
     if args.node_verb == "revise":
         return node_revise_main(
             args.front, args.id, args.reason, parent=args.parent,
