@@ -1,4 +1,4 @@
-"""`foreman pool list|add|remove|clone`: the owner's verbs over pool plugins.
+"""`foreman pool list|add|remove|clone|clear`: verbs over pool plugins.
 
 A pool is a directory (see :mod:`foreman.pools.plugins`). The packaged
 ones ship under the package; ``clone`` copies one into the user's pools
@@ -7,18 +7,20 @@ removing a clone falls back to the packaged pool rather than leaving a
 hole, because the packaged directory is still there. ``add`` scaffolds
 a new user pool (or installs a directory with ``--from``); ``list``
 prints every pool the launcher can resolve and where each came from.
+``clear`` lifts a pool's out mark on ``pools.jsonl`` (foreman or owner).
 """
 
 from __future__ import annotations
 
 import argparse
 import shutil
+from datetime import datetime
 from pathlib import Path
 
-from . import caller, cli
+from . import caller, capacity, cli, paths, store
 from .caller import Refusal
 from .pools import names as pool_names
-from .pools import plugins
+from .pools import plugins, unknown_pool_message
 from .pools.plugins import POOL_NAME_RE
 
 #: What `pool add` scaffolds when no `--from` directory is given: a
@@ -214,6 +216,67 @@ def pool_add_main(name: str | None, from_dir: str | None = None) -> int:
     return _done(0)
 
 
+def _out_until_shown(raw: object) -> str:
+    """The Capacity spelling of a mark's reset, or the raw text."""
+    if not isinstance(raw, str) or not raw:
+        return ""
+    try:
+        moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw
+    return capacity.format_out_until(moment)
+
+
+def pool_clear_main(name: str | None, reason: str | None) -> int:
+    """Lift ``name``'s open out mark. Foreman or owner; a supervisor is
+    refused naming the role. Does not touch the collector config, so it
+    does not ask for a collector restart."""
+    me, violations = caller.resolve("pool clear")
+    caller.check_role(me, "pool clear", caller.FOREMAN, violations=violations)
+    name = _check_name(name, violations)
+    reason_text = (reason or "").strip()
+    if not reason_text:
+        violations.append("field '--reason' is required")
+    mark = None
+    if name is not None:
+        if name not in pool_names():
+            violations.append(unknown_pool_message(name))
+        else:
+            mark = capacity.pool_out(name)
+            if mark is None:
+                violations.append(f"pool {name} is not out")
+    if violations:
+        return Refusal(violations).report()
+    assert name is not None and mark is not None
+    who = caller.by_line(me)
+    now = store.utcnow_iso()
+    store.append_ledger(
+        paths.pools_path(),
+        {
+            "id": name,
+            "pool": name,
+            "out_until": None,
+            "because": f"cleared: {reason_text}",
+            "cleared": {
+                "session": mark.get("session") or "",
+                "job": mark.get("job") or "",
+            },
+            "by": who,
+            "at": now,
+        },
+        session_id=me.session_id if me is not None else None,
+    )
+    because = mark.get("because") if isinstance(mark.get("because"), str) \
+        else ""
+    session = mark.get("session") if isinstance(mark.get("session"), str) \
+        else ""
+    line_no = mark.get("line_no")
+    when = _out_until_shown(mark.get("out_until"))
+    print(f"pool {name} cleared (was out until {when}, because {because}, "
+          f"from {session} line {line_no})")
+    return 0
+
+
 def add_pool_arguments(sub: argparse.ArgumentParser) -> None:
     verbs = sub.add_subparsers(dest="pool_verb", required=True)
     verbs.add_parser("list", help="Print every pool and where it came from.")
@@ -228,9 +291,14 @@ def add_pool_arguments(sub: argparse.ArgumentParser) -> None:
     add.add_argument("name", help="pool to add")
     add.add_argument("--from", dest="from_dir", default=None,
                      help="directory holding the pool to install")
+    clear = verbs.add_parser(
+        "clear", help="Lift a pool's out mark.")
+    clear.add_argument("name", help="pool to clear")
+    clear.add_argument("--reason", default=None,
+                       help="why the mark is being lifted")
 
 
-@cli.subcommand("pool", help="List, add, clone or remove a pool.")
+@cli.subcommand("pool", help="List, add, clone, remove or clear a pool.")
 def _pool_entry(args: argparse.Namespace) -> int:
     if args.pool_verb == "list":
         return pool_list_main()
@@ -240,6 +308,8 @@ def _pool_entry(args: argparse.Namespace) -> int:
         return pool_remove_main(args.name)
     if args.pool_verb == "add":
         return pool_add_main(args.name, from_dir=args.from_dir)
+    if args.pool_verb == "clear":
+        return pool_clear_main(args.name, args.reason)
     raise AssertionError(f"unknown pool verb {args.pool_verb!r}")
 
 
