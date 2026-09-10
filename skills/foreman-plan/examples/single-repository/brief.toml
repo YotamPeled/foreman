@@ -1,0 +1,29 @@
+name = "porch-inventory"
+goal = """
+A neighborhood tool library lends tools from a porch locker, and nobody
+knows what is actually on the shelves. Count everything once so the
+lending list stops lying.
+"""
+finish-line = "`python -m pytest tests -q` prints passed and `foreman status` shows porch-inventory as done."
+decisions = [
+  "The supervisor writes the map, milestones and tree; this brief names no tasks.",
+  "Landing is a direct push after a green check.",
+]
+supervisor = "grok-4.6:high"
+team = [
+  "grok-4.6:high:1:supervisor",
+  "grok-4.6:high:2:builder",
+  "opus-5:high:1:backup-builder",
+  "astra-6:low:1:reviewer",
+]
+
+[[repository]]
+name = "porch"
+url = "https://example.invalid/acme/porch.git"
+base = "main"
+work = "porch-inventory"
+target = "main"
+check = "python -m pytest tests -q"
+land = "push"
+trailers = ["Signed-off-by: Foreman"]
+pr-body = "the porch count"

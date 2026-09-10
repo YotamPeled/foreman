@@ -1,0 +1,40 @@
+name = "harbor-tally"
+goal = """
+The harbor master bills visiting boats by slip-night from a paper log, and
+the log, the dock walk, and the invoices disagree every month. Reconcile
+all three so one monthly invoice run is trusted.
+"""
+finish-line = "`python -m pytest tests -q` prints passed on both repositories and `gh pr view` shows the invoices pull request."
+decisions = [
+  "The supervisor writes the map, milestones and tree; this brief names no tasks.",
+  "The log repository lands by direct push; the invoices repository lands by pull request.",
+]
+supervisor = "grok-4.6:high"
+team = [
+  "grok-4.6:high:1:supervisor",
+  "grok-4.6:high:2:builder",
+  "opus-5:high:1:backup-builder",
+  "astra-6:low:1:reviewer",
+]
+
+[[repository]]
+name = "log"
+url = "https://example.invalid/acme/harbor-log.git"
+base = "main"
+work = "harbor-tally"
+target = "main"
+check = "python -m pytest tests -q"
+land = "push"
+trailers = ["Signed-off-by: Foreman"]
+pr-body = "harbor log landing"
+
+[[repository]]
+name = "invoices"
+url = "https://example.invalid/acme/harbor-invoices.git"
+base = "main"
+work = "harbor-tally"
+target = "main"
+check = "python -m pytest tests -q"
+land = "pr"
+trailers = ["Signed-off-by: Foreman"]
+pr-body = "Harbor tally invoices landing."
