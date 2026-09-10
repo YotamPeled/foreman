@@ -458,6 +458,16 @@ class Node(Entity):
     resources: list = field(default_factory=list)
     #: The tree node a landing item lands. Empty on every other job.
     lands: str = ""
+    #: Sha the landing pushed, on the built node and the item.
+    landed_sha: str = ""
+    fail_reason: str = ""
+    command: str = ""
+    exit: int | None = None
+    seconds: float | None = None
+    output_file: str = ""
+    head: str = ""
+    base_sha: str = ""
+    dropped: list = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -473,6 +483,24 @@ class Node(Entity):
             data.pop("resources", None)
         if not data.get("lands"):
             data.pop("lands", None)
+        if not data.get("landed_sha"):
+            data.pop("landed_sha", None)
+        if not data.get("fail_reason"):
+            data.pop("fail_reason", None)
+        if not data.get("command"):
+            data.pop("command", None)
+        if data.get("exit") is None:
+            data.pop("exit", None)
+        if data.get("seconds") is None:
+            data.pop("seconds", None)
+        if not data.get("output_file"):
+            data.pop("output_file", None)
+        if not data.get("head"):
+            data.pop("head", None)
+        if not data.get("base_sha"):
+            data.pop("base_sha", None)
+        if not data.get("dropped"):
+            data.pop("dropped", None)
         return data
 
 

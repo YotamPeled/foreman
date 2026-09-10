@@ -7,13 +7,16 @@ queues a script item under the same parent.
 
 from __future__ import annotations
 
+import fcntl
 import subprocess
+import threading
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
-from foreman import cli, fronts, paths, store
+from foreman import cli, fronts, landing, paths, store
 from foreman.caller import SESSION_ENV
 from foreman.entities import Session
 
@@ -41,7 +44,7 @@ url = "{url}"
 base = "main"
 work = "v5work"
 target = "main"
-check = "true"
+check = "{check}"
 '''
 
 
@@ -89,19 +92,20 @@ def make_bare(root: Path) -> tuple[Path, Path, str]:
     return src, bare, sha
 
 
-def write_v5(root: Path, name: str, url: str) -> Path:
+def write_v5(root: Path, name: str, url: str, check: str = "true") -> Path:
     brief_dir = root / name
     brief_dir.mkdir(parents=True, exist_ok=True)
     (brief_dir / "brief.toml").write_text(
-        V5_BRIEF.format(name=name, url=url), encoding="utf-8")
+        V5_BRIEF.format(name=name, url=url, check=check), encoding="utf-8")
     return brief_dir
 
 
-def add_front(env: Path, monkeypatch, capsys, name: str = "v5shape") -> str:
+def add_front(env: Path, monkeypatch, capsys, name: str = "v5shape",
+              check: str = "true") -> tuple[Path, Path, str]:
     monkeypatch.delenv(SESSION_ENV, raising=False)
     src, bare, sha = make_bare(env)
     assert cli.main(["front", "add",
-                     str(write_v5(env, name, str(bare)))]) == 0
+                     str(write_v5(env, name, str(bare), check=check))]) == 0
     capsys.readouterr()
     record = fronts.read_front_record(name)
     work = (record or {}).get("repositories", [{}])[0].get("work") or "v5work"
@@ -110,7 +114,7 @@ def add_front(env: Path, monkeypatch, capsys, name: str = "v5shape") -> str:
         ["git", "--git-dir", str(bare), "fetch", "-q", "origin",
          f"+refs/heads/{work}:refs/heads/{work}"],
         check=True)
-    return sha
+    return src, bare, sha
 
 
 def run(monkeypatch, argv, session=None):
@@ -185,17 +189,66 @@ def folded_tree(front="v5shape"):
 
 
 def mark_verified(front: str, node_id: str, job_id: str = "job-ver001",
-                  branch: str | None = None) -> str:
+                  branch: str | None = None,
+                  worktree: Path | str | None = None) -> str:
     """Attach a verified jobs.jsonl line to the tree node."""
     store.append_ledger(paths.front_jobs_path(front), {
         "id": job_id, "state": "verified", "task": "tsk-1",
         "branch": branch or f"job/{front}-{node_id}",
+        "worktree": str(worktree) if worktree else "",
         "verified_at": iso(NOW),
     })
     node = folded_tree(front)[node_id]
     from foreman.progress import _write_node_revise
     _write_node_revise(front, node, SUP, "job verified", job=job_id)
     return job_id
+
+
+def open_clone(env: Path, bare: Path) -> Path:
+    clone = env / "clone"
+    subprocess.run(["git", "clone", "-q", str(bare), str(clone)], check=True)
+    git(clone, "config", "user.email", "test@example.invalid")
+    git(clone, "config", "user.name", "foreman-test")
+    return clone
+
+
+def checkout_work(clone: Path, work: str = "v5work") -> str:
+    git(clone, "fetch", "-q", "origin", work)
+    git(clone, "checkout", "-q", "-B", work, f"origin/{work}")
+    return git(clone, "rev-parse", "HEAD")
+
+
+def add_job_commit(clone: Path, branch: str, filename: str = "feat.txt",
+                   body: str = "feat\n") -> str:
+    git(clone, "checkout", "-qb", branch)
+    (clone / filename).write_text(body, encoding="utf-8")
+    git(clone, "add", filename)
+    git(clone, "commit", "-qm", "job work")
+    sha = git(clone, "rev-parse", "HEAD")
+    git(clone, "checkout", "-q", "-")
+    return sha
+
+
+def origin_work_sha(bare: Path, work: str = "v5work") -> str:
+    return subprocess.run(
+        ["git", "--git-dir", str(bare), "rev-parse", f"refs/heads/{work}"],
+        check=True, capture_output=True, text=True).stdout.strip()
+
+
+def queue_landing(monkeypatch, capsys, node_id: str, clone: Path,
+                  front: str = "v5shape") -> str:
+    branch = f"job/{front}-{node_id}"
+    mark_verified(front, node_id, worktree=clone, branch=branch)
+    capsys.readouterr()
+    assert run(monkeypatch, ["job", "land", front, node_id], SUP) == 0
+    return capsys.readouterr().out.strip()
+
+
+def scratch_left() -> list[str]:
+    root = paths.state_dir() / "worktrees" / "scratch"
+    if not root.exists():
+        return []
+    return [entry.name for entry in root.iterdir()]
 
 
 def test_job_land_refuses_an_unverified_node(env, monkeypatch, capsys):
@@ -251,3 +304,188 @@ def test_job_land_refuses_when_a_landing_item_is_already_open(
     assert node_id in err
     assert first in err
     assert store.read_ledger(paths.front_tree_path("v5shape")) == before
+
+
+def test_landing_run_pushes_the_rebased_head(env, monkeypatch, capsys):
+    """A job branch one commit ahead lands: origin work moves, fields record."""
+    _src, bare, _sha = add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(monkeypatch, capsys, job_id="job-a")
+    clone = open_clone(env, bare)
+    checkout_work(clone)
+    branch = f"job/v5shape-{node_id}"
+    add_job_commit(clone, branch)
+    item_id = queue_landing(monkeypatch, capsys, node_id, clone)
+    before_work = origin_work_sha(bare)
+    item = folded_tree()[item_id]
+    result = landing.run("v5shape", item, by=SUP)
+    assert result.ok, result.fail_reason
+    after_work = origin_work_sha(bare)
+    assert after_work != before_work
+    assert after_work == result.head
+    recorded = folded_tree()[item_id]
+    assert recorded["state"] == "landed"
+    assert recorded["command"] == "true"
+    assert recorded["exit"] == 0
+    assert recorded["seconds"] is not None and recorded["seconds"] >= 0
+    assert recorded["output_file"]
+    assert Path(recorded["output_file"]).is_file()
+    assert str(paths.state_dir()) in recorded["output_file"]
+    assert recorded["head"] == result.head
+    built = folded_tree()[node_id]
+    assert built["state"] == "landed"
+    assert built["landed_sha"] == result.head
+    assert scratch_left() == []
+
+
+def test_empty_range_fails_before_the_check(env, monkeypatch, capsys):
+    """A branch with nothing new fails with the empty-range reason; no check."""
+    _src, bare, _sha = add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(monkeypatch, capsys, job_id="job-a")
+    clone = open_clone(env, bare)
+    checkout_work(clone)
+    branch = f"job/v5shape-{node_id}"
+    git(clone, "branch", branch, "v5work")
+    item_id = queue_landing(monkeypatch, capsys, node_id, clone)
+    before_work = origin_work_sha(bare)
+    item = folded_tree()[item_id]
+    result = landing.run("v5shape", item, by=SUP)
+    assert not result.ok
+    assert "adds nothing to v5work@" in result.fail_reason
+    assert branch in result.fail_reason
+    assert result.command == ""
+    assert result.exit is None
+    recorded = folded_tree()[item_id]
+    assert recorded["state"] == "failed"
+    assert "adds nothing to v5work@" in recorded["fail_reason"]
+    assert "command" not in recorded
+    assert origin_work_sha(bare) == before_work
+    assert folded_tree()[node_id]["state"] != "landed"
+    assert scratch_left() == []
+
+
+def test_rebase_conflict_names_the_file(env, monkeypatch, capsys):
+    """A conflicting rebase fails naming the file; origin work does not move."""
+    _src, bare, _sha = add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(monkeypatch, capsys, job_id="job-a")
+    clone = open_clone(env, bare)
+    checkout_work(clone)
+    branch = f"job/v5shape-{node_id}"
+    add_job_commit(clone, branch, filename="conflict.txt", body="job\n")
+    git(clone, "checkout", "-q", "v5work")
+    (clone / "conflict.txt").write_text("work\n", encoding="utf-8")
+    git(clone, "add", "conflict.txt")
+    git(clone, "commit", "-qm", "work side")
+    git(clone, "push", "-q", "origin", "v5work")
+    item_id = queue_landing(monkeypatch, capsys, node_id, clone)
+    before_work = origin_work_sha(bare)
+    result = landing.run("v5shape", folded_tree()[item_id], by=SUP)
+    assert not result.ok
+    assert result.fail_reason == "conflict.txt"
+    recorded = folded_tree()[item_id]
+    assert recorded["state"] == "failed"
+    assert recorded["fail_reason"] == "conflict.txt"
+    assert origin_work_sha(bare) == before_work
+    assert folded_tree()[node_id]["state"] != "landed"
+    assert scratch_left() == []
+
+
+def test_red_check_does_not_push(env, monkeypatch, capsys):
+    """A red check fails and origin work does not move."""
+    _src, bare, _sha = add_front(env, monkeypatch, capsys, check="false")
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(monkeypatch, capsys, job_id="job-a")
+    clone = open_clone(env, bare)
+    checkout_work(clone)
+    branch = f"job/v5shape-{node_id}"
+    add_job_commit(clone, branch)
+    item_id = queue_landing(monkeypatch, capsys, node_id, clone)
+    before_work = origin_work_sha(bare)
+    result = landing.run("v5shape", folded_tree()[item_id], by=SUP)
+    assert not result.ok
+    assert result.exit != 0
+    assert result.command == "false"
+    recorded = folded_tree()[item_id]
+    assert recorded["state"] == "failed"
+    assert recorded["exit"] != 0
+    assert recorded["command"] == "false"
+    assert recorded["output_file"]
+    assert Path(recorded["output_file"]).is_file()
+    assert origin_work_sha(bare) == before_work
+    assert folded_tree()[node_id]["state"] != "landed"
+    assert scratch_left() == []
+
+
+def test_dropped_lists_a_commit_already_on_work(env, monkeypatch, capsys):
+    """A commit whose patch is already on work is listed under dropped."""
+    _src, bare, _sha = add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(monkeypatch, capsys, job_id="job-a")
+    clone = open_clone(env, bare)
+    checkout_work(clone)
+    branch = f"job/v5shape-{node_id}"
+    git(clone, "checkout", "-qb", branch)
+    (clone / "shared.txt").write_text("shared\n", encoding="utf-8")
+    git(clone, "add", "shared.txt")
+    git(clone, "commit", "-qm", "shared change")
+    dropped_sha = git(clone, "rev-parse", "HEAD")
+    (clone / "only-job.txt").write_text("job only\n", encoding="utf-8")
+    git(clone, "add", "only-job.txt")
+    git(clone, "commit", "-qm", "job only")
+    git(clone, "checkout", "-q", "v5work")
+    git(clone, "cherry-pick", "-x", dropped_sha)
+    git(clone, "push", "-q", "origin", "v5work")
+    item_id = queue_landing(monkeypatch, capsys, node_id, clone)
+    result = landing.run("v5shape", folded_tree()[item_id], by=SUP)
+    assert result.ok, result.fail_reason
+    assert dropped_sha in result.dropped
+    recorded = folded_tree()[item_id]
+    assert dropped_sha in recorded["dropped"]
+    assert scratch_left() == []
+
+
+def test_second_front_waits_for_the_repository_lock(
+        env, monkeypatch, capsys):
+    """A second front's item on the same repository waits for the lock."""
+    _src, bare, _sha = add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(monkeypatch, capsys, job_id="job-a")
+    clone = open_clone(env, bare)
+    checkout_work(clone)
+    branch = f"job/v5shape-{node_id}"
+    add_job_commit(clone, branch)
+    item_id = queue_landing(monkeypatch, capsys, node_id, clone)
+    lock_path = landing.lock_path_for(str(clone))
+    held = threading.Event()
+    release = threading.Event()
+    finished = threading.Event()
+    outcome: list = []
+
+    def hold():
+        with open(lock_path, "a+b") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            held.set()
+            release.wait(timeout=10)
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+    def do_run():
+        result = landing.run("v5shape", folded_tree()[item_id], by=SUP)
+        outcome.append(result)
+        finished.set()
+
+    holder = threading.Thread(target=hold)
+    holder.start()
+    assert held.wait(timeout=2)
+    runner = threading.Thread(target=do_run)
+    runner.start()
+    time.sleep(0.3)
+    assert not finished.is_set()
+    release.set()
+    runner.join(timeout=30)
+    holder.join(timeout=2)
+    assert finished.is_set()
+    assert outcome and outcome[0].ok, (
+        outcome[0].fail_reason if outcome else "no result")
+    assert scratch_left() == []

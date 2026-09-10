@@ -214,6 +214,16 @@ def merge_check_log_path(session_id: str, merge_id: str) -> Path:
     return session_dir(session_id) / "merges" / f"{merge_id}-check.log"
 
 
+def landing_lock_path(repo_key: str) -> Path:
+    """Per-repository lock for a landing script, under the state directory."""
+    return state_dir() / "land-locks" / repo_key
+
+
+def landing_check_log_path(item_id: str) -> Path:
+    """The check's combined output for one script landing."""
+    return state_dir() / "landings" / f"{item_id}-check.log"
+
+
 def config_file() -> Path:
     return config_dir() / "foreman.toml"
 
