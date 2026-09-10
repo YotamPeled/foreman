@@ -10,7 +10,7 @@ import sys
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
-from . import caller, fronts, milestone, node
+from . import caller, fronts, map as map_mod, milestone, node
 from .caller import Refusal
 
 _MILESTONE_KEYS = (
@@ -28,12 +28,12 @@ def _refuse(violations: list[str]) -> int:
     return Refusal(violations).report()
 
 
-def _call_door(fn, *args, **kwargs) -> tuple[int, str]:
+def _call_door(fn, *args, **kwargs) -> tuple[int, str, str]:
     out = io.StringIO()
     err = io.StringIO()
     with redirect_stdout(out), redirect_stderr(err):
         code = fn(*args, **kwargs)
-    return code, err.getvalue()
+    return code, out.getvalue(), err.getvalue()
 
 
 def _stop(filename: str, lineno: int, err_text: str) -> int:
@@ -154,7 +154,7 @@ def _import_milestones(front: str, records: list[tuple[int, dict]],
                     simulated[nid] = line
             continue
         if existing is not None:
-            code, err = _call_door(
+            code, _out, err = _call_door(
                 milestone.milestone_revise_main, front, nid, "import",
                 title=_str_or_none(line.get("title")),
                 done_when=_str_or_none(line.get("done_when")),
@@ -167,7 +167,7 @@ def _import_milestones(front: str, records: list[tuple[int, dict]],
                 sys.stderr.write(err)
             revised += 1
             continue
-        code, err = _call_door(
+        code, _out, err = _call_door(
             milestone.milestone_add_main, front,
             _str_or_none(line.get("title")),
             _str_or_none(line.get("done_when")),
@@ -273,7 +273,7 @@ def _import_tree(front: str, records: list[tuple[int, dict]],
             continue
         if existing is not None or is_revise:
             reason = str(line.get("reason_revised") or "").strip() or "import"
-            code, err = _call_door(
+            code, _out, err = _call_door(
                 node.node_revise_main, **_node_revise_kwargs(front, line, reason))
             if code != 0:
                 return _stop(filename, lineno, err)
@@ -281,7 +281,7 @@ def _import_tree(front: str, records: list[tuple[int, dict]],
                 sys.stderr.write(err)
             revised += 1
             continue
-        code, err = _call_door(node.node_add_main, **_node_add_kwargs(front, line))
+        code, _out, err = _call_door(node.node_add_main, **_node_add_kwargs(front, line))
         if code != 0:
             return _stop(filename, lineno, err)
         if err:
@@ -290,6 +290,54 @@ def _import_tree(front: str, records: list[tuple[int, dict]],
         if nid:
             simulated[nid] = line
     return new, present, revised
+
+
+def _import_map(front: str, path: Path, seen_at: str, commit: str,
+                dry_run: bool) -> tuple[int, int, int] | int:
+    try:
+        body = path.read_text(encoding="utf-8")
+    except OSError:
+        print(f"foreman: refused: file '{path}' cannot be read", file=sys.stderr)
+        return 1
+    parsed, parse_violations = map_mod._parse_map_md(body, path.name)
+    if parse_violations:
+        print(f"foreman: refused: map.md: {'; '.join(parse_violations)}",
+              file=sys.stderr)
+        return 1
+    if dry_run:
+        _facts, by_id = map_mod._read_facts(front)
+        seen = set(by_id)
+        new = present = 0
+        for fact in parsed:
+            fid = map_mod._import_id(fact["repo"], fact["section"], fact["text"])
+            if fid in seen:
+                present += 1
+            else:
+                new += 1
+                seen.add(fid)
+        return new, present, 0
+    code, out, err = _call_door(
+        map_mod.map_import_main, front, str(path), seen_at, commit)
+    if code != 0:
+        detail = err.strip()
+        prefix = "foreman: refused:"
+        if detail.startswith(prefix):
+            detail = detail[len(prefix):].strip()
+        print(f"foreman: refused: map.md: {detail}", file=sys.stderr)
+        return 1
+    if err:
+        sys.stderr.write(err)
+    imported = present = 0
+    text = out.strip()
+    if text.startswith("imported "):
+        parts = text.split()
+        try:
+            imported = int(parts[1])
+            present = int(parts[3])
+        except (IndexError, ValueError):
+            imported = 0
+            present = 0
+    return imported, present, 0
 
 
 def import_milestones_and_tree(
@@ -322,6 +370,11 @@ def import_milestones_and_tree(
     return counts, 0
 
 
+def _print_counts(counts: dict[str, tuple[int, int, int]]) -> None:
+    for name, (new, present, revised) in counts.items():
+        print(f"{name}: {new} new, {present} present, {revised} revised")
+
+
 def front_import_main(front: str, directory: str | None,
                       seen_at: str | None = None,
                       commit: str | None = None,
@@ -342,6 +395,12 @@ def front_import_main(front: str, directory: str | None,
     dir_path = Path(dir_text) if dir_text else None
     if dir_path is not None and not dir_path.is_dir():
         violations.append(f"directory '{dir_text}' cannot be read")
+    map_path = dir_path / "map.md" if dir_path is not None else None
+    if map_path is not None and map_path.is_file():
+        if not ("" if seen_at is None else str(seen_at).strip()):
+            violations.append("field '--seen-at' is required")
+        if not ("" if commit is None else str(commit).strip()):
+            violations.append("field '--commit' is required")
     if violations:
         return _refuse(violations)
     assert record is not None and dir_path is not None
@@ -349,4 +408,12 @@ def front_import_main(front: str, directory: str | None,
         front_name, dir_path, dry_run=dry_run)
     if code != 0 or counts is None:
         return 1
+    if map_path is not None and map_path.is_file():
+        result = _import_map(
+            front_name, map_path,
+            str(seen_at).strip(), str(commit).strip(), dry_run)
+        if isinstance(result, int):
+            return result
+        counts["map.md"] = result
+    _print_counts(counts)
     return 0
