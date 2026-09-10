@@ -1,4 +1,4 @@
-"""`foreman front add|list|show|queue|prefer|allocate|reserve|release|close`: a brief becomes a front on the ledger.
+"""`foreman front add|list|show|team|queue|prefer|allocate|reserve|release|close`: a brief becomes a front on the ledger.
 
 ``front add <dir>`` reads ``<dir>/brief.toml`` with :mod:`tomllib`, refuses
 with every violation named at once (docs/DESIGN.md section 4.3), and otherwise
@@ -29,6 +29,7 @@ from . import caller, cli, config, entities, ids, monitors, paths, store
 from .pools import plugins as pool_plugins
 from .caller import Refusal
 from .entities import JOB_ROLES
+from .team import TeamEntry, derive_team, format_team_line, record_working_team
 
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]*")
 
@@ -1210,6 +1211,10 @@ def _build_v5(data: dict, name: str,
     )
     front_line = front.to_dict()
     front_line["monitors"] = _monitors_from(data)
+    entries = derive_team(front_line, [], [])
+    if entries:
+        front_line["working_team"] = [entry.to_dict() for entry in entries]
+        front_line["derived_at"] = store.utcnow_iso()
     return front_line, []
 
 
@@ -2025,6 +2030,43 @@ def front_show_main(name: str, as_json: bool = False) -> int:
     return 0
 
 
+def front_team_main(name: str) -> int:
+    """Print the derived working team, one line per role, and record it.
+
+    The owner, the foreman, and the front's own supervisor may read it.
+    Derives from the current tree and map so a queued front that has
+    grown a tree shows the live count, then writes ``working_team``.
+    """
+    from . import team as team_mod
+
+    verb = "front team"
+    me, violations = caller.resolve(verb)
+    key = (name or "").strip()
+    if not key:
+        violations.append("field 'name' is required")
+    record = read_front_record(key) if key else None
+    if key and record is None:
+        violations.append(f"unknown front '{key}'")
+    if me is not None and me.role == caller.SUPERVISOR:
+        caller.check_front_supervisor(me, key or None, verb,
+                                      violations=violations)
+    else:
+        caller.check_role(me, verb, caller.FOREMAN, violations=violations)
+    if violations:
+        return Refusal(violations).report()
+    assert record is not None
+    tree = team_mod.load_tree(key)
+    facts = team_mod.load_facts(key)
+    entries = derive_team(record, tree, facts)
+    updated = record_working_team(
+        key, record, tree=tree, facts=facts, who=caller.by_line(me))
+    if updated is not None:
+        record = updated
+    for entry in entries:
+        print(format_team_line(entry))
+    return 0
+
+
 def front_import_main(front: str, directory: str | None,
                       seen_at: str | None = None,
                       commit: str | None = None,
@@ -2167,6 +2209,9 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     show.add_argument("name", help="front name")
     show.add_argument("--json", dest="as_json", action="store_true",
                       help="print the folded front line as JSON")
+    team = verbs.add_parser(
+        "team", help="Print the derived working team with reasons.")
+    team.add_argument("name", help="front name")
     prefer = verbs.add_parser("prefer", help="Set a front's queue preference.")
     prefer.add_argument("name", help="front name")
     prefer.add_argument("prefer", help="new preference (integer)")
@@ -2231,7 +2276,7 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
                       help="repository name (default: the first)")
 
 
-@cli.subcommand("front", help="Add, list, show, queue, policy, land, prefer, allocate, "
+@cli.subcommand("front", help="Add, list, show, team, queue, policy, land, prefer, allocate, "
                      "reserve, release, stop, resume, close, take, import or mark a "
                      "front done.")
 def _front_entry(args: argparse.Namespace) -> int:
@@ -2244,6 +2289,8 @@ def _front_entry(args: argparse.Namespace) -> int:
         return front_queue_main()
     if args.front_verb == "show":
         return front_show_main(args.name, as_json=args.as_json)
+    if args.front_verb == "team":
+        return front_team_main(args.name)
     if args.front_verb == "prefer":
         return front_prefer_main(args.name, args.prefer)
     if args.front_verb == "allocate":

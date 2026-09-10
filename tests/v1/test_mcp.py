@@ -40,14 +40,14 @@ PANEL_BRIEF = ROOT / "briefs" / "panel"
 #: disagreeing with the table.
 SUPERVISOR_TOOLS = frozenset({
     "ask", "attach", "check_flake", "checkpoint", "doctor", "evidence", "finding",
-    "front_done", "front_import", "front_policy", "front_show", "front_take", "job_cancel", "job_edit", "job_fail", "job_front", "job_land", "job_list", "job_queue", "job_repoint", "job_retry", "job_verify", "kill", "launch", "map_add", "map_import", "map_resolve", "map_show", "measure", "merge_request", "milestone_add", "milestone_list", "milestone_merge", "milestone_split", "node_add", "node_list", "node_prove", "node_revise", "pool_list", "register", "relaunch", "resource_list", "rule",
+    "front_done", "front_import", "front_policy", "front_show", "front_take", "front_team", "job_cancel", "job_edit", "job_fail", "job_front", "job_land", "job_list", "job_queue", "job_repoint", "job_retry", "job_verify", "kill", "launch", "map_add", "map_import", "map_resolve", "map_show", "measure", "merge_request", "milestone_add", "milestone_list", "milestone_merge", "milestone_split", "node_add", "node_list", "node_prove", "node_revise", "pool_list", "register", "relaunch", "resource_list", "rule",
     "status", "task_add", "task_built", "task_landed", "task_reset", "turn",
     "version", "wait", "wake",
 })
 #: The foreman role's own row: answers and rules, never front or job verbs.
 FOREMAN_TOOLS = frozenset({
     "answer", "attach", "checkpoint", "doctor", "front_allocate",
-    "front_land", "front_policy", "front_queue", "front_release", "front_reserve", "front_resume", "front_show", "front_stop", "inbox", "kill", "launch", "map_show", "pool_clear", "pool_list", "register", "relaunch",
+    "front_land", "front_policy", "front_queue", "front_release", "front_reserve", "front_resume", "front_show", "front_stop", "front_team", "inbox", "kill", "launch", "map_show", "pool_clear", "pool_list", "register", "relaunch",
     "resource_list", "rule",
     "status",
     "tell", "turn", "version", "wait", "wake",
@@ -170,7 +170,8 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     # (an owner verb: every session role is refused it); plus front queue
     # from the front-queue job.
     # (an owner verb: every session role is refused it); plus front queue,
-    # stop and resume from the front-queue job.
+    # stop and resume from the front-queue job; plus front team from the
+    # working-team job.
     # Counted, not derived, so a verb added without intent fails here.
     assert len(names) == 82
 

@@ -107,6 +107,11 @@ class Front(Entity):
     #: files one; kept after the answer so a second tick does not ask
     #: again.
     quota_ask: dict = field(default_factory=dict)
+    #: Decision 31: the derived working team (not the owner's ceiling).
+    working_team: list = field(default_factory=list)
+    #: When ``working_team`` was last written (queued, or a milestone
+    #: landed).
+    derived_at: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -127,6 +132,10 @@ class Front(Entity):
             data.pop("stop_reason", None)
         if not data.get("quota_ask"):
             data.pop("quota_ask", None)
+        if not data.get("working_team"):
+            data.pop("working_team", None)
+        if not data.get("derived_at"):
+            data.pop("derived_at", None)
         return data
 
 

@@ -397,6 +397,9 @@ def node_revise_main(
     line["by"] = who
     store.append_ledger(
         paths.front_tree_path(front_name), line, session_id=who)
+    if (str(existing.get("kind") or "") == "milestone"
+            and state_text == "landed"):
+        fronts.record_working_team(front_name, who=who)
     print(nid)
     return 0
 
