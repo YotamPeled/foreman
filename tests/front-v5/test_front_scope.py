@@ -12,7 +12,7 @@ from datetime import datetime, timezone
 import pytest
 
 from foreman import caller as caller_module
-from foreman import capacity, cli, entities, ids, paths, store
+from foreman import capacity, cli, entities, ids, mcp as mcp_module, paths, store
 from foreman.caller import FOREMAN, OWNER, SESSION_ENV, SUPERVISOR
 from foreman.status import NOW_ENV
 
@@ -266,3 +266,43 @@ def test_resource_list_hides_another_fronts_holders(
     owner = capsys.readouterr().out
     assert f"  {OWN} job-own" in owner
     assert f"  {OTHER} job-orb" in owner
+
+
+def _front_argument(tool: dict) -> dict:
+    """Arguments that aim a read tool at the foreign front, or {}."""
+    props = tool.get("inputSchema", {}).get("properties", {})
+    arguments: dict = {}
+    if "action" in props:
+        arguments["action"] = "list"
+    if "front" in props:
+        arguments["front"] = OTHER
+    elif "name" in props:
+        arguments["name"] = OTHER
+    if "repo" in props:
+        arguments["repo"] = "foreman"
+    return arguments
+
+
+def test_supervisor_mcp_reads_say_own_front_and_refuse_a_foreign_one(
+        env, monkeypatch, capsys):
+    """The supervisor row's read verbs name own front and refuse orbit."""
+    two_fronts()
+    monkeypatch.setenv(SESSION_ENV, SUP)
+    tools = mcp_module.tools_for("supervisor")
+    stamped = [tool for tool in tools
+               if "own front" in (tool.get("description") or "")]
+    names = {tool["name"] for tool in stamped}
+    assert names == set(mcp_module.OWN_FRONT_READS)
+    expected = f"front '{OTHER}' is not yours ({OWN})"
+    walked = []
+    for tool in stamped:
+        arguments = _front_argument(tool)
+        if "front" not in arguments and "name" not in arguments:
+            continue
+        walked.append(tool["name"])
+        text, failed = mcp_module.call_tool(tool["name"], arguments)
+        assert failed is True, tool["name"]
+        assert expected in text, (tool["name"], text)
+    assert set(walked) == set(mcp_module.OWN_FRONT_READS) - {
+        "resource_list", "status",
+    }

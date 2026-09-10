@@ -34,8 +34,16 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 
 from . import caller, cli, paths
-from .caller import SESSION_ENV
+from .caller import SESSION_ENV, SUPERVISOR
 from .cli import subcommand
+
+#: Read verbs a supervisor may call only about its own front. Their
+#: tool descriptions say so, so the row and the door cannot drift.
+OWN_FRONT_READS = frozenset({
+    "map_show", "milestone_list", "node_list", "job_list",
+    "front_show", "front_policy", "evidence", "resource_list",
+    "status",
+})
 
 #: Name under ``mcpServers`` and in ``mcp__<server>__<tool>``.
 SERVER_NAME = "foreman"
@@ -360,17 +368,34 @@ def list_tools() -> list[dict]:
     return tools
 
 
+def _own_front_description(text: str) -> str:
+    if "own front" in text:
+        return text
+    return text.rstrip(".") + " (own front)."
+
+
 def tools_for(role: str | None) -> list[dict]:
     """The tools ``role`` may call.
 
     None is the owner: every tool. Any other string filters by the
     gates, so an unknown session (or a worker, which holds no verb)
-    keeps only the open ones.
+    keeps only the open ones. A supervisor's read verbs say
+    ``own front`` in the description.
     """
     if role is None:
         return list_tools()
-    return [tool for tool in list_tools()
-            if tool["roles"] is None or role in tool["roles"]]
+    tools = [tool for tool in list_tools()
+             if tool["roles"] is None or role in tool["roles"]]
+    if role != SUPERVISOR:
+        return tools
+    stamped: list[dict] = []
+    for tool in tools:
+        if tool["name"] in OWN_FRONT_READS:
+            tool = dict(tool)
+            tool["description"] = _own_front_description(
+                tool.get("description") or "")
+        stamped.append(tool)
+    return stamped
 
 
 def resolve_role() -> tuple[str | None, bool]:
