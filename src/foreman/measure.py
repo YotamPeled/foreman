@@ -82,15 +82,21 @@ def measure_main(front: str, monitor: str, value: str | None,
     assert number is not None
     who = caller.by_line(me)
     canonical = str(declared.get("measure") or "").strip() or monitor_name
+    from . import ids, progress as progress_mod
+
+    head, base = progress_mod._binding_shas(front_name, None)
     store.append_ledger(
         paths.front_measurements_path(front_name),
         entities.Measurement(
+            id=ids.mint("measurement"),
             monitor=canonical,
             value=number,
             of=denominator,
             status="",
             command=(command or "").strip(),
             output_ref=(output or "").strip(),
+            head=head,
+            base=base,
         ).to_dict(),
         session_id=who,
     )

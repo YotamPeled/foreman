@@ -336,6 +336,7 @@ class Ruling(Entity):
 
 @dataclass(frozen=True)
 class Evidence(Entity):
+    id: str | None = None
     on: str = ""
     claim: str = ""
     status: str = ""
@@ -346,6 +347,21 @@ class Evidence(Entity):
     #: which piece: without it, evidence from a probe job and evidence from
     #: the front's own work read identically on the ledger.
     spec_path: str = ""
+    #: Sha of the job branch this line ran on. Empty on old-front lines.
+    head: str = ""
+    #: Sha of the front's contracted base this line sat on. Empty on
+    #: old-front lines. A line with neither head nor base is unbound.
+    base: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        data = super().to_dict()
+        if not data.get("id"):
+            data.pop("id", None)
+        if not data.get("head"):
+            data.pop("head", None)
+        if not data.get("base"):
+            data.pop("base", None)
+        return data
 
 
 @dataclass(frozen=True)
@@ -362,12 +378,27 @@ class Finding(Entity):
 
 @dataclass(frozen=True)
 class Measurement(Entity):
+    id: str | None = None
     monitor: str = ""
     value: float = 0.0
     of: float | None = None
     status: str = ""
     command: str = ""
     output_ref: str = ""
+    #: Sha of the head this measurement ran on. Empty on old-front lines.
+    head: str = ""
+    #: Sha of the front's contracted base this measurement sat on.
+    base: str = ""
+
+    def to_dict(self) -> dict[str, Any]:
+        data = super().to_dict()
+        if not data.get("id"):
+            data.pop("id", None)
+        if not data.get("head"):
+            data.pop("head", None)
+        if not data.get("base"):
+            data.pop("base", None)
+        return data
 
 
 @dataclass(frozen=True)

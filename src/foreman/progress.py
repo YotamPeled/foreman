@@ -626,18 +626,26 @@ def job_verify_main(job_id: str, confirmed: bool,
         extra = f" output: {copied}"
     else:
         output_ref = output_text
+    bind_head, bind_base = _binding_shas(front, record)
+    if run and head:
+        bind_head = head
     store.append_ledger(
         paths.front_evidence_path(front),
-        entities.Evidence(on=key, claim=f"job '{key}' verified",
+        entities.Evidence(id=ids.mint("evidence"),
+                          on=key, claim=f"job '{key}' verified",
                           status=CONFIRMED, command=command_text,
                           output_ref=output_ref,
-                          spec_path=str(record.get("spec_path") or "")
-                          ).to_dict(),
+                          spec_path=str(record.get("spec_path") or ""),
+                          head=bind_head, base=bind_base).to_dict(),
         session_id=who,
     )
     # The `--because` sentence travels on the job line, so the screen can
     # show why a job that died still counted.
     revised = dict(record, state="verified", verified_at=now, **run_fields)
+    if bind_head:
+        revised["head"] = bind_head
+    if bind_base:
+        revised["base"] = bind_base
     if because_text:
         revised["verify_because"] = because_text
     store.append_ledger(paths.front_jobs_path(front), revised,
@@ -1002,6 +1010,111 @@ def task_landed_main(task_ref: str, head: str | None = None) -> int:
     return 0
 
 
+def _front_contracted_base(front: str) -> str:
+    """The sha a v5 front last recorded as its base, or empty.
+
+    Top-level ``base_sha`` wins; otherwise the first repository that
+    recorded one. Old fronts carry neither.
+    """
+    record = fronts.read_front_record(front) if front else None
+    if not isinstance(record, dict):
+        return ""
+    sha = record.get("base_sha")
+    if isinstance(sha, str) and sha.strip():
+        return sha.strip()
+    repos = record.get("repositories")
+    if not isinstance(repos, list):
+        return ""
+    for repo in repos:
+        if not isinstance(repo, dict):
+            continue
+        sha = repo.get("base_sha")
+        if isinstance(sha, str) and sha.strip():
+            return sha.strip()
+    return ""
+
+
+def _binding_shas(front: str, job_record: dict | None) -> tuple[str, str]:
+    """Head and base shas for an evidence-like line on ``front``.
+
+    Head is the job's branch sha when a job is in hand; base is the
+    front's contracted checkout. Either may be empty: a line with
+    neither is unbound.
+    """
+    base = _front_contracted_base(front)
+    head = ""
+    if job_record is not None:
+        stored = job_record.get("head")
+        if isinstance(stored, str) and stored.strip():
+            head = stored.strip()
+        else:
+            repo = _job_repository(job_record)
+            resolved, _err = _job_head(job_record, repo)
+            if resolved:
+                head = resolved
+    return head, base
+
+
+def _binding_label(line: dict) -> str:
+    """``bound <head7>/<base7>``, ``unbound``, or a later stale label."""
+    stale = str(line.get("stale") or "").strip()
+    if stale:
+        return f"stale (base moved to {stale[:7]})"
+    head = str(line.get("head") or "").strip()
+    base = str(line.get("base") or "").strip()
+    if head and base:
+        return f"bound {head[:7]}/{base[:7]}"
+    return "unbound"
+
+
+def _evidence_records(front: str) -> list[dict]:
+    """Evidence lines in ledger order, last-wins by id, old unbound kept."""
+    try:
+        raw = store.read_ledger(paths.front_evidence_path(front))
+    except OSError:
+        return []
+    folded = store.fold_by_id(raw)
+    by_id = {row["id"]: row for row in folded
+             if isinstance(row.get("id"), str)}
+    seen: set[str] = set()
+    ordered: list[dict] = []
+    for line in raw:
+        if not isinstance(line, dict):
+            continue
+        rid = line.get("id")
+        if isinstance(rid, str) and rid:
+            if rid in seen:
+                continue
+            seen.add(rid)
+            ordered.append(by_id.get(rid, line))
+        else:
+            ordered.append(line)
+    return ordered
+
+
+def evidence_list_main(front: str) -> int:
+    """Print each evidence line as bound, unbound, or stale."""
+    verb = "evidence list"
+    me, violations = caller.resolve(verb)
+    key = (front or "").strip()
+    if not key:
+        violations.append("field 'front' is required")
+    record = fronts.read_front_record(key) if key else None
+    if key and record is None:
+        violations.append(f"unknown front '{key}'")
+    _check(me, key or None, verb, violations)
+    if violations:
+        return _refuse(violations)
+    lines = []
+    for line in _evidence_records(key):
+        on = line.get("on") or ""
+        claim = line.get("claim") or ""
+        lines.append(f"{on}  {claim}  {_binding_label(line)}")
+    if lines:
+        print("\n".join(lines))
+    return 0
+
+
 def evidence_main(on: str, claim: str, status: str,
                   command: str | None = None,
                   output: str | None = None) -> int:
@@ -1039,11 +1152,14 @@ def evidence_main(on: str, claim: str, status: str,
             stored_on = task_record.get("id") or key
     caller.check_self_contained(text, "evidence claim")
     who = caller.by_line(me)
+    head, base = _binding_shas(front, job_record)
     stored = store.append_ledger(
         paths.front_evidence_path(front),
-        entities.Evidence(on=stored_on, claim=text, status=state,
+        entities.Evidence(id=ids.mint("evidence"),
+                          on=stored_on, claim=text, status=state,
                           command=(command or "").strip(),
-                          output_ref=(output or "").strip()).to_dict(),
+                          output_ref=(output or "").strip(),
+                          head=head, base=base).to_dict(),
         session_id=who,
     )
     print(f"evidence on {stored_on}")
@@ -2094,6 +2210,10 @@ _task_entry.add_arguments = add_task_arguments  # type: ignore[attr-defined]
 
 
 def add_evidence_arguments(sub: argparse.ArgumentParser) -> None:
+    sub.add_argument("action", nargs="?", default=None,
+                     help="list: print each line as bound, unbound or stale")
+    sub.add_argument("front", nargs="?", default=None,
+                     help="front to list (required with list)")
     sub.add_argument("--on", default=None,
                      help="task id or title, job id, or front (required)")
     sub.add_argument("--claim", default=None, help="what was found (required)")
@@ -2107,6 +2227,11 @@ def add_evidence_arguments(sub: argparse.ArgumentParser) -> None:
 
 @cli.subcommand("evidence", help="Append an evidence record.")
 def _evidence_entry(args: argparse.Namespace) -> int:
+    action = (args.action or "").strip()
+    if action == "list":
+        return evidence_list_main(args.front)
+    if action:
+        return _refuse([f"unknown evidence action '{action}'"])
     return evidence_main(args.on, args.claim, args.status,
                          command=args.command, output=args.output)
 
