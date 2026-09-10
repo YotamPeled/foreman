@@ -1030,7 +1030,7 @@ def evidence_main(on: str, claim: str, status: str,
             stored_on = task_record.get("id") or key
     caller.check_self_contained(text, "evidence claim")
     who = caller.by_line(me)
-    store.append_ledger(
+    stored = store.append_ledger(
         paths.front_evidence_path(front),
         entities.Evidence(on=stored_on, claim=text, status=state,
                           command=(command or "").strip(),
@@ -1038,6 +1038,7 @@ def evidence_main(on: str, claim: str, status: str,
         session_id=who,
     )
     print(f"evidence on {stored_on}")
+    print(f"build {store.record_build_commit(stored)}")
     return 0
 
 

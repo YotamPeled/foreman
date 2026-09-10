@@ -766,6 +766,37 @@ def _finding_line(finding: dict) -> str:
     return f"      {title}"
 
 
+def _front_base_sha(front_record: dict | None) -> str:
+    """The checkout a v5 front contracted, or empty when none is recorded.
+
+    A top-level ``base_sha`` wins; otherwise the first repository that
+    recorded one. Old fronts carry neither and never mark evidence.
+    """
+    if not isinstance(front_record, dict):
+        return ""
+    sha = front_record.get("base_sha")
+    if isinstance(sha, str) and sha:
+        return sha
+    repos = front_record.get("repositories")
+    if not isinstance(repos, list):
+        return ""
+    for repo in repos:
+        if not isinstance(repo, dict):
+            continue
+        sha = repo.get("base_sha")
+        if isinstance(sha, str) and sha:
+            return sha
+    return ""
+
+
+def _evidence_line(record: dict, base_sha: str) -> str:
+    """One evidence line, with the other-build marker when it does not
+    match the front's contracted checkout."""
+    claim = _one_line(record.get("claim") or "")
+    marker = store.other_build_marker(record, base_sha)
+    return f"      {claim}{marker}"
+
+
 def _working(roster: dict, observed: dict | None, now: datetime,
              loaded: list[tuple[str, list[dict], list[dict]]],
              inbox: list[dict]) -> list[str]:
@@ -828,9 +859,17 @@ def _working(roster: dict, observed: dict | None, now: datetime,
         if evidence or findings:
             confirmed = sum(1 for line in evidence
                             if line.get("status") == "CONFIRMED")
+            base_sha = _front_base_sha(front_record)
+            other = sum(1 for line in evidence
+                        if store.other_build_marker(line, base_sha))
+            confirmed_bit = f"{confirmed} confirmed"
+            if other:
+                confirmed_bit += f", {other} from another build"
             lines.append(f"    evidence: {len(evidence)} "
-                         f"({confirmed} confirmed) "
+                         f"({confirmed_bit}) "
                          f"\u00b7 findings: {len(findings)}")
+            for line in evidence:
+                lines.append(_evidence_line(line, base_sha))
             for finding in findings:
                 lines.append(_finding_line(finding))
         lines.extend(_monitor_lines(name, front_record, tasks, roster,

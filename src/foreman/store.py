@@ -49,6 +49,27 @@ def current_build() -> dict[str, str]:
     return dict(_BUILD)
 
 
+def record_build_commit(record: dict) -> str:
+    """The ``build.commit`` on a ledger line, or ``""`` when it has none."""
+    build = record.get("build")
+    if not isinstance(build, dict):
+        return ""
+    commit = build.get("commit")
+    return commit if isinstance(commit, str) else ""
+
+
+def other_build_marker(record: dict, base_sha: str) -> str:
+    """Suffix when this line's build is not the contracted checkout.
+
+    Empty when the line has no build, an empty commit, or matches
+    ``base_sha``. Status and the other evidence readers append this.
+    """
+    commit = record_build_commit(record)
+    if not commit or not base_sha or commit == base_sha:
+        return ""
+    return f" \u00b7 build {commit[:7]} \u2260 base"
+
+
 #: Set by every write below, read and cleared by the caller that refreshes
 #: the panel's summary on its way out (see :mod:`foreman.panel_feed`). A verb
 #: that only read — a dry run, a status, a refusal — leaves it false and
