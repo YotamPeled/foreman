@@ -38,9 +38,11 @@ the file until every answer exists.
    plus `supervisor` as `agent:effort`. From
    `docs/knowledge/team-calibration.md`:
 
+<!-- derived: team-calibration.md#team-calibration -->
 The owner's team line on a front is the ceiling. The foreman derives the WORKING team from the map and
 the tree, records the derivation on the front, and adjusts it on the signals below. The owner is asked
 only when the derivation needs more than the quota.
+<!-- /derived -->
 
    Write the owner's line as that ceiling. Do not derive the working team;
    the foreman does that later from the map and the tree.

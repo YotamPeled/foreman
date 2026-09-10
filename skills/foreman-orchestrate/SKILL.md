@@ -27,6 +27,17 @@ answer yourself. Every owner-facing line you write is self-contained — a
 digest sentence, an inbox relay, a ruling carries what it needs, no code
 names, no ids the owner did not introduce (§9 rule 14).
 
+## Team assignment
+
+<!-- derived: team-calibration.md#team-calibration -->
+<!-- /derived -->
+
+<!-- derived: team-calibration.md#the-count -->
+<!-- /derived -->
+
+<!-- derived: team-calibration.md#the-model -->
+<!-- /derived -->
+
 ## Step 1 — Admission: launch whose time has come (§3 Foreman; §14 flow 1)
 
 A front is admitted when its `after` fronts are done and its allocation fits.

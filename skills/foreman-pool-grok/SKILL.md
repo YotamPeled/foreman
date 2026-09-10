@@ -8,6 +8,11 @@ description: Spec for the grok pool — implement workers and read-only reviewer
 Pool `grok`, model `grok-4.6`. Serves the `grok` role: implement work and
 reviews. A review job on this pool runs read-only.
 
+## Grok 4.6 (high) — builder
+
+<!-- derived: models.md#grok-4.6 -->
+<!-- /derived -->
+
 ## What this model is for
 
 Implement work, including vague jobs other pools want specified precisely,

@@ -8,6 +8,11 @@ description: Spec for the codex pool — astra reviewers for second reads. Unit 
 Pool `codex`, model `gpt-6-astra`. Serves the `astra` reviewer role. This
 pool exists for second reads, not for building.
 
+## Astra 6 (gpt-6-astra, low/medium) — executing reviewer; contract adjudicator
+
+<!-- derived: models.md#astra-6 -->
+<!-- /derived -->
+
 ## What this model is for
 
 Reviews: hand it a branch to judge, with the check that decides pass or

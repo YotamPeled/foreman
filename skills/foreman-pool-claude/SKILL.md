@@ -9,6 +9,11 @@ Pool `claude`, model `claude-opus-5`. Serves the `opus` worker role (core
 logic and cut-throat engineering), plus `supervisor` and `foreman`
 sessions. The only pool that takes core-logic work.
 
+## Opus 5 (high) — supervisor, backup builder
+
+<!-- derived: models.md#opus-5 -->
+<!-- /derived -->
+
 ## What this model is for
 
 Core-logic slices a default worker cannot carry alone, precision

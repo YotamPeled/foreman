@@ -19,6 +19,16 @@ evidence: its output is PLAUSIBLE until your own run of the verification
 command says otherwise. Only verified jobs count units toward a task. A
 task you cannot verify is not done.
 
+## Signals during a front
+
+<!-- derived: team-calibration.md#signals-during-a-front -->
+<!-- /derived -->
+
+## Verification: what counts as proof
+
+<!-- derived: verification.md#verification -->
+<!-- /derived -->
+
 ## Step 1 — Launch: attach and checkpoint
 
 Read, in order: the swarm rulings, the front rulings, the brief, the front

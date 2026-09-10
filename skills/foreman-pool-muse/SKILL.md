@@ -8,6 +8,11 @@ description: Spec for the muse pool — default implement workers. Unit size, ti
 Pool `muse`, model `muse-spark-1.3-contributor`. Serves the `muse` worker
 role: the default implement pool for everything that is not core logic.
 
+## Muse (spark-1.3, high/xhigh) — builder for mechanical leaves
+
+<!-- derived: models.md#muse -->
+<!-- /derived -->
+
 ## What this model is for
 
 Collectors, labelers, fixtures, tests, re-checks, doc and release commits,
