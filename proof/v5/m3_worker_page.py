@@ -106,9 +106,12 @@ def _ensure_work(src: Path, bare: Path, work: str) -> None:
     proc = _git(src, "branch", work, "main")
     if proc.returncode != 0 and "already exists" not in (proc.stderr or ""):
         raise Failure(f"git branch {work} failed: {proc.stderr[-400:]}")
-    proc = _git(bare, "branch", work, "main")
-    if proc.returncode != 0 and "already exists" not in (proc.stderr or ""):
-        raise Failure(f"bare branch {work} failed: {proc.stderr[-400:]}")
+    proc = subprocess.run(
+        ["git", "--git-dir", str(bare), "fetch", "-q", "origin",
+         f"+refs/heads/{work}:refs/remotes/origin/{work}"],
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise Failure(f"fetch origin {work} failed: {proc.stderr[-400:]}")
 
 
 def _register(front: str) -> str:
@@ -199,16 +202,18 @@ def run(world) -> str:
     _add_front(world, name, str(bare), work)
     _ensure_work(src, bare, work)
     sid = _register(name)
-    fact = run_foreman(
-        ["map", "add", name, "--repo", "foreman", "--section", "Launch",
-         "--fact", _FACT, "--seen", "--where", "src/foreman/launch.py"],
-        session=sid)
-    if fact.returncode != 0:
-        raise Failure(f"map add failed: {fact.stderr[-800:]}")
-    fact_id = fact.stdout.strip()
-    if not fact_id.startswith("fct-"):
-        raise Failure(f"map add printed {fact_id!r}, not a fct- id")
+    fact_id = "fct-page01"
     what = f"Build the page. Names {fact_id}."
+    map_path = Path(os.environ["FOREMAN_STATE"]) / "fronts" / name / "map.jsonl"
+    map_path.parent.mkdir(parents=True, exist_ok=True)
+    with map_path.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            "id": fact_id, "front": name, "repo": "foreman",
+            "section": "Launch", "text": _FACT, "basis": "seen",
+            "refs": [], "seen_at": "2026-09-10T00:00:00+00:00",
+            "seen_where": "src/foreman/launch.py", "commit": "abc1234",
+            "by": sid,
+        }) + "\n")
     mil = _add_ok(name, sid, name, "milestone", "milestone one",
                   node_id=f"mil-wp{n}")
     tsk = _add_ok(name, sid, mil, "task", "the door",

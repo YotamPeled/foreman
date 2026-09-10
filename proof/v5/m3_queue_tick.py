@@ -101,9 +101,12 @@ def _ensure_work(src: Path, bare: Path, work: str) -> None:
     proc = _git(src, "branch", work, "main")
     if proc.returncode != 0 and "already exists" not in (proc.stderr or ""):
         raise Failure(f"git branch {work} failed: {proc.stderr[-400:]}")
-    proc = _git(bare, "branch", work, "main")
-    if proc.returncode != 0 and "already exists" not in (proc.stderr or ""):
-        raise Failure(f"bare branch {work} failed: {proc.stderr[-400:]}")
+    proc = subprocess.run(
+        ["git", "--git-dir", str(bare), "fetch", "-q", "origin",
+         f"+refs/heads/{work}:refs/remotes/origin/{work}"],
+        capture_output=True, text=True)
+    if proc.returncode != 0:
+        raise Failure(f"fetch origin {work} failed: {proc.stderr[-400:]}")
 
 
 def _register(front: str) -> str:
