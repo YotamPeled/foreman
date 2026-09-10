@@ -173,7 +173,7 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     # (an owner verb: every session role is refused it); plus front queue,
     # stop and resume from the front-queue job.
     # Counted, not derived, so a verb added without intent fails here.
-    assert len(names) == 80
+    assert len(names) == 81
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):
