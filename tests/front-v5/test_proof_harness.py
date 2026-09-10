@@ -76,7 +76,7 @@ def _clause_lines(out: str, prefix: str) -> list[str]:
 
 
 def test_v5_list_prints_exactly_one_clause_0_1():
-    proc = run_proof("v5", "--list", compare_env=True)
+    proc = run_proof("v5", "--milestone", "0", "--list", compare_env=True)
     assert proc.returncode == 0, proc.stderr
     lines = _clause_lines(proc.stdout, "CLAUSE 0.1")
     assert len(lines) == 1, proc.stdout
