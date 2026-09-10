@@ -4,12 +4,14 @@
 front's own supervisor (or the owner at a terminal) may write. The door
 refuses every violation at once and names each rejected field.
 ``node revise`` appends a revised copy with ``op = revise``. The ledger
-is append-only and folded last-wins on read.
+is append-only and folded last-wins on read. ``node list`` prints the
+fold indented by depth.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 
 from . import caller, cli, entities, fronts, ids, paths, store
 from .caller import Refusal
@@ -322,6 +324,117 @@ def node_revise_main(
     return 0
 
 
+def _children_of(folded: list[dict]) -> dict[object, list[dict]]:
+    children: dict[object, list[dict]] = {}
+    for node in folded:
+        children.setdefault(node.get("parent"), []).append(node)
+    return children
+
+
+def _walk_tree(folded: list[dict], front_name: str,
+               under: str | None = None
+               ) -> tuple[list[tuple[dict, int]] | None, dict[str, dict]]:
+    """Preorder (node, depth) pairs. None means ``under`` is unknown."""
+    by_id = {record["id"]: record for record in folded
+             if isinstance(record.get("id"), str)}
+    children = _children_of(folded)
+
+    def emit(node: dict, depth: int) -> list[tuple[dict, int]]:
+        rows = [(node, depth)]
+        nid = node.get("id")
+        for child in children.get(nid, []):
+            rows.extend(emit(child, depth + 1))
+        return rows
+
+    if under is not None:
+        root = by_id.get(under)
+        if root is None:
+            return None, by_id
+        depth = _depth_of(under, by_id, front_name)
+        return emit(root, depth), by_id
+
+    placed: set[str] = set()
+    rows: list[tuple[dict, int]] = []
+
+    def mark(node: dict) -> None:
+        nid = node.get("id")
+        if isinstance(nid, str):
+            placed.add(nid)
+        for child in children.get(nid, []):
+            mark(child)
+
+    for root in children.get(front_name, []):
+        rows.extend(emit(root, 1))
+        mark(root)
+    for node in folded:
+        nid = node.get("id")
+        if isinstance(nid, str) and nid not in placed:
+            rows.extend(emit(node, 1))
+            mark(node)
+    return rows, by_id
+
+
+def _job_counts(task_id: object, children: dict[object, list[dict]]
+                ) -> tuple[int, int]:
+    """Landed job children over all job children of a task."""
+    jobs = [child for child in children.get(task_id, [])
+            if child.get("kind") == "job"]
+    landed = sum(1 for job in jobs if job.get("state") == "landed")
+    return landed, len(jobs)
+
+
+def _format_node(node: dict, depth: int,
+                 children: dict[object, list[dict]]) -> str:
+    indent = "  " * max(depth - 1, 0)
+    line = f"{indent}{node.get('id')}  {node.get('kind')}  {node.get('title')}"
+    if node.get("kind") == "task":
+        landed, total = _job_counts(node.get("id"), children)
+        line = f"{line}  {landed}/{total}"
+    return line
+
+
+def node_list_main(front: str, under: str | None = None,
+                   as_json: bool = False) -> int:
+    verb = "node list"
+    me, violations = caller.resolve(verb)
+    front_name = (front or "").strip()
+    if not front_name:
+        violations.append("field 'front' is required")
+    record = fronts.read_front_record(front_name) if front_name else None
+    if front_name and record is None:
+        violations.append(f"unknown front '{front_name}'")
+    caller.check_front_supervisor(me, front_name or None, verb,
+                                  violations=violations)
+    under_id = None if under is None else str(under).strip()
+    if under is not None and not under_id:
+        violations.append("field '--under' is required")
+        under_id = None
+    folded: list[dict] = []
+    rows = None
+    if record is not None and not violations:
+        folded, _by_id = _read_nodes(front_name)
+        rows, _ = _walk_tree(folded, front_name, under=under_id)
+        if under_id and rows is None:
+            violations.append(
+                f"field '--under' names unknown node '{under_id}'")
+    if violations:
+        return _refuse(violations)
+    assert record is not None and rows is not None
+    if as_json:
+        if under_id:
+            print(json.dumps([node for node, _depth in rows]))
+        else:
+            print(json.dumps(folded))
+        return 0
+    if not rows:
+        print("(no tree yet)")
+        return 0
+    children = _children_of(folded)
+    print("\n".join(_format_node(node, depth, children)
+                    for node, depth in rows))
+    return 0
+
+
 def add_node_arguments(sub: argparse.ArgumentParser) -> None:
     verbs = sub.add_subparsers(dest="node_verb", required=True)
     add = verbs.add_parser("add", help="Append a node to the front's tree.")
@@ -390,6 +503,13 @@ def add_node_arguments(sub: argparse.ArgumentParser) -> None:
                         help="mark the node mechanical")
     revise.add_argument("--state", default=None,
                         help="set state (landed, until landing lands)")
+    listing = verbs.add_parser(
+        "list", help="Print the front's folded tree.")
+    listing.add_argument("front", help="front whose tree to print")
+    listing.add_argument("--under", default=None,
+                         help="restrict to this node and its descendants")
+    listing.add_argument("--json", dest="as_json", action="store_true",
+                         help="print the folded list as JSON")
 
 
 @cli.subcommand("node", help="Write or read the front's tree.")
@@ -410,6 +530,9 @@ def _node_entry(args: argparse.Namespace) -> int:
             scope=args.scope, role=args.role, after=args.after,
             source=args.source, mechanical=args.mechanical,
             state=args.state)
+    if args.node_verb == "list":
+        return node_list_main(args.front, under=args.under,
+                              as_json=args.as_json)
     raise AssertionError(f"unknown node verb {args.node_verb!r}")
 
 
