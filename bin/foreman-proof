@@ -947,6 +947,28 @@ def isolate_queued_fronts() -> None:
                 handle.write(json.dumps(rec) + "\n")
 
 
+_WINDOW_HOLD: subprocess.Popen | None = None
+
+
+def refresh_window_pid() -> None:
+    """Give the captured window launcher a live pid to hand out.
+
+    Every windowed spawn in the world is answered with this one pid, so a
+    clause that kills its window (1.8 SIGKILLs its supervisor's pid) kills
+    it for every later clause, and 5.1's start then refuses a dead window.
+    A dead or reaped hold is replaced before the next clause runs.
+    """
+    global _WINDOW_HOLD
+    if _WINDOW_HOLD is not None and _WINDOW_HOLD.poll() is None:
+        return
+    _WINDOW_HOLD = subprocess.Popen(
+        ["sleep", "3600"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True)
+    _HOLDS.append(_WINDOW_HOLD)
+    os.environ["FOREMAN_PROOF_SPAWN_PID"] = str(_WINDOW_HOLD.pid)
+
+
 def build_world(root: Path) -> dict:
     global _TEMP, _STATE, _CONFIG, _BIN
     _TEMP = root
@@ -987,12 +1009,7 @@ def build_world(root: Path) -> dict:
     os.environ["FOREMAN_PROOF_SYSTEMCTL_LOG"] = str(systemctl_log)
     os.environ["FOREMAN_PROOF_SYSTEMCTL_STATE"] = str(systemctl_state)
     os.environ["FOREMAN_PROOF_SPAWN_WAIT_LOG"] = str(spawn_wait_log)
-    sleeper = subprocess.Popen(
-        ["sleep", "3600"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        start_new_session=True)
-    _HOLDS.append(sleeper)
-    os.environ["FOREMAN_PROOF_SPAWN_PID"] = str(sleeper.pid)
+    refresh_window_pid()
     launcher = _BIN / "window-launcher"
     launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     launcher.chmod(0o755)
@@ -2010,6 +2027,7 @@ def _run_loaded_clauses(files: list[Path], break_clause: object,
                 print(f"foreman-proof: {exc}", file=sys.stderr)
                 failed = True
                 continue
+            refresh_window_pid()
             if _break_is(break_clause, cid):
                 if _execute_break(cid, module, world, path.name):
                     failed = True
