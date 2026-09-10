@@ -1131,6 +1131,7 @@ def _front_queue_tick(cstate: dict, now_iso: str) -> None:
         return
     top = queued[0]
     if fronts_mod.team_fits(top) is not None:
+        fronts_mod.maybe_file_quota_ask(top, now_iso)
         return
     name = str(top.get("name") or "")
     if not name:

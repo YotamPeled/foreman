@@ -97,6 +97,9 @@ class PoolManifest:
     #: A directory-declared vendor command, if any; wins over ``adapter``.
     vendor_argv: tuple[str, ...] | None = None
     vendor_stdin: str = "none"
+    #: Optional ceiling a quota ask may raise this pool to. None means
+    #: the configuration's ``[caps]`` table answers, if it names one.
+    max_cap: int | None = None
     #: Where this manifest was read from.
     directory: Path | None = field(default=None, compare=False)
 
@@ -240,13 +243,21 @@ def load_manifest(directory: Path | str) -> PoolManifest:
             raise _invalid(f"{path} misnames 'vendor.stdin' (must be one "
                            f"of {', '.join(VENDOR_STDINS)}, got {stdin!r})")
         vendor_stdin = stdin
+    max_cap = raw.get("max_cap")
+    if max_cap is not None:
+        if isinstance(max_cap, bool) or not isinstance(max_cap, int) \
+                or max_cap < 0:
+            raise _invalid(f"{path} misnames 'max_cap' "
+                           f"(must be a non-negative integer, got {max_cap!r})")
+    else:
+        max_cap = None
     return PoolManifest(
         name=name, model=model, timeout_default=timeout,
         effort_default=effort_default, effort_min=effort_min,
         interactive=interactive, roles=tuple(roles),
         aliases=tuple(aliases),
         adapter=adapter, vendor_argv=vendor_argv,
-        vendor_stdin=vendor_stdin, directory=directory,
+        vendor_stdin=vendor_stdin, max_cap=max_cap, directory=directory,
     )
 
 

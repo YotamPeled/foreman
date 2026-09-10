@@ -103,6 +103,10 @@ class Front(Entity):
     #: Why ``front stop`` stopped this front. Empty unless state is
     #: ``stopped``.
     stop_reason: str = ""
+    #: Open quota-ask inbox ids keyed by pool. Empty until the collector
+    #: files one; kept after the answer so a second tick does not ask
+    #: again.
+    quota_ask: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -121,6 +125,8 @@ class Front(Entity):
             data.pop("start_refused", None)
         if not data.get("stop_reason"):
             data.pop("stop_reason", None)
+        if not data.get("quota_ask"):
+            data.pop("quota_ask", None)
         return data
 
 

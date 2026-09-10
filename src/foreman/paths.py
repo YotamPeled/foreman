@@ -66,6 +66,16 @@ def pools_path() -> Path:
     return state_dir() / "pools.jsonl"
 
 
+def caps_path() -> Path:
+    """Append-only pool-cap raises, folded last-wins by pool name.
+
+    A line with ``until_front`` is a temporary raise from an answered
+    quota ask; the collector appends the lowering line when that front
+    ends. Readers overlay it on the configured cap.
+    """
+    return state_dir() / "caps.jsonl"
+
+
 def rulings_path() -> Path:
     return state_dir() / "rulings.jsonl"
 

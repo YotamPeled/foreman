@@ -369,6 +369,33 @@ def reserved_fronts() -> set[str]:
     return names
 
 
+def _pool_cap(pool: str) -> int | None:
+    """The live cap for ``pool``: a quota-ask raise, else the configuration."""
+    from . import capacity as capacity_mod
+
+    return capacity_mod.effective_cap(pool)
+
+
+def builders_misfit(record: dict) -> tuple[str, int, int, list[str], int] | None:
+    """The first builders-phase pool that does not fit, or None.
+
+    Returns ``(pool, cap, reserved, others, wants)``. A pool with no cap
+    always fits. Shared with the collector's quota ask and ``team_fits``.
+    """
+    name = record.get("name")
+    name = name if isinstance(name, str) else ""
+    wanted = _wanted_reservations(record, ("builders",))
+    open_recs = open_reservations()
+    for pool, _role, count, _phase in wanted:
+        cap = _pool_cap(pool)
+        if cap is None:
+            continue
+        reserved, others = _others_on_pool(open_recs, pool, name)
+        if cap - reserved < count:
+            return pool, cap, reserved, others, count
+    return None
+
+
 def team_fits(record: dict) -> str | None:
     """None when the builders phase fits; otherwise why it does not.
 
@@ -377,20 +404,11 @@ def team_fits(record: dict) -> str | None:
     ``pool grok: cap 6, reserved 4, wants 3``. A pool with no cap always
     fits. Shared with the collector's queue tick.
     """
-    name = record.get("name")
-    name = name if isinstance(name, str) else ""
-    wanted = _wanted_reservations(record, ("builders",))
-    open_recs = open_reservations()
-    settings = config.load()
-    for pool, _role, count, _phase in wanted:
-        cap = settings.cap(pool)
-        if cap is None:
-            continue
-        reserved, _others = _others_on_pool(open_recs, pool, name)
-        if cap - reserved < count:
-            return (f"pool {pool}: cap {cap}, reserved {reserved}, "
-                    f"wants {count}")
-    return None
+    misfit = builders_misfit(record)
+    if misfit is None:
+        return None
+    pool, cap, reserved, _others, wants = misfit
+    return f"pool {pool}: cap {cap}, reserved {reserved}, wants {wants}"
 
 
 def _front_names() -> list[str]:
@@ -446,8 +464,9 @@ def queued_fronts() -> list[dict]:
 def queue_wait_reason(record: dict, queued: list[dict]) -> str:
     """Why this queued front waits, as ``front queue`` prints it.
 
-    The top front is ``team fits`` or the pool numbers; every front
-    below it is ``behind <top>``.
+    The top front is ``team fits`` or the pool numbers; when the
+    machine has no room to raise, ``no room: cap N is the maximum``.
+    Every front below the top is ``behind <top>``.
     """
     if not queued:
         return "team fits"
@@ -455,7 +474,94 @@ def queue_wait_reason(record: dict, queued: list[dict]) -> str:
     top_name = top.get("name") or ""
     if record.get("name") != top_name:
         return f"behind {top_name}"
-    return team_fits(record) or "team fits"
+    misfit = builders_misfit(record)
+    if misfit is None:
+        return "team fits"
+    pool, cap, reserved, _others, wants = misfit
+    from . import capacity as capacity_mod
+
+    if not capacity_mod.has_raise_room(pool, cap):
+        if capacity_mod.raise_limits(pool):
+            return f"no room: cap {cap} is the maximum"
+    return f"pool {pool}: cap {cap}, reserved {reserved}, wants {wants}"
+
+
+def _holder_with_most(open_recs: list[dict], pool: str,
+                      except_front: str) -> str | None:
+    """The other front holding the most of ``pool``, earliest on a tie."""
+    counts: dict[str, int] = {}
+    order: list[str] = []
+    for record in open_recs:
+        if record.get("pool") != pool:
+            continue
+        front = record.get("front")
+        if not isinstance(front, str) or not front or front == except_front:
+            continue
+        count = record.get("count")
+        n = count if isinstance(count, int) and not isinstance(count, bool) else 0
+        if n < 0:
+            n = 0
+        if front not in counts:
+            order.append(front)
+            counts[front] = 0
+        counts[front] += n
+    if not counts:
+        return None
+    return max(order, key=lambda name: (counts[name], -order.index(name)))
+
+
+def quota_ask_question(name: str, pool: str, cap: int, reserved: int,
+                       others: list[str], wants: int, raised: int) -> str:
+    """The inbox question for one quota ask."""
+    by = f" by {', '.join(others)}" if others else ""
+    return (f"front {name} waits on pool {pool}: cap {cap}, "
+            f"reserved {reserved}{by}, wants {wants}. "
+            f"Raise the cap to {raised} until {name} ends?")
+
+
+def maybe_file_quota_ask(record: dict, now_iso: str) -> str | None:
+    """File one money ask for the top front's first misfit pool.
+
+    Returns the inbox id when a new ask is filed, else None. No ask
+    when the machine has no room, or when this front already carries
+    a ``quota_ask`` for that pool.
+    """
+    from . import capacity as capacity_mod
+
+    misfit = builders_misfit(record)
+    if misfit is None:
+        return None
+    pool, cap, reserved, others, wants = misfit
+    if not capacity_mod.has_raise_room(pool, cap):
+        return None
+    name = record.get("name")
+    name = name if isinstance(name, str) else ""
+    if not name:
+        return None
+    existing = record.get("quota_ask")
+    existing = existing if isinstance(existing, dict) else {}
+    if existing.get(pool):
+        return None
+    raised = reserved + wants
+    holder = _holder_with_most(open_reservations(), pool, name)
+    options = [f"raise to {raised}", "wait"]
+    if holder:
+        options.append(f"stop {holder}")
+    question = quota_ask_question(
+        name, pool, cap, reserved, others, wants, raised)
+    iid = ids.mint("inbox")
+    store.append_ledger(
+        paths.inbox_path(),
+        entities.InboxItem(
+            id=iid, from_="collector", kind="money",
+            question=question, recommendation=f"raise to {raised}",
+            options=options, asked_at=now_iso,
+        ).to_dict(),
+    )
+    carried = dict(existing)
+    carried[pool] = iid
+    revise_front(name, record, "collector", quota_ask=carried)
+    return iid
 
 
 def _phase_team_roles(phase: str) -> tuple[str, ...]:
@@ -1455,7 +1561,7 @@ def reserve_front(name: str, record: dict, phase: str,
         for pool, _role, count, _phase in to_create:
             new_by_pool[pool] = new_by_pool.get(pool, 0) + count
         for pool, count in new_by_pool.items():
-            cap = config.load().cap(pool)
+            cap = _pool_cap(pool)
             if cap is None:
                 continue
             reserved, others = _others_on_pool(open_recs, pool, name)

@@ -114,6 +114,10 @@ class Config:
     pools: dict[str, dict[str, object]] = field(default_factory=dict)
     #: Shared mutable resources from ``[resources]``: name -> count.
     resources: dict[str, int] = field(default_factory=dict)
+    #: Global raise ceiling from ``[caps] max``. None means no global max.
+    caps_max: int | None = None
+    #: Per-pool raise ceilings from ``[caps] <pool> = n``.
+    caps: dict[str, int] = field(default_factory=dict)
     path: Path | None = None
     #: False when the user's file was unreadable and the defaults answered.
     user_read: bool = True
@@ -168,6 +172,21 @@ class Config:
     def resource_names(self) -> list[str]:
         return sorted(self.resources)
 
+    def max_cap(self, pool: str) -> int | None:
+        """The configured raise ceiling for ``pool``, or None if none.
+
+        A per-pool ``[caps] <pool>`` wins over the global ``[caps] max``.
+        None means this file does not name a maximum; the pool manifest
+        may still.
+        """
+        value = self.caps.get(pool)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+        if isinstance(self.caps_max, int) and not isinstance(self.caps_max, bool) \
+                and self.caps_max >= 0:
+            return self.caps_max
+        return None
+
 
 def packaged_text() -> str:
     try:
@@ -213,6 +232,24 @@ def _resources_from(raw: object) -> dict[str, int]:
             continue
         resources[name] = value
     return resources
+
+
+def _caps_from(raw: object) -> tuple[int | None, dict[str, int]]:
+    """The ``[caps]`` table: global ``max`` and per-pool raise ceilings."""
+    table = raw.get("caps") if isinstance(raw, dict) else None
+    if not isinstance(table, dict):
+        return None, {}
+    caps_max = table.get("max")
+    if isinstance(caps_max, bool) or not isinstance(caps_max, int) or caps_max < 0:
+        caps_max = None
+    per: dict[str, int] = {}
+    for name, value in table.items():
+        if name == "max" or not isinstance(name, str) or not name:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            continue
+        per[name] = value
+    return caps_max, per
 
 
 def defaults() -> dict[str, dict[str, object]]:
@@ -305,7 +342,9 @@ def load() -> Config:
                   file=sys.stderr)
         merged.setdefault(name, {}).update(entry)
     resource_counts.update(_resources_from(raw))
+    caps_max, caps = _caps_from(raw)
     return Config(pools=merged, resources=resource_counts,
+                  caps_max=caps_max, caps=caps,
                   path=path, user_read=True)
 
 

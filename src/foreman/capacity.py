@@ -268,6 +268,76 @@ def ceiling(front: str | None, role: str) -> int | None:
     return value
 
 
+def folded_caps() -> list[dict]:
+    """Every pool-cap raise, folded last-wins by pool name."""
+    try:
+        records = store.read_ledger(paths.caps_path())
+    except OSError:
+        return []
+    return store.fold_by_id(records)
+
+
+def cap_record(pool: str) -> dict | None:
+    """The folded caps line for ``pool``, or None when there is none."""
+    for record in folded_caps():
+        if record.get("id") == pool:
+            return record
+    return None
+
+
+def effective_cap(pool: str) -> int | None:
+    """The live cap: a still-raised quota-ask line, else the configuration.
+
+    A folded caps line governs only while it names ``until_front``: the
+    lowering line drops that field so the configured cap answers again.
+    """
+    record = cap_record(pool)
+    if record is not None and record.get("until_front"):
+        value = record.get("cap")
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+    return config.load().cap(pool)
+
+
+def max_cap(pool: str) -> int | None:
+    """The highest this pool's cap may be raised to, or None if none.
+
+    The pool manifest's ``max_cap`` if it names one, else the
+    configuration's ``[caps]`` max for this pool or the global
+    ``[caps] max``. None means there is no documented room to raise.
+    """
+    from .pools import plugins as pool_plugins
+
+    manifest, _source = pool_plugins.describe(pool)
+    if manifest is not None:
+        value = getattr(manifest, "max_cap", None)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            return value
+    return config.load().max_cap(pool)
+
+
+def raise_limits(pool: str) -> list[int]:
+    """Every documented raise ceiling for ``pool`` (manifest and config)."""
+    limits: list[int] = []
+    from .pools import plugins as pool_plugins
+
+    manifest, _source = pool_plugins.describe(pool)
+    if manifest is not None:
+        value = getattr(manifest, "max_cap", None)
+        if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+            limits.append(value)
+    configured = config.load().max_cap(pool)
+    if isinstance(configured, int) and not isinstance(configured, bool) \
+            and configured >= 0 and configured not in limits:
+        limits.append(configured)
+    return limits
+
+
+def has_raise_room(pool: str, cap: int) -> bool:
+    """True when ``cap`` sits below at least one documented raise ceiling."""
+    return any(cap < limit for limit in raise_limits(pool))
+
+
 def _who(role: str, front: str | None) -> str:
     """Who a refusal is about: the role, and the front when there is one.
 
@@ -462,7 +532,7 @@ def launch_problems(role: str, pool: str, front: str | None,
             else:
                 problems.append(f"{_who(role, front)}: "
                                 f"{held} held, ceiling {limit}")
-    cap = config.load().cap(pool)
+    cap = effective_cap(pool)
     if cap is not None:
         held = held_by_pool().get(pool, 0)
         reserved_others = fronts.reserved_by_pool(except_front=front)
@@ -664,7 +734,7 @@ def capacity_lines(observed: dict | None,
             lines.append(f"  {pool}: out until {when} "
                          f"({format_out_reason(record)})")
             continue
-        total = settings.cap(pool)
+        total = effective_cap(pool)
         held = held_pool.get(pool, 0)
         running = running_pool.get(pool, 0)
         reserved = reserved_pool.get(pool, 0)
