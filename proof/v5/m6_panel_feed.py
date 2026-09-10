@@ -26,8 +26,7 @@ _NODE = {
 _BEHIND = "abcdef1234567890abcdef1234567890"
 
 _NUMBER_KEYS = (
-    "count", "landed", "leaves", "split_from", "depth", "held", "reserved",
-    "cap",
+    "count", "landed", "leaves", "split_from", "depth", "held", "cap",
 )
 _TIME_KEYS = ("at", "now")
 
@@ -233,7 +232,11 @@ def _check_row_types(row: dict, where: str) -> None:
     for key, value in row.items():
         if key in _NUMBER_KEYS and value is not None and not _is_number(value):
             raise Failure(f"{where}.{key} is {value!r}, not a number")
-        if isinstance(value, dict) and key == "reserved":
+        if key == "reserved":
+            if _is_number(value):
+                continue
+            if not isinstance(value, dict):
+                raise Failure(f"{where}.reserved is {value!r}, not numbers")
             for pool, count in value.items():
                 if not _is_number(count):
                     raise Failure(
