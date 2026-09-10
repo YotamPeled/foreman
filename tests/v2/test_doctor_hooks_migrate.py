@@ -27,6 +27,11 @@ RECORD_HOOK = FIXTURES / "record.sh"
 
 DEAD_PID = 999999
 MIGRATION = "1788902590"
+#: A clean doctor on an empty world: the two facts `foreman start`
+#: brings up (no unit installed, no foreman), then the verdict.
+CLEAN = ("doctor: collector unit foreman-collector.service: absent\n"
+         "doctor: no foreman\n"
+         "doctor: clean\n")
 
 
 @pytest.fixture()
@@ -83,7 +88,7 @@ def test_doctor_clean_on_empty_state(env, monkeypatch, capsys):
     as a divergence) or on a verb that cannot run as the owner.
     """
     assert run(["doctor"], monkeypatch) == 0
-    assert capsys.readouterr().out == "doctor: clean\n"
+    assert capsys.readouterr().out == CLEAN
 
 
 def test_doctor_refuses_a_worker(env, monkeypatch, capsys):
@@ -382,7 +387,7 @@ def test_migrate_moves_a_v1_state_directory_forward(
 
     # Doctor is clean on the state directory the migration just moved.
     assert run(["doctor"], monkeypatch) == 0
-    assert capsys.readouterr().out == "doctor: clean\n"
+    assert capsys.readouterr().out == CLEAN
 
 
 def test_migration_runs_with_no_foreman_on_the_path(env):
@@ -498,7 +503,7 @@ def test_doctor_reports_a_gone_worktree_on_a_done_front_as_history(
     assert folded_job("fx", "job-1")["state"] == "history"
     assert store.read_ledger(paths.front_findings_path("fx")) == []
     assert run(["doctor"], monkeypatch) == 0
-    assert capsys.readouterr().out == "doctor: clean\n"
+    assert capsys.readouterr().out == CLEAN
 
 
 def test_doctor_still_fails_a_gone_worktree_on_a_live_front(
@@ -526,7 +531,7 @@ def test_doctor_still_fails_a_gone_worktree_on_a_live_front(
     assert len(findings) == 1
     assert findings[0]["on"] == "tas-0001"
     assert run(["doctor"], monkeypatch) == 0
-    assert capsys.readouterr().out == "doctor: clean\n"
+    assert capsys.readouterr().out == CLEAN
 
 
 def test_job_fail_closed_refuses_a_live_front(env, monkeypatch, capsys):
