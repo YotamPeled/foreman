@@ -6,6 +6,7 @@ v5-shape front whose repository url is a bare repo on tmp_path.
 
 from __future__ import annotations
 
+import re
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -215,6 +216,96 @@ def test_map_resolve_non_v5_front_is_refused(env, monkeypatch, capsys):
     _, err = capsys.readouterr()
     assert "v5-shape" in err
     assert store.read_ledger(paths.front_map_path("oldshape")) == []
+
+
+ROOT = Path(__file__).resolve().parents[2]
+SEEN_AT = "2026-09-10T23:00:00+00:00"
+COMMIT = "2058289403fe5cfaaee52db50ba1da79337826dd"
+
+
+def copy_map_md(dest: Path) -> Path:
+    """A copy of fronts/v5/map.md with the repository renamed to the fixture."""
+    src = (ROOT / "fronts" / "v5" / "map.md").read_text(encoding="utf-8")
+    renamed = re.sub(r"(## Repository:\s+)\S+", r"\1foreman", src, count=1)
+    dest.write_text(renamed, encoding="utf-8")
+    return dest
+
+
+def import_argv(front, path, seen_at=SEEN_AT, commit=COMMIT):
+    return ["map", "import", front, str(path),
+            "--seen-at", seen_at, "--commit", commit]
+
+
+def test_map_import_reads_map_md_and_is_idempotent(env, monkeypatch, capsys):
+    """A renamed copy of fronts/v5/map.md imports; a second import adds 0."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    path = copy_map_md(env / "map.md")
+    assert run(monkeypatch, import_argv("v5shape", path), SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    first = out.strip()
+    assert first.startswith("imported ")
+    assert "already present" in first
+    imported_n = int(first.split()[1])
+    assert imported_n > 0
+    assert first == f"imported {imported_n} facts, 0 already present"
+    assert run(monkeypatch, ["map", "show", "v5shape"], SUP) == 0
+    shown, err = capsys.readouterr()
+    assert err == ""
+    assert "Repository: foreman" in shown
+    assert "The runtime today, by area" in shown
+    assert "The machine" in shown
+    assert "Gaps between today and each decision" in shown
+    assert "Assumptions I am making" in shown
+    assert "- [seen]" in shown
+    assert "- [assumed]" in shown
+    assert "`store.py` is the one writer" in shown
+    assert run(monkeypatch, import_argv("v5shape", path), SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.strip() == f"imported 0 facts, {imported_n} already present"
+    after = store.read_ledger(paths.front_map_path("v5shape"))
+    assert len(after) == imported_n
+
+
+def test_map_import_untagged_paragraph_is_refused(env, monkeypatch, capsys):
+    """A file with one untagged paragraph names its line and appends nothing."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    path = env / "untagged.md"
+    path.write_text(
+        "## Repository: foreman\n"
+        "\n"
+        "an untagged paragraph about storage\n",
+        encoding="utf-8")
+    assert run(monkeypatch, import_argv("v5shape", path), SUP) == 1
+    _, err = capsys.readouterr()
+    assert "3" in err
+    assert "seen" in err
+    assert "assumed" in err
+    assert store.read_ledger(paths.front_map_path("v5shape")) == []
+
+
+def test_map_import_tool_is_listed_for_supervisor_not_worker(
+        env, monkeypatch):
+    """map_import is a supervisor tool and is hidden from a worker session."""
+    seed_roster(
+        session_entry(SUP, "supervisor", "v5shape"),
+        session_entry(WORKER, "muse", "v5shape"),
+    )
+    monkeypatch.setenv(SESSION_ENV, SUP)
+    supervisor = {tool["name"] for tool in
+                  mcp_module.handle({"jsonrpc": "2.0", "id": 1,
+                                     "method": "tools/list",
+                                     "params": {}})["result"]["tools"]}
+    assert "map_import" in supervisor
+    monkeypatch.setenv(SESSION_ENV, WORKER)
+    worker = {tool["name"] for tool in
+              mcp_module.handle({"jsonrpc": "2.0", "id": 1,
+                                 "method": "tools/list",
+                                 "params": {}})["result"]["tools"]}
+    assert "map_import" not in worker
 
 
 def test_map_resolve_tool_is_listed_for_supervisor_not_worker(
