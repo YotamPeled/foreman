@@ -56,6 +56,9 @@ EFFORTS = ("high", "medium")
 SWARM_DENIES = ("MCPTool(foreman__*)", "MCPTool(boxes__*)")
 #: Extra denials a review job carries: the only thing proven to stop writes.
 REVIEWER_DENIES = ("Write", "Edit", "Bash")
+#: JSONL types that may mark the pool out. ``result`` additionally
+#: requires ``is_error``; a ``tool_call`` quoting a refusal does not.
+REFUSAL_RECORD_TYPES = frozenset({"error", "result"})
 #: Proven names from the corpus runner ``bin/gt_run.sh``. The grok CLI
 #: reads the owner's Claude skills, agents, rules, MCP servers and hooks,
 #: and Cursor skills, unless these six are ``false``.
@@ -203,6 +206,7 @@ class GrokAdapter(PoolAdapter):
     timeout_default = "20m"
     effort_default = "high"
     interactive = False
+    REFUSAL_RECORD_TYPES = REFUSAL_RECORD_TYPES
 
     def command_str(self, ctx: LaunchContext) -> str:
         return _common.printable_command(outer_argv(ctx), inner_command(ctx))
@@ -223,8 +227,11 @@ class GrokAdapter(PoolAdapter):
         return read_usage(transcript_path(session))
 
     def refusal(self, session: Session) -> dict | None:
-        """Quota/rate refusal from the JSON log, else nothing."""
-        return _common.read_quota_refusal(transcript_path(session))
+        """Quota/rate refusal from a vendor error or is_error result."""
+        return _common.read_quota_refusal(
+            transcript_path(session),
+            record_types=self.REFUSAL_RECORD_TYPES,
+        )
 
     def verdict(self, path: Path | str) -> dict:
         """A review job's verdict file, normalised to pass/fail + summary."""

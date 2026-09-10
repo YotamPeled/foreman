@@ -55,6 +55,9 @@ def model_for(role: str) -> str:
 #: Denied MCP tool patterns: the swarm's own servers, in this CLI's
 #: ``mcp__<server>__<tool>`` spelling.
 DISALLOWED_TOOLS = "mcp__foreman__* mcp__boxes__*"
+#: JSONL types that may mark the pool out. ``result`` additionally
+#: requires ``is_error``.
+REFUSAL_RECORD_TYPES = frozenset({"error", "result"})
 
 
 def claude_argv(ctx: LaunchContext) -> list[str]:
@@ -170,6 +173,7 @@ class ClaudeAdapter(PoolAdapter):
     timeout_default = "20m"
     effort_default = "high"
     interactive = False
+    REFUSAL_RECORD_TYPES = REFUSAL_RECORD_TYPES
 
     def model_for_role(self, role: str) -> str:
         """The model this role runs on the packaged claude pool."""
@@ -192,6 +196,13 @@ class ClaudeAdapter(PoolAdapter):
     def usage(self, session: Session) -> dict | None:
         """Input/output tokens from the transcript JSONL, else nothing."""
         return read_usage(transcript_path(session))
+
+    def refusal(self, session: Session) -> dict | None:
+        """Quota/rate refusal from a vendor error or is_error result."""
+        return _common.read_quota_refusal(
+            transcript_path(session),
+            record_types=self.REFUSAL_RECORD_TYPES,
+        )
 
     def verdict(self, path: Path | str) -> dict:
         """A review job's verdict file, normalised to pass/fail + summary."""

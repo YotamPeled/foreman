@@ -104,6 +104,11 @@ class PoolAdapter:
     effort_default: str | None = "high"
     effort_min: str | None = None
     interactive: bool = False
+    #: JSONL record types this adapter treats as a vendor error or
+    #: terminal-result kind. ``read_quota_refusal`` considers only these
+    #: (and ``result`` only when ``is_error`` is set). Empty: the
+    #: default ``refusal`` reports nothing.
+    REFUSAL_RECORD_TYPES: frozenset[str] = frozenset()
 
     def launch(self, ctx: LaunchContext) -> int:
         raise NotImplementedError

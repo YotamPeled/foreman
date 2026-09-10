@@ -55,6 +55,8 @@ from ..entities import Session
 
 MODEL = "muse-spark-1.3-contributor"
 EFFORTS = ("high", "xhigh")
+#: JSONL types that may mark the pool out: Muse's error event kind.
+REFUSAL_RECORD_TYPES = frozenset({"error"})
 
 # Shared names, re-exported so this module keeps the surface it always had.
 FINISH_RE = _common.FINISH_RE
@@ -199,6 +201,7 @@ class MuseAdapter(PoolAdapter):
     effort_default = "xhigh"
     effort_min = "xhigh"
     interactive = False
+    REFUSAL_RECORD_TYPES = REFUSAL_RECORD_TYPES
 
     def command_str(self, ctx: LaunchContext) -> str:
         return _common.printable_command(outer_argv(ctx), inner_command(ctx))
@@ -219,5 +222,8 @@ class MuseAdapter(PoolAdapter):
         return read_usage(transcript_path(session))
 
     def refusal(self, session: Session) -> dict | None:
-        """Quota/rate refusal from the ``--json`` log, else nothing."""
-        return _common.read_quota_refusal(transcript_path(session))
+        """Quota/rate refusal from a Muse error event, or a plain log."""
+        return _common.read_quota_refusal(
+            transcript_path(session),
+            record_types=self.REFUSAL_RECORD_TYPES,
+        )

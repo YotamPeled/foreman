@@ -53,6 +53,9 @@ LAST_MESSAGE_FILENAME = "last-message.txt"
 CODEX_HOME_ENV = "CODEX_HOME"
 #: The transcript pointer ``observe`` leaves in the session directory.
 ROLLOUT_FILENAME = "vendor-rollout"
+#: JSONL types that may mark the pool out. Codex names a failed turn
+#: ``turn.failed``; a ``tool_call`` quoting a refusal does not count.
+REFUSAL_RECORD_TYPES = frozenset({"error", "turn.failed"})
 
 
 def codex_effort(effort: str) -> str:
@@ -306,6 +309,7 @@ class CodexAdapter(PoolAdapter):
     timeout_default = "25m"
     effort_default = "low"
     interactive = False
+    REFUSAL_RECORD_TYPES = REFUSAL_RECORD_TYPES
 
     def command_str(self, ctx: LaunchContext) -> str:
         return _common.printable_command(outer_argv(ctx), inner_command(ctx))
@@ -329,6 +333,14 @@ class CodexAdapter(PoolAdapter):
     def usage(self, session: Session) -> dict | None:
         """Codex exposes no meter this adapter can read: no number."""
         return None
+
+    def refusal(self, session: Session) -> dict | None:
+        """Quota/rate refusal from a vendor error or turn.failed event."""
+        raw = session.log or str(paths.session_log_path(session.id or ""))
+        return _common.read_quota_refusal(
+            Path(raw),
+            record_types=self.REFUSAL_RECORD_TYPES,
+        )
 
     def verdict(self, path: Path | str) -> dict:
         """A review job's verdict file, normalised to pass/fail + summary."""

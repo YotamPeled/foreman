@@ -30,6 +30,7 @@ import tomllib
 from datetime import datetime
 from pathlib import Path
 from subprocess import DEVNULL
+from collections.abc import Collection
 from typing import Any
 
 from .. import paths
@@ -57,6 +58,12 @@ _QUOTA_RE = re.compile(
     r"(?:API error\s+)?429|quota exhausted|rate_limit|rate limit",
     re.IGNORECASE,
 )
+
+#: Record types that are never searched for a quota refusal, including
+#: nested payloads. A worker quoting a proof clause is not the vendor.
+NEVER_SEARCH_RECORD_TYPES = frozenset({
+    "tool_call", "tool_result", "thought", "text", "user",
+})
 
 
 def parse_quota_refusal(text: str) -> dict | None:
@@ -88,13 +95,121 @@ def parse_quota_refusal(text: str) -> dict | None:
     return {"kind": "quota", "reset": reset, "detail": detail}
 
 
-def read_quota_refusal(transcript: Path) -> dict | None:
-    """Quota refusal from a vendor JSON/JSONL log, or nothing."""
+def record_type_of(obj: dict) -> str | None:
+    """The vendor event type of one JSONL record, or None.
+
+    Grok, Claude and Codex name it ``type`` (Codex also uses dotted
+    kinds such as ``turn.failed``). Muse names it ``payload.event.kind``.
+    ``record_type`` on a Muse envelope is the envelope class, not the
+    event, and is ignored.
+    """
+    value = obj.get("type")
+    if isinstance(value, str) and value:
+        return value
+    payload = obj.get("payload")
+    if isinstance(payload, dict):
+        event = payload.get("event")
+        if isinstance(event, dict):
+            kind = event.get("kind")
+            if isinstance(kind, str) and kind:
+                return kind
+    kind = obj.get("kind")
+    if isinstance(kind, str) and kind:
+        return kind
+    return None
+
+
+def _json_object_line(line: str) -> dict | None:
+    if not line.startswith("{"):
+        return None
+    try:
+        obj = json.loads(line)
+    except json.JSONDecodeError:
+        return None
+    return obj if isinstance(obj, dict) else None
+
+
+def _record_text(obj: object) -> str:
+    """String fields of one record, joined. Nested dicts and lists are
+    walked only for a record already selected as an error kind."""
+    parts: list[str] = []
+
+    def walk(value: object) -> None:
+        if isinstance(value, str):
+            if value:
+                parts.append(value)
+        elif isinstance(value, dict):
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    walk(obj)
+    return "\n".join(parts)
+
+
+def _is_refusal_record(obj: dict, record_types: Collection[str]) -> bool:
+    rtype = record_type_of(obj)
+    if rtype is None or rtype in NEVER_SEARCH_RECORD_TYPES:
+        return False
+    if rtype not in record_types:
+        return False
+    if rtype == "result" and not obj.get("is_error"):
+        return False
+    return True
+
+
+def read_quota_refusal(
+    transcript: Path,
+    record_types: Collection[str] | None = None,
+) -> dict | None:
+    """Quota refusal from a vendor JSON/JSONL log, or nothing.
+
+    A JSONL transcript is walked record by record. A record is
+    considered only when its type is one ``record_types`` names as an
+    error or terminal-result kind; ``result`` additionally requires
+    ``is_error``. ``tool_call``, ``tool_result``, ``thought``, ``text``
+    and ``user`` records are never searched, nor their nested payloads.
+    A non-JSON line is considered only when the file is not JSONL (a
+    plain log). ``parse_quota_refusal`` keeps its contract for the text
+    it is given.
+    """
     try:
         text = transcript.read_text(encoding="utf-8", errors="replace")
     except OSError:
         return None
-    return parse_quota_refusal(text)
+    kinds = frozenset(record_types or ())
+    records: list[tuple[int, dict]] = []
+    for line_no, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line or FINISH_RE.fullmatch(line):
+            continue
+        obj = _json_object_line(line)
+        if obj is not None:
+            records.append((line_no, obj))
+    if records:
+        for line_no, obj in records:
+            if not _is_refusal_record(obj, kinds):
+                continue
+            found = parse_quota_refusal(_record_text(obj))
+            if found is not None:
+                found["record_type"] = record_type_of(obj)
+                found["line_no"] = line_no
+                return found
+        return None
+    found = parse_quota_refusal(text)
+    if found is None:
+        return None
+    found["record_type"] = "log"
+    found["line_no"] = 1
+    reset = found.get("reset")
+    if isinstance(reset, str) and reset:
+        for line_no, raw in enumerate(text.splitlines(), 1):
+            if reset in raw:
+                found["line_no"] = line_no
+                break
+    return found
 
 
 def window_launcher() -> str | None:

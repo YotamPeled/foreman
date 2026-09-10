@@ -409,7 +409,7 @@ def test_grok_refusal_reads_streaming_and_json(env):
         return Session(id=name, role="grok", pool="grok",
                        model=grok_pool.MODEL, state="exited", log=str(log))
 
-    blob = json.dumps({"error": GROK_429, "usage": {
+    blob = json.dumps({"type": "error", "error": GROK_429, "usage": {
         "input_tokens": 1, "output_tokens": 0}}) + "\n"
     found = adapter.refusal(session_with("ses-grok429-json", blob))
     assert found is not None
@@ -418,7 +418,8 @@ def test_grok_refusal_reads_streaming_and_json(env):
 
     stream = (
         json.dumps({"type": "update", "text": "working"}) + "\n"
-        + json.dumps({"type": "result", "error": GROK_429}) + "\n"
+        + json.dumps({"type": "result", "is_error": True,
+                      "error": GROK_429}) + "\n"
         + json.dumps({"type": "end"}) + "\n"
         + "### finished rc=1\n"
     )

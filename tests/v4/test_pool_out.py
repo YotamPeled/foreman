@@ -83,11 +83,10 @@ def test_muse_refusal_reads_the_429_reset(env):
     guess."""
     adapter = muse_pool.MuseAdapter()
     found = adapter.refusal(muse_session(env, "ses-ref429", MUSE_429))
-    assert found == {
-        "kind": "quota",
-        "reset": RESET,
-        "detail": " ".join(MUSE_429.split()),
-    }
+    assert found is not None
+    assert found["kind"] == "quota"
+    assert found["reset"] == RESET
+    assert found["detail"] == " ".join(MUSE_429.split())
 
     silent = muse_session(
         env, "ses-refnone",
@@ -108,7 +107,7 @@ def test_grok_refusal_reads_the_same_shape_from_json(env):
     """Grok's JSON log carries the same refusal in a string field; a
     result with no reset is not a refusal."""
     adapter = grok_pool.GrokAdapter()
-    blob = json.dumps({"error": MUSE_429.strip(), "usage": {
+    blob = json.dumps({"type": "error", "error": MUSE_429.strip(), "usage": {
         "input_tokens": 1, "output_tokens": 0}}) + "\n"
     found = adapter.refusal(grok_session(env, "ses-grok429", blob))
     assert found is not None
@@ -120,12 +119,13 @@ def test_grok_refusal_reads_the_same_shape_from_json(env):
     assert adapter.refusal(clean) is None
 
 
-def test_claude_keeps_the_default_even_with_a_429_in_the_log(env):
-    """Claude does not read refusals; a 429 in its transcript is not a
-    pool-out, because this pool keeps the default."""
+def test_claude_ignores_a_429_quoted_in_a_user_record(env):
+    """A 429 the worker quoted in a user record is not the vendor
+    refusing; only an error or is_error result marks the pool out."""
     log = paths.session_log_path("ses-claude429")
     log.parent.mkdir(parents=True, exist_ok=True)
-    log.write_text(MUSE_429, encoding="utf-8")
+    log.write_text(json.dumps({"type": "user", "message": MUSE_429}) + "\n",
+                   encoding="utf-8")
     session = Session(id="ses-claude429", role="opus", pool="claude",
                       model="claude-opus-5", state="exited", log=str(log))
     assert claude_pool.ClaudeAdapter().refusal(session) is None
