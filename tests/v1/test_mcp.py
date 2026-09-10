@@ -173,7 +173,7 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     # stop and resume from the front-queue job; plus front team from the
     # working-team job.
     # Counted, not derived, so a verb added without intent fails here.
-    assert len(names) == 82
+    assert len(names) == 83
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):
