@@ -41,7 +41,7 @@ PANEL_BRIEF = ROOT / "briefs" / "panel"
 SUPERVISOR_TOOLS = frozenset({
     "ask", "attach", "checkpoint", "doctor", "evidence", "finding",
     "front_done", "front_import", "front_policy", "front_show", "front_take", "job_cancel", "job_edit", "job_fail", "job_front", "job_list", "job_queue", "job_repoint", "job_verify", "kill", "launch", "map_add", "map_import", "map_resolve", "map_show", "measure", "merge_request", "milestone_add", "milestone_list", "milestone_merge", "milestone_split", "node_add", "node_list", "node_prove", "node_revise", "pool_list", "register",
-    "relaunch", "rule",
+    "relaunch", "resource_list", "rule",
     "status", "task_add", "task_built", "task_landed", "task_reset", "turn",
     "version", "wait", "wake",
 })
@@ -49,7 +49,8 @@ SUPERVISOR_TOOLS = frozenset({
 FOREMAN_TOOLS = frozenset({
     "answer", "attach", "checkpoint", "doctor", "front_allocate",
     "front_policy", "front_release", "front_reserve", "front_show", "inbox",
-    "kill", "launch", "map_show", "pool_list", "register", "relaunch", "rule",
+    "kill", "launch", "map_show", "pool_list", "register", "relaunch",
+    "resource_list", "rule",
     "status",
     "tell", "turn", "version", "wait", "wake",
 })
@@ -162,9 +163,9 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     # wait from the ledger-waiter job, the collector's verdict; plus
     # front show from the v5 inputs job; plus node add, revise, list
     # and prove from the tree door; plus front policy from the landing
-    # policy job.
+    # policy job; plus resource list from the shared-resources job.
     # Counted, not derived, so a verb added without intent fails here.
-    assert len(names) == 71
+    assert len(names) == 72
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):
