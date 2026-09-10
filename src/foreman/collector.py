@@ -347,10 +347,12 @@ def _load_state() -> dict:
     state = store.read_snapshot(paths.collector_path(), default=None)
     if not isinstance(state, dict):
         return {"sessions": {}, "relaunches": [], "parents": {},
-                "turn_attempts": {}, "queue_starts": [], "target_shas": {}}
+                "turn_attempts": {}, "queue_starts": [], "front_starts": [],
+                "target_shas": {}}
     for key, default in (("sessions", {}), ("relaunches", []),
                          ("parents", {}), ("turn_attempts", {}),
-                         ("queue_starts", []), ("target_shas", {})):
+                         ("queue_starts", []), ("front_starts", []),
+                         ("target_shas", {})):
         if not isinstance(state.get(key), (dict, list)):
             state[key] = default
     if not isinstance(state["sessions"], dict):
@@ -361,6 +363,8 @@ def _load_state() -> dict:
         state["parents"] = {}
     if not isinstance(state.get("queue_starts"), list):
         state["queue_starts"] = []
+    if not isinstance(state.get("front_starts"), list):
+        state["front_starts"] = []
     if not isinstance(state.get("target_shas"), dict):
         state["target_shas"] = {}
     return state
@@ -1108,6 +1112,40 @@ def _queued_front_names() -> list[str]:
         return []
 
 
+def _front_queue_tick(cstate: dict, now_iso: str) -> None:
+    """Start the top queued front when its team fits, once per tick.
+
+    Reserve the builders phase, spawn the supervisor headless with the
+    record's model and effort, mark the front active. A front below the
+    top never starts first. A refused launch releases the reservation
+    and leaves the front queued with ``start_refused``.
+    """
+    from . import fronts as fronts_mod
+    from . import launch as launch_module
+
+    starts = cstate.get("front_starts")
+    if not isinstance(starts, list):
+        starts = cstate["front_starts"] = []
+    queued = fronts_mod.queued_fronts()
+    if not queued:
+        return
+    top = queued[0]
+    if fronts_mod.team_fits(top) is not None:
+        return
+    name = str(top.get("name") or "")
+    if not name:
+        return
+    # A live supervisor already holds this front (a hand start, or a
+    # test that seeded the roster): one front has one supervisor, so
+    # the tick does not spawn another.
+    if launch_module.live_front_supervisor(name) is not None:
+        return
+    session, _err = launch_module.start_queued_front(
+        name, by=COLLECTOR_SUBJECT, now=now_iso)
+    if session:
+        starts.append({"front": name, "session": session, "at": now_iso})
+
+
 def _queue_tick(cstate: dict, now_iso: str) -> None:
     """Start the oldest startable queued job per front, rewrite waits.
 
@@ -1696,9 +1734,11 @@ def _tick_inner(moment: datetime, now_iso: str,
     # untouched by it.
     _carry_wakes(sessions, cstate)
 
-    # Decision 32: the collector owns the queue tick. After observation
-    # and the anomaly passes, start the oldest startable queued job per
-    # front and rewrite why the rest wait.
+    # Decision 9: the collector starts the top queued front when its
+    # team fits, then Decision 32: the oldest startable queued job per
+    # front. A front started this tick has no jobs yet; the job pass
+    # still runs for fronts already active.
+    _front_queue_tick(cstate, now_iso)
     _queue_tick(cstate, now_iso)
 
     # After the queue pass so a rebase item queued this tick waits for
