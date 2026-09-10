@@ -332,6 +332,20 @@ def front_has_open_reservation(front: str) -> bool:
     return any(record.get("front") == front for record in open_reservations())
 
 
+def _job_reservation_count(record: dict) -> int | None:
+    """Count this line holds against a pool cap, or None to skip it.
+
+    A supervisor reservation holds the front's supervisor ceiling; it
+    is not a job slot on the pool (``supervisor_cap`` is that limit).
+    """
+    if record.get("role") == "supervisor":
+        return None
+    count = record.get("count")
+    if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        return None
+    return count
+
+
 def reserved_by_pool(*, except_front: str | None = None) -> dict[str, int]:
     """Open reservation counts by pool, optionally skipping one front."""
     held: dict[str, int] = {}
@@ -339,10 +353,8 @@ def reserved_by_pool(*, except_front: str | None = None) -> dict[str, int]:
         if except_front is not None and record.get("front") == except_front:
             continue
         pool = record.get("pool")
-        count = record.get("count")
-        if not (isinstance(pool, str) and pool):
-            continue
-        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+        count = _job_reservation_count(record)
+        if not (isinstance(pool, str) and pool) or count is None:
             continue
         held[pool] = held.get(pool, 0) + count
     return held
@@ -413,6 +425,22 @@ def team_fits(record: dict) -> str | None:
         return None
     pool, cap, reserved, _others, wants = misfit
     return f"pool {pool}: cap {cap}, reserved {reserved}, wants {wants}"
+    name = record.get("name")
+    name = name if isinstance(name, str) else ""
+    wanted = _wanted_reservations(record, ("builders",))
+    open_recs = open_reservations()
+    settings = config.load()
+    for pool, role, count, _phase in wanted:
+        if role == "supervisor":
+            continue
+        cap = settings.cap(pool)
+        if cap is None:
+            continue
+        reserved, _others = _others_on_pool(open_recs, pool, name)
+        if cap - reserved < count:
+            return (f"pool {pool}: cap {cap}, reserved {reserved}, "
+                    f"wants {count}")
+    return None
 
 
 def _front_names() -> list[str]:
@@ -646,10 +674,9 @@ def _others_on_pool(open_recs: list[dict], pool: str,
         front = record.get("front")
         if not isinstance(front, str) or not front or front == except_front:
             continue
-        count = record.get("count")
-        n = count if isinstance(count, int) and not isinstance(count, bool) else 0
-        if n < 0:
-            n = 0
+        n = _job_reservation_count(record)
+        if n is None:
+            continue
         total += n
         if front not in seen:
             seen.add(front)
@@ -1572,7 +1599,9 @@ def reserve_front(name: str, record: dict, phase: str,
         to_create = [item for item in wanted
                      if (name, item[0], item[3]) not in open_keys]
         new_by_pool: dict[str, int] = {}
-        for pool, _role, count, _phase in to_create:
+        for pool, role, count, _phase in to_create:
+            if role == "supervisor":
+                continue
             new_by_pool[pool] = new_by_pool.get(pool, 0) + count
         for pool, count in new_by_pool.items():
             cap = _pool_cap(pool)
