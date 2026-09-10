@@ -47,7 +47,7 @@ SUPERVISOR_TOOLS = frozenset({
 #: The foreman role's own row: answers and rules, never front or job verbs.
 FOREMAN_TOOLS = frozenset({
     "answer", "attach", "checkpoint", "doctor", "front_allocate",
-    "front_land", "front_policy", "front_release", "front_reserve", "front_show", "inbox",
+    "front_land", "front_policy", "front_queue", "front_release", "front_reserve", "front_show", "inbox",
     "kill", "launch", "map_show", "pool_list", "register", "relaunch",
     "resource_list", "rule",
     "status",
@@ -168,6 +168,8 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     # from the review-states job; plus start from the foreman-start job
     # (an owner verb: every session role is refused it); plus clockwork
     # from the clockwork job (owner-only: the collector's own table).
+    # (an owner verb: every session role is refused it); plus front queue
+    # from the front-queue job.
     # Counted, not derived, so a verb added without intent fails here.
     assert len(names) == 78
 
