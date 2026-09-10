@@ -338,6 +338,20 @@ def has_raise_room(pool: str, cap: int) -> bool:
     return any(cap < limit for limit in raise_limits(pool))
 
 
+def append_cap(*, pool: str, cap: int | None, because: str,
+               until_front: str = "", previous_cap: int | None = None,
+               inbox: str | None = None) -> dict:
+    """Append one caps line. Folded last-wins on ``pool``."""
+    line: dict = {"id": pool, "because": because, "until_front": until_front}
+    if cap is not None:
+        line["cap"] = cap
+    if previous_cap is not None:
+        line["previous_cap"] = previous_cap
+    if inbox:
+        line["inbox"] = inbox
+    return store.append_ledger(paths.caps_path(), line)
+
+
 def _who(role: str, front: str | None) -> str:
     """Who a refusal is about: the role, and the front when there is one.
 
@@ -721,8 +735,6 @@ def capacity_lines(observed: dict | None,
     names.update(cleared_now)
     names.update(pool for pool, n in running_pool.items() if n)
     names.update(reserved_pool)
-
-    settings = config.load()
 
     waiting = waiting_by_pool()
     lines: list[str] = []

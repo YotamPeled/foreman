@@ -12,7 +12,8 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from foreman import cli, entities, fronts, ids, paths, store
+from foreman import capacity, cli, entities, fronts, ids, paths, store
+from foreman import launch as launch_module
 from foreman.caller import SESSION_ENV
 from foreman.collector import tick
 from foreman.entities import InboxItem, Session
@@ -88,9 +89,9 @@ def write_v5(name: str, builders: int, pool: str = "fake",
 
 
 def inbox_items() -> list[InboxItem]:
+    folded = store.fold_by_id(store.read_ledger(paths.inbox_path()))
     return [InboxItem.from_dict(rec)
-            for rec in store.read_ledger(paths.inbox_path())
-            if isinstance(rec, dict)]
+            for rec in folded if isinstance(rec, dict)]
 
 
 def open_asks() -> list[InboxItem]:
@@ -100,6 +101,47 @@ def open_asks() -> list[InboxItem]:
 def hold(name: str, builders: int) -> None:
     write_v5(name, builders=builders, state="active")
     assert cli.main(["front", "reserve", name]) == 0
+
+
+def open_for(front: str) -> list[dict]:
+    return [rec for rec in fronts.open_reservations()
+            if rec.get("front") == front]
+
+
+def caps_lines() -> list[dict]:
+    return [rec for rec in store.read_ledger(paths.caps_path())
+            if isinstance(rec, dict)]
+
+
+@pytest.fixture()
+def supervisor_spawn(env, monkeypatch):
+    """Capture ``launch_supervisor_headless`` and roster a fake session."""
+    calls: list = []
+
+    def fake(args, *, front, record, repo, branch):
+        sid = f"ses-sup{len(calls) + 1:04d}"
+        calls.append({"args": args, "front": front, "record": record,
+                      "repo": repo, "branch": branch, "session": sid})
+
+        def add(roster):
+            if not isinstance(roster, dict):
+                roster = {"sessions": {}}
+            sessions = roster.setdefault("sessions", {})
+            sessions[sid] = Session(
+                id=sid, role="supervisor", pool="opus",
+                model=getattr(args, "model", None) or "",
+                front=front, state="running", headless=True,
+            ).to_dict()
+            return roster
+
+        store.update_snapshot(paths.roster_path(), add,
+                              default={"sessions": {}})
+        fronts.set_front_supervisor(front, sid, by="collector")
+        print(f"session: {sid}")
+        return 0
+
+    monkeypatch.setattr(launch_module, "launch_supervisor_headless", fake)
+    return calls
 
 
 def test_one_tick_files_exactly_one_quota_ask(env, capsys):
@@ -150,3 +192,98 @@ def test_no_room_files_no_ask_and_the_queue_says_so(env, capsys):
     assert capsys.readouterr().out.splitlines() == [
         "alpha  no room: cap 3 is the maximum",
     ]
+
+
+def test_raise_to_4_appends_caps_and_the_next_tick_starts(
+        env, capsys, supervisor_spawn):
+    """Answering ``raise to 4`` appends the caps line; the next tick
+    starts the front once the raised cap lets its team fit."""
+    hold("held", builders=2)
+    capsys.readouterr()
+    write_v5("alpha", builders=2)
+    tick(now=NOW)
+    asks = open_asks()
+    assert len(asks) == 1
+    iid = asks[0].id
+    assert asks[0].recommendation == "raise to 4"
+    assert cli.main(["answer", iid, "raise", "to", "4"]) == 0
+    capsys.readouterr()
+    tick(now=NOW + timedelta(seconds=2))
+    lines = caps_lines()
+    assert len(lines) == 1
+    assert lines[0]["id"] == "fake"
+    assert lines[0]["cap"] == 4
+    assert lines[0]["until_front"] == "alpha"
+    assert lines[0]["because"] == f"quota ask {iid} for front alpha"
+    assert lines[0]["previous_cap"] == 3
+    assert capacity.effective_cap("fake") == 4
+    assert fronts.read_front_record("alpha")["state"] == "active"
+    assert [item["front"] for item in supervisor_spawn] == ["alpha"]
+    recs = open_for("alpha")
+    assert len(recs) == 1 and recs[0]["count"] == 2
+
+
+def test_front_done_lowers_the_cap_once(env, capsys, supervisor_spawn):
+    """``front done`` on the raised front appends the lowering line and
+    the cap is the previous value again; a later tick does not lower
+    twice."""
+    hold("held", builders=2)
+    capsys.readouterr()
+    write_v5("alpha", builders=2)
+    tick(now=NOW)
+    iid = open_asks()[0].id
+    assert cli.main(["answer", iid, "raise", "to", "4"]) == 0
+    capsys.readouterr()
+    tick(now=NOW + timedelta(seconds=2))
+    assert fronts.read_front_record("alpha")["state"] == "active"
+    assert cli.main(["front", "done", "alpha"]) == 0
+    capsys.readouterr()
+    assert fronts.read_front_record("alpha")["state"] == "done"
+    tick(now=NOW + timedelta(seconds=4))
+    lines = caps_lines()
+    assert len(lines) == 2
+    assert lines[1]["id"] == "fake"
+    assert lines[1]["cap"] == 3
+    assert not lines[1].get("until_front")
+    assert capacity.effective_cap("fake") == 3
+    tick(now=NOW + timedelta(seconds=6))
+    assert len(caps_lines()) == 2
+
+
+def test_wait_closes_the_ask_and_leaves_the_front_queued(env, capsys):
+    """``wait`` closes the ask and the front stays queued; no raise."""
+    hold("held", builders=2)
+    capsys.readouterr()
+    write_v5("alpha", builders=3)
+    tick(now=NOW)
+    iid = open_asks()[0].id
+    assert cli.main(["answer", iid, "wait"]) == 0
+    capsys.readouterr()
+    tick(now=NOW + timedelta(seconds=2))
+    assert open_asks() == []
+    assert len(inbox_items()) == 1
+    assert inbox_items()[0].answer == "wait"
+    assert fronts.read_front_record("alpha")["state"] == "queued"
+    assert caps_lines() == []
+    assert capacity.effective_cap("fake") == 3
+    assert cli.main(["front", "queue"]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == (
+        "alpha  pool fake: cap 3, reserved 2, wants 3")
+
+
+def test_stop_x_stops_the_front_holding_most(
+        env, capsys, supervisor_spawn):
+    """``stop X`` runs ``front stop X`` with reason ``quota ask <id>``."""
+    hold("held", builders=2)
+    capsys.readouterr()
+    write_v5("alpha", builders=3)
+    tick(now=NOW)
+    iid = open_asks()[0].id
+    assert cli.main(["answer", iid, "stop", "held"]) == 0
+    capsys.readouterr()
+    tick(now=NOW + timedelta(seconds=2))
+    held = fronts.read_front_record("held")
+    assert held["state"] == "stopped"
+    assert held["stop_reason"] == f"quota ask {iid}"
+    assert open_for("held") == []
+    assert open_asks() == []

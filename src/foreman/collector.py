@@ -348,11 +348,11 @@ def _load_state() -> dict:
     if not isinstance(state, dict):
         return {"sessions": {}, "relaunches": [], "parents": {},
                 "turn_attempts": {}, "queue_starts": [], "front_starts": [],
-                "target_shas": {}}
+                "target_shas": {}, "quota_applied": []}
     for key, default in (("sessions", {}), ("relaunches", []),
                          ("parents", {}), ("turn_attempts", {}),
                          ("queue_starts", []), ("front_starts", []),
-                         ("target_shas", {})):
+                         ("target_shas", {}), ("quota_applied", [])):
         if not isinstance(state.get(key), (dict, list)):
             state[key] = default
     if not isinstance(state["sessions"], dict):
@@ -367,6 +367,8 @@ def _load_state() -> dict:
         state["front_starts"] = []
     if not isinstance(state.get("target_shas"), dict):
         state["target_shas"] = {}
+    if not isinstance(state.get("quota_applied"), list):
+        state["quota_applied"] = []
     return state
 
 
@@ -1112,16 +1114,113 @@ def _queued_front_names() -> list[str]:
         return []
 
 
+_ENDED_FRONT_STATES = ("done", "stopped", "closed")
+_RAISE_PREFIX = "raise to "
+_STOP_PREFIX = "stop "
+
+
+def _parse_raise_to(answer: str) -> int | None:
+    if not answer.startswith(_RAISE_PREFIX):
+        return None
+    rest = answer[len(_RAISE_PREFIX):].strip()
+    if not rest.isdigit():
+        return None
+    return int(rest)
+
+
+def _lower_ended_quota_caps() -> None:
+    """Append one lowering line per raise whose until_front has ended."""
+    from . import capacity as capacity_mod
+    from . import config as config_mod
+    from . import fronts as fronts_mod
+
+    for record in capacity_mod.folded_caps():
+        until = record.get("until_front")
+        if not isinstance(until, str) or not until:
+            continue
+        front = fronts_mod.read_front_record(until)
+        state = front.get("state") if isinstance(front, dict) else None
+        if front is not None and state not in _ENDED_FRONT_STATES:
+            continue
+        pool = record.get("id")
+        if not isinstance(pool, str) or not pool:
+            continue
+        previous = record.get("previous_cap")
+        if isinstance(previous, bool) or not isinstance(previous, int) \
+                or previous < 0:
+            previous = config_mod.load().cap(pool)
+        inbox = record.get("inbox")
+        because = record.get("because")
+        if not isinstance(because, str) or not because:
+            because = f"quota ask for front {until}"
+        capacity_mod.append_cap(
+            pool=pool, cap=previous, because=because,
+            until_front="", previous_cap=previous,
+            inbox=inbox if isinstance(inbox, str) else None,
+        )
+
+
+def _apply_quota_answers(cstate: dict) -> None:
+    """Act on answered quota asks once: raise, wait, or stop."""
+    from . import capacity as capacity_mod
+    from . import entities as entities_mod
+    from . import fronts as fronts_mod
+    from . import verbs
+
+    applied = cstate.get("quota_applied")
+    if not isinstance(applied, list):
+        applied = cstate["quota_applied"] = []
+    by_id = verbs.read_inbox()[1]
+    for name in fronts_mod._front_names():
+        record = fronts_mod.read_front_record(name)
+        if record is None:
+            continue
+        asks = record.get("quota_ask")
+        if not isinstance(asks, dict):
+            continue
+        for pool, iid in list(asks.items()):
+            if not isinstance(pool, str) or not pool:
+                continue
+            if not isinstance(iid, str) or not iid or iid in applied:
+                continue
+            raw = by_id.get(iid)
+            if not isinstance(raw, dict):
+                continue
+            item = entities_mod.InboxItem.from_dict(raw)
+            if item.answered_at is None:
+                continue
+            answer = (item.answer or "").strip()
+            raised = _parse_raise_to(answer)
+            if raised is not None:
+                previous = capacity_mod.effective_cap(pool)
+                capacity_mod.append_cap(
+                    pool=pool, cap=raised,
+                    because=f"quota ask {iid} for front {name}",
+                    until_front=name, previous_cap=previous, inbox=iid)
+            elif answer.startswith(_STOP_PREFIX):
+                target = answer[len(_STOP_PREFIX):].strip()
+                if target:
+                    held = fronts_mod.read_front_record(target)
+                    if held is not None and held.get("state") == "active":
+                        fronts_mod.stop_front(
+                            target, f"quota ask {iid}", COLLECTOR_SUBJECT)
+            applied.append(iid)
+
+
 def _front_queue_tick(cstate: dict, now_iso: str) -> None:
     """Start the top queued front when its team fits, once per tick.
 
     Reserve the builders phase, spawn the supervisor headless with the
     record's model and effort, mark the front active. A front below the
     top never starts first. A refused launch releases the reservation
-    and leaves the front queued with ``start_refused``.
+    and leaves the front queued with ``start_refused``. Answered quota
+    asks are applied first so a raise can start the front this tick.
     """
     from . import fronts as fronts_mod
     from . import launch as launch_module
+
+    _lower_ended_quota_caps()
+    _apply_quota_answers(cstate)
 
     starts = cstate.get("front_starts")
     if not isinstance(starts, list):

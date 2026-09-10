@@ -1653,14 +1653,32 @@ def _front_live_sessions(name: str) -> list[str]:
     return found
 
 
+def stop_front(name: str, reason: str, by: str | None) -> None:
+    """Kill live sessions, release the team, mark ``name`` stopped.
+
+    The verb and the collector's quota-ask ``stop X`` share this: the
+    caller has already checked that the front is active and that a
+    reason was given.
+    """
+    from . import launch as launch_module
+
+    key = name.strip()
+    for session_id in _front_live_sessions(key):
+        launch_module.cmd_kill(
+            argparse.Namespace(target=session_id, reason=reason))
+    release_front(key, by)
+    current = read_front_record(key)
+    if current is None:
+        return
+    revise_front(key, current, by, state="stopped", stop_reason=reason)
+
+
 def front_stop_main(name: str, reason: str | None) -> int:
     """Kill the front's live sessions, release its team, mark it stopped.
 
     Queued jobs stay queued. Refused unless the front is active, naming
     the state it is in.
     """
-    from . import launch as launch_module
-
     me, violations = caller.resolve("front stop")
     caller.check_role(me, "front stop", caller.FOREMAN,
                       violations=violations)
@@ -1676,13 +1694,7 @@ def front_stop_main(name: str, reason: str | None) -> int:
         return Refusal(violations).report()
     assert record is not None
     key = name.strip()
-    who = caller.by_line(me)
-    for session_id in _front_live_sessions(key):
-        launch_module.cmd_kill(
-            argparse.Namespace(target=session_id, reason=text))
-    release_front(key, who)
-    current = read_front_record(key) or record
-    revise_front(key, current, who, state="stopped", stop_reason=text)
+    stop_front(key, text, caller.by_line(me))
     print(f"{key} stopped")
     return 0
 
