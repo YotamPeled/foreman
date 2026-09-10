@@ -11,6 +11,23 @@ role: the default implement pool for everything that is not core logic.
 ## Muse (spark-1.3, high/xhigh) — builder for mechanical leaves
 
 <!-- derived: models.md#muse -->
+- Honest self-reports on every claim checked across five fronts; cheap; obeys "do not write a summary,
+  do not add a README, do not commit"; puts scratch in /tmp when told; censused 4,223 files correctly;
+  found real harms with file-and-line proof; when handed an impossible check it said so instead of faking
+  a result.
+- Fails by: agreeing (confirmed 58 of 58 rows on the wrong trees; approved a wrong premise after
+  executing examples); tests that cannot fail (five collector tests asserted what was already true, one
+  derived its expectation from its own output); unstated invariants (compared two clocks, both directions
+  wrong); dying on long runs about half the time (`model stream idle timeout`, and a healthy run looks
+  dead: the retry counter resets); writing `[REDACTED]` over Bearer-shaped text into code and test
+  titles; calling two probe scripts "two review rounds".
+- Give it: a one-page contractor's brief: what exists today in two sentences, files it may write, files
+  it must not touch, constraints as absolutes, the exact commands used to judge it, what not to produce;
+  units small enough that a death costs one unit; work idempotent and relaunchable; a stub in front of
+  anything shared it must not reach.
+- Forbid: being the sole author of a node's only test (require a named failure mode per test, written by
+  another model or the supervisor); critical-path work; auth-shaped prose; anything it cannot be made to
+  quote verbatim from disk; self-certifying review history or merge authority.
 <!-- /derived -->
 
 ## What this model is for

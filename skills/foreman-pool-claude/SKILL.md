@@ -12,6 +12,19 @@ sessions. The only pool that takes core-logic work.
 ## Opus 5 (high) — supervisor, backup builder
 
 <!-- derived: models.md#opus-5 -->
+- Verifies by running and keeps honest ledgers; caught silent ruling reversions by mutation; self-reports
+  its own mistakes unprompted (wrote into the owner's live state directory once, said so, fixed it);
+  declines to invent a check that does not exist.
+- Fails by: confident wrong facts (a six-path hazard that was unreachable; wrong line references;
+  invented timestamps 07:20Z written at 06:18Z; a cause named from a process name and a load average);
+  `git add -A` in a worker's tree sweeping job files into a public branch; `git checkout <file>`
+  destroying a worker's uncommitted edits; filing a finding whose root cause names a component never
+  executed; raising an owner question on a decision the rules covered (hours lost); long silent
+  orientation that reads as death; landing after one review instead of reviewing the fixes; judging a
+  fix to a check by reading the diff.
+- Forbid: typing any number, timestamp or line reference not pasted from a command; naming a cause
+  without reading the command line; `git add -A` anywhere a worker worked; implementing except after two
+  worker deaths.
 <!-- /derived -->
 
 ## What this model is for

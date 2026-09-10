@@ -30,12 +30,40 @@ names, no ids the owner did not introduce (§9 rule 14).
 ## Team assignment
 
 <!-- derived: team-calibration.md#team-calibration -->
+The owner's team line on a front is the ceiling. The foreman derives the WORKING team from the map and
+the tree, records the derivation on the front, and adjusts it on the signals below. The owner is asked
+only when the derivation needs more than the quota.
 <!-- /derived -->
 
 <!-- derived: team-calibration.md#the-count -->
+builders = min( independently verifiable leaves,
+                the supervisor's verification rate,
+                shared-resource slots )
+
+- **Independently verifiable** is judged at verify time, not edit time: two leaves are parallel only if
+  both worker pages can be written today without knowing either outcome, they touch disjoint modules
+  (the map's module sizes say which are shared; on this runtime every friction touched launch.py), and
+  neither needs the other's output to run its verify.
+- **Verification rate**: one supervisor verifies serially. Observed: 5–15 minutes per job before v5,
+  minutes after (the runtime does red-then-green and the break). Two builders per supervisor on one
+  codebase was the ceiling on eight fronts; three or four only where leaves were disjoint by
+  construction; six on a research front of independent lines.
+- **Shared resources**: a fixture database, a lock, a temporary filesystem. Reserved with a count like
+  model slots (decision 25). Past about three fixture-backed jobs the failures are about the machine, not
+  the code.
+- Repositories add landing lanes, not builders. Leaves resting on ASSUMED map facts run alone and first.
+- A pair (two workers on one node) exists only for a structural reason: two independent readers whose
+  disagreement is the product. Never a same-model pair for measurement (ruling rul-egymlfh).
 <!-- /derived -->
 
 <!-- derived: team-calibration.md#the-model -->
+- Verify is a number, a diff, a golden file, an exact string → mechanical → cheapest builder that returns
+  green first time (Muse high), no reviewer.
+- Verify is a behaviour, a property, a test suite the worker also writes, a security boundary, a contract
+  → strong builder (Grok 4.6 high; Opus 5 high as backup) plus an EXECUTING reviewer (Astra medium or Sol
+  high) bound to the exact head.
+- Specs, proofs, findings, adjudication stay with the supervisor.
+- Anything whose done-when is "a throwaway session gets the right answer" → Fable.
 <!-- /derived -->
 
 ## Step 1 — Admission: launch whose time has come (§3 Foreman; §14 flow 1)

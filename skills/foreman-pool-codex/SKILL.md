@@ -11,6 +11,20 @@ pool exists for second reads, not for building.
 ## Astra 6 (gpt-6-astra, low/medium) — executing reviewer; contract adjudicator
 
 <!-- derived: models.md#astra-6 -->
+- Highest-value reviewer when it executes: built a fake vendor and drove the launcher, found P1s green
+  tests hid (three in deploy tools, four plus five in viewer tools), found the role prompt never reached
+  the worker. Reports honestly what it could not run ("reasoned, not reproduced"). States preconditions
+  well in briefs.
+- Fails by: its sandbox silently denying sockets so "judge by running" becomes reading for rounds;
+  40+ minutes per review; drifting into unrelated documents; proposing a redesign of settled design;
+  reaching for a board or tool it was not given (six times unprompted); printing its verdict twice;
+  verdict vocabulary drift (APPROVE for MERGE); dying on access flags with no verdict; as a supervisor,
+  ignoring queued messages, launching off-roster, launching after a freeze.
+- Give it: exact candidate and base sha; the invariants; executable counterexamples; "do not propose a
+  redesign of anything the design already settles"; network access or treat the round as a read; the
+  gate vocabulary.
+- Forbid: the bypass-sandbox flag (silently resolves to full access); supervising; any MCP it was not
+  given; counting an interrupted review as a verdict.
 <!-- /derived -->
 
 ## What this model is for
