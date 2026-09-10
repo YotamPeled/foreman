@@ -269,6 +269,23 @@ def test_node_add_parent_of_kind_derived_is_refused(
     assert len(store.read_ledger(paths.front_tree_path("v5shape"))) == 2
 
 
+def test_node_add_parent_of_kind_job_is_refused(env, monkeypatch, capsys):
+    """A job is a leaf: adding under it is refused naming the kind."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    mil = add_ok(monkeypatch, capsys)
+    task = add_ok(monkeypatch, capsys, parent=mil, kind="task",
+                  title="a task")
+    job = add_ok(monkeypatch, capsys, parent=task, kind="job",
+                 title="a job")
+    assert run(monkeypatch, add_argv(parent=job, kind="job",
+                                     title="under a job"), SUP) == 1
+    _, err = capsys.readouterr()
+    assert "parent" in err
+    assert "job" in err
+    assert len(store.read_ledger(paths.front_tree_path("v5shape"))) == 3
+
+
 def test_node_add_empty_verify_must_not_touch_reason_break_are_refused(
         env, monkeypatch, capsys):
     """Empty verify, must-not-touch, reason and break are all named at once."""
