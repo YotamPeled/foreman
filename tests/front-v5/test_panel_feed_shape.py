@@ -178,3 +178,27 @@ def test_existing_binding_lines_are_unchanged():
     haystack = text + "\n" + binding
     for line in BINDING_LINES:
         assert line in haystack, f"binding line missing: {line!r}"
+
+
+def test_verbs_lists_job_queue_and_node_add(env, capsys):
+    """panel.json verbs is the running build; mcp --list-verbs names the same."""
+    feed = feed_of(env)
+    names = feed["verbs"]
+    assert "job_queue" in names
+    assert "node_add" in names
+    assert cli.main(["mcp", "--list-verbs"]) == 0
+    listed = capsys.readouterr().out.splitlines()
+    assert listed == names
+    assert "job_queue" in listed
+    assert "node_add" in listed
+
+
+def test_plugin_gates_actions_on_the_verb_list():
+    """An action whose verb is missing reads 'not in this build' and does not fire."""
+    text = _plugin_qml()
+    assert "not in this build" in text
+    assert "verbInBuild" in text
+    assert "actionEnabled" in text
+    keys = (PLUGIN / "Keys.qml").read_text(encoding="utf-8")
+    assert "Foreman.Model.verbs" in keys
+    assert "--help" in keys

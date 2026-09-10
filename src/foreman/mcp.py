@@ -372,6 +372,9 @@ def _own_front_description(text: str) -> str:
     if "own front" in text:
         return text
     return text.rstrip(".") + " (own front)."
+def verb_names() -> list[str]:
+    """The verb table's names, one per MCP tool, from this running build."""
+    return [tool["name"] for tool in list_tools()]
 
 
 def tools_for(role: str | None) -> list[dict]:
@@ -627,6 +630,19 @@ def serve(stdin=None, stdout=None) -> int:
             return 0
 
 
+def add_mcp_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--list-verbs", action="store_true",
+        help="print the verb table's names, one per line")
+
+
 @subcommand("mcp", help="Serve the verbs as role-scoped MCP tools over stdio.")
 def cmd_mcp(args: argparse.Namespace) -> int:
+    if getattr(args, "list_verbs", False):
+        for name in verb_names():
+            print(name)
+        return 0
     return serve()
+
+
+cmd_mcp.add_arguments = add_mcp_arguments  # type: ignore[attr-defined]

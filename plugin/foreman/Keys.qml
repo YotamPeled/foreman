@@ -203,15 +203,45 @@ QtObject {
   // What the runtime ships is asked, never baked in: each distinct verb
   // is probed once per panel lifetime — `foreman <verb> --help`, and its
   // exit status is the answer — cached in verbShipped and never re-asked
-  // per keypress. A key whose verb is absent still renders and still
-  // attempts it verbatim — the CLI is the only way the panel mutates
-  // anything — but fire() says so first rather than failing silently.
-  // A verb with no answer yet runs without the note: the probe is still
-  // in flight, not a refusal.
+  // per keypress. The running build also publishes its verb table on
+  // panel.json (`verbs`); an action fires only when that list names it,
+  // and otherwise the chip reads "not in this build". The --help probe
+  // still runs so a feed without the list keeps the old answer.
   property var verbShipped: ({})
   property var verbQueued: ({})
   property var probeQueue: []
   property string probeCurrent: ""
+
+  function verbInBuild(argv) {
+    var verbs = Foreman.Model.verbs
+    if (!verbs || verbs.length === 0) return null
+    function has(name) {
+      for (var i = 0; i < verbs.length; i++)
+        if (verbs[i] === name) return true
+      return false
+    }
+    if (!argv || argv.length === 0) return false
+    var a = String(argv[0]).replace(/-/g, "_")
+    if (argv.length >= 2) {
+      var b = String(argv[1]).replace(/-/g, "_")
+      if (has(a + "_" + b)) return true
+    }
+    return has(a)
+  }
+
+  function actionEnabled(argv) {
+    var listed = root.verbInBuild(argv)
+    if (listed === null) {
+      if (argv && argv.length > 0 && root.verbShipped[String(argv[0])] === false)
+        return false
+      return true
+    }
+    return listed === true
+  }
+
+  function missingNote() {
+    return "not in this build"
+  }
 
   // Every verb on screen plus the static freeze, first-seen order.
   function verbsToProbe() {
@@ -272,6 +302,12 @@ QtObject {
       root.done(actionId, 127)
       return false
     }
+    if (!root.actionEnabled(act.verb)) {
+      console.log("KEY-NOVERB " + actionId + " foreman " + act.verb.join(" ")
+                  + " " + root.missingNote())
+      root.done(actionId, 127)
+      return false
+    }
     if (act.verb.length > 0 && root.verbShipped[String(act.verb[0])] === false)
       console.log("KEY-NOVERB " + actionId + " foreman " + act.verb.join(" ")
                   + " is absent from this runtime; attempting verbatim")
@@ -283,6 +319,11 @@ QtObject {
 
   function fireFreeze() {
     var argv = ["freeze"]
+    if (!root.actionEnabled(argv)) {
+      console.log("KEY-NOVERB static:freeze foreman freeze " + root.missingNote())
+      root.done("static:freeze", 127)
+      return
+    }
     root.queue.push({ id: "static:freeze", argv: argv })
     console.log("KEY-FIRE static:freeze foreman " + argv.join(" "))
     root.pump()
@@ -363,8 +404,12 @@ QtObject {
   function cheatActions() {
     var acts = root.currentActions()
     var out = []
-    for (var i = 0; i < acts.length; i++)
-      out.push({ hint: root.hints[acts[i].id] || "", label: acts[i].label })
+    for (var i = 0; i < acts.length; i++) {
+      var label = acts[i].label
+      if (!root.actionEnabled(acts[i].verb))
+        label = label + " (" + root.missingNote() + ")"
+      out.push({ hint: root.hints[acts[i].id] || "", label: label })
+    }
     return out
   }
 

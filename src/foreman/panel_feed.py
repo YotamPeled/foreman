@@ -858,6 +858,13 @@ def _capacity(world: _World, queued_jobs: list[dict]) -> dict:
     return {"count": len(rows), "rows": rows}
 
 
+def _verb_names() -> list[str]:
+    """The running build's verb table, the same list ``mcp --list-verbs`` prints."""
+    from . import mcp as mcp_mod
+
+    return mcp_mod.verb_names()
+
+
 def gather() -> dict:
     """Every fact the panel's eight blocks render, folded once."""
     world = _World()
@@ -879,6 +886,7 @@ def gather() -> dict:
         "front_queue": front_queue,
         "mergeQueue": _merge_queue(world, titles),
         "capacity": _capacity(world, job_queue["rows"]),
+        "verbs": _verb_names(),
         # Every front, running or queued or done: the Working block draws
         # the running ones, and the verification harness reads the rest.
         "fronts": everything,

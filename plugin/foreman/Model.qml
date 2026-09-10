@@ -98,6 +98,7 @@ QtObject {
   property var front_queue: ({ count: 0, rows: [] })
   property var mergeQueue: ({ count: 0, rows: [], merging: [], waiting: [], landed: [] })
   property var capacity: ({ count: 0, rows: [] })
+  property var verbs: []
 
   readonly property var blockNames: ["header", "needsYou", "problems", "working",
                                      "jobQueue", "frontQueue", "mergeQueue", "capacity"]
@@ -187,6 +188,7 @@ QtObject {
     root.mergeQueue = data.mergeQueue
       || ({ count: 0, rows: [], merging: [], waiting: [], landed: [] })
     root.capacity = data.capacity || ({ count: 0, rows: [] })
+    root.verbs = Array.isArray(data.verbs) ? data.verbs : []
     root.fronts = data.fronts || []
     root.roster = data.roster || ({})
     root.slots = data.slots || []
