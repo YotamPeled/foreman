@@ -2064,6 +2064,51 @@ def render_unit() -> str:
             .replace("@CONFIG_DIR@", str(paths.config_dir())))
 
 
+def _isolated_world() -> bool:
+    """True when this process runs against a state or config of its own."""
+    return any(os.environ.get(name) for name in (paths.STATE_ENV,
+                                                 paths.CONFIG_ENV))
+
+
+def unit_path() -> Path:
+    """Where `foreman start` installs the collector's user unit.
+
+    The user manager's own directory on the default world. An isolated
+    world (every test, every proof run) keeps its unit inside its own
+    config directory instead: a sandbox writing into the machine's
+    systemd directory is the reach-out rul-tx35izr forbids.
+    """
+    if _isolated_world():
+        return paths.config_dir() / "systemd" / "user" / COLLECTOR_UNIT
+    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
+    return Path(base) / "systemd" / "user" / COLLECTOR_UNIT
+
+
+def systemctl(*args: str) -> tuple[int, str]:
+    """`systemctl --user <args>`: the one door `start` and `doctor` use.
+
+    Returns the exit code and whatever it said. Inert on an isolated
+    world, which has no service of its own: it answers 1 and says so,
+    never reaching the machine's user manager. Tests replace it.
+    """
+    if _isolated_world():
+        return 1, "isolated world: systemd is not touched"
+    try:
+        proc = subprocess.run(["systemctl", "--user", *args],
+                              capture_output=True, text=True, timeout=60)
+    except (OSError, ValueError, subprocess.TimeoutExpired) as exc:
+        return 1, str(exc)
+    return proc.returncode, (proc.stderr.strip() or proc.stdout.strip())
+
+
+def unit_state() -> str:
+    """``absent``, ``active`` or ``inactive``: the collector unit as installed."""
+    if not unit_path().exists():
+        return "absent"
+    code, _ = systemctl("is-active", "--quiet", COLLECTOR_UNIT)
+    return "active" if code == 0 else "inactive"
+
+
 def _service_active() -> bool:
     """True when the collector runs as an active user service."""
     try:
@@ -2129,8 +2174,7 @@ def reload_after_config_change() -> None:
     by a test that flaked because a ceiling change in it restarted the
     real one.
     """
-    if any(os.environ.get(name) for name in (paths.STATE_ENV,
-                                             paths.CONFIG_ENV)):
+    if _isolated_world():
         return
     restart_collector(quiet=True)
 

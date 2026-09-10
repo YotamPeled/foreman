@@ -37,6 +37,7 @@ leftover_smoke_units = _smoke_units_mod.leftover_smoke_units
 #: point before a real `systemd-run` or `systemctl`.
 SYSTEMD_DOORS = (
     ("foreman.collector", "_default_turn_spawn"),
+    ("foreman.collector", "systemctl"),
     ("foreman.headless", "_default_spawn"),
     ("foreman.headless", "free_unit_name"),
 )

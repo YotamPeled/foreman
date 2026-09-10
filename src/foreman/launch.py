@@ -2155,7 +2155,8 @@ def pre_answer_first_launch_dialogs(directory: str) -> None:
 def supervisor_inner_command(*, pid_path: Path, session_id: str, repo: str,
                              role_prompt: Path, vendor_id: str,
                              mcp_config: Path | None = None,
-                             model: str | None = None) -> str:
+                             model: str | None = None,
+                             effort: str | None = None) -> str:
     """The shell the window runs: pid first, then the proven vendor line.
 
     The pid is written as the first act and read back by the launcher, so
@@ -2185,8 +2186,12 @@ def supervisor_inner_command(*, pid_path: Path, session_id: str, repo: str,
     if mcp_config is not None:
         mcp_flags = (f" --mcp-config {shlex.quote(str(mcp_config))}"
                      " --strict-mcp-config")
+    # Effort only when the launch names one (`foreman start` always does);
+    # without it the vendor's own default stands, as it always has.
+    effort_flag = f"--effort {shlex.quote(effort)} " if effort else ""
     vendor = (f"{AUTOCOMPACT} claude --session-id {shlex.quote(vendor_id)} "
               f"--model {shlex.quote(model or SUPERVISOR_MODEL)} "
+              f"{effort_flag}"
               f"--dangerously-skip-permissions"
               f"{mcp_flags} "
               f'"$(cat {shlex.quote(str(role_prompt))})"')
@@ -2543,7 +2548,8 @@ def seed_session_checkpoint(session_id: str) -> None:
 
 def _start_supervisor(session_id: str, *, repo: str, role_prompt: Path,
                       vendor_id: str, workspace: str | None,
-                      model: str | None = None
+                      model: str | None = None,
+                      effort: str | None = None
                       ) -> tuple[list[str], str, int | None, str | None]:
     """Write the window's script, open it, read the pid back.
 
@@ -2576,7 +2582,7 @@ def _start_supervisor(session_id: str, *, repo: str, role_prompt: Path,
     inner = supervisor_inner_command(
         pid_path=pid_path, session_id=session_id, repo=repo,
         role_prompt=role_prompt, vendor_id=vendor_id,
-        mcp_config=mcp_config, model=model)
+        mcp_config=mcp_config, model=model, effort=effort)
     argv = supervisor_outer_argv(session_id, session_dir / RUN_SCRIPT_FILE,
                                  workspace)
     try:
@@ -3575,6 +3581,7 @@ def launch_foreman_main(args: argparse.Namespace,
                         problems: list[str]) -> int:
     """`foreman launch foreman [--workspace N] [--dry-run]`."""
     model = _resolve_summoned_model(args)
+    effort = getattr(args, "effort", None) or None
     if getattr(args, "headless", False):
         problems.append(
             "the foreman stays interactive: `foreman launch foreman "
@@ -3628,7 +3635,7 @@ def launch_foreman_main(args: argparse.Namespace,
         inner = supervisor_inner_command(
             pid_path=paths.session_pid_path(session_id),
             session_id=session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, model=model)
+            vendor_id=vendor_id, model=model, effort=effort)
         argv = supervisor_outer_argv(
             session_id, session_dir / RUN_SCRIPT_FILE, workspace)
         _print_supervisor(session_id, vendor_id, role_prompt, workspace,
@@ -3643,11 +3650,13 @@ def launch_foreman_main(args: argparse.Namespace,
     try:
         store.update_snapshot(
             paths.roster_path(),
-            lambda roster: _place_session(
-                roster,
-                _foreman_session(session_id, repo,
-                                 os.environ.get(caller.SESSION_ENV),
-                                 model=model)),
+            lambda roster: _move_session(
+                _place_session(
+                    roster,
+                    _foreman_session(session_id, repo,
+                                     os.environ.get(caller.SESSION_ENV),
+                                     model=model)),
+                session_id, effort=effort),
             default={"sessions": {}},
         )
     except OSError as exc:
@@ -3661,7 +3670,8 @@ def launch_foreman_main(args: argparse.Namespace,
     try:
         argv_, inner, pid, failure = _start_supervisor(
             session_id, repo=repo, role_prompt=role_prompt,
-            vendor_id=vendor_id, workspace=workspace, model=model)
+            vendor_id=vendor_id, workspace=workspace, model=model,
+            effort=effort)
     except Exception as exc:  # noqa: BLE001 - anything here is a refusal
         failure = f"{type(exc).__name__}: {exc}"
     starttime, dead = _confirm_started(pid)
