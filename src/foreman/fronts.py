@@ -226,6 +226,37 @@ def _v5_repository_violations(repo: dict, tag: str) -> list[str]:
                 f"{tag}: field 'trailers' must be a list of strings")
     if "pr-body" in repo and not isinstance(repo.get("pr-body"), str):
         violations.append(f"{tag}: field 'pr-body' must be a string")
+    url = repo.get("url")
+    if _nonempty_str(url):
+        violations.extend(_v5_remote_violations(url.strip(), repo, tag))
+    return violations
+
+
+def _v5_remote_violations(url: str, repo: dict, tag: str) -> list[str]:
+    """Refuse a work branch that already exists, or a missing base/target."""
+    violations: list[str] = []
+    work = repo.get("work")
+    if _nonempty_str(work):
+        sha, err = _ls_remote(url, work.strip())
+        if err is not None:
+            violations.append(
+                f"{tag}: field 'work' cannot be checked: {err}")
+        elif sha is not None:
+            violations.append(
+                f"{tag}: field 'work' branch '{work.strip()}' "
+                f"exists on the remote")
+    for key in ("base", "target"):
+        branch = repo.get(key)
+        if not _nonempty_str(branch):
+            continue
+        sha, err = _ls_remote(url, branch.strip())
+        if err is not None:
+            violations.append(
+                f"{tag}: field '{key}' cannot be checked: {err}")
+        elif sha is None:
+            violations.append(
+                f"{tag}: field '{key}' branch '{branch.strip()}' "
+                f"is absent on the remote")
     return violations
 
 
@@ -299,6 +330,32 @@ def _branch_violation(directory: str, branch: str) -> str | None:
     if completed.returncode != 0:
         return f"field 'land-on' branch '{branch}' does not exist"
     return None
+
+
+def _ls_remote(url: str, branch: str) -> tuple[str | None, str | None]:
+    """The sha at ``refs/heads/<branch>`` on ``url``, or why it could not
+    be read.
+
+    Returns ``(sha, None)`` when the ref exists, ``(None, None)`` when
+    git answered and the ref is absent, and ``(None, error)`` when the
+    query itself failed.
+    """
+    try:
+        completed = subprocess.run(
+            ["git", "ls-remote", url, f"refs/heads/{branch}"],
+            capture_output=True, text=True, timeout=30)
+    except OSError:
+        return None, "git is not available"
+    except subprocess.TimeoutExpired:
+        return None, "git ls-remote timed out"
+    if completed.returncode != 0:
+        err = (completed.stderr or completed.stdout or "").strip()
+        return None, err or f"git ls-remote exited {completed.returncode}"
+    line = completed.stdout.strip().splitlines()
+    if not line:
+        return None, None
+    sha = line[0].split()[0] if line[0].split() else ""
+    return (sha or None), None
 
 
 def task_table_violations(task: dict, label: str, tag: str) -> list[str]:
@@ -554,15 +611,137 @@ def _task_after(tasks: list, title: str) -> list:
     return []
 
 
-def _build(data: dict, name: str,
-           fixture: bool = False) -> tuple[dict, list[dict]]:
-    """The front line and task lines a validated brief becomes."""
-    allocation = dict(data.get("allocation") or {})
+def _job_role_for_pool(pool: str) -> str | None:
+    """The JOB_ROLES name ``pool_for_role`` maps onto this pool.
+
+    ``claude`` → ``opus``, ``codex`` → ``astra``; a pool named for its
+    worker role answers with that role.
+    """
+    cfg = config.load()
+    for role in JOB_ROLES:
+        if cfg.pool_for_role(role) == pool:
+            return role
+    return None
+
+
+def _agent_record(agent: str, effort: str) -> dict:
+    manifest = pool_plugins.resolve_agent(agent)
+    assert manifest is not None
+    return {
+        "agent": agent,
+        "pool": manifest.name,
+        "model": manifest.model,
+        "effort": effort,
+    }
+
+
+def _team_records(entries: list) -> list[dict]:
+    records: list[dict] = []
+    for entry in entries:
+        if not isinstance(entry, str):
+            continue
+        parts = entry.strip().split(":")
+        if len(parts) != 4:
+            continue
+        agent, effort, count, role = parts
+        record = _agent_record(agent, effort)
+        record["count"] = int(count)
+        record["role"] = role
+        records.append(record)
+    return records
+
+
+def _allocation_from_team(team: list[dict]) -> dict[str, int]:
+    allocation: dict[str, int] = {}
+    for entry in team:
+        if entry.get("role") not in ("builder", "backup-builder", "reviewer"):
+            continue
+        role = _job_role_for_pool(str(entry.get("pool") or ""))
+        if role is None:
+            continue
+        allocation[role] = allocation.get(role, 0) + int(entry["count"])
+    return allocation
+
+
+def _repo_record(repo: dict) -> dict:
+    url = (repo.get("url") or "").strip()
+    base = (repo.get("base") or "").strip()
+    sha, _err = _ls_remote(url, base)
+    land = repo.get("land")
+    return {
+        "name": (repo.get("name") or "").strip(),
+        "url": url,
+        "base": base,
+        "work": (repo.get("work") or "").strip(),
+        "target": (repo.get("target") or "").strip(),
+        "check": (repo.get("check") or "").strip(),
+        "land": land if land in _V5_LAND else "push",
+        "trailers": list(repo["trailers"]) if isinstance(
+            repo.get("trailers"), list) else [],
+        "pr_body": repo["pr-body"] if isinstance(
+            repo.get("pr-body"), str) else "",
+        "base_sha": sha or "",
+    }
+
+
+def _monitors_from(data: dict) -> list[dict]:
     monitors = []
     for entry in data.get("monitor") or []:
+        if not isinstance(entry, dict):
+            continue
         monitors.append({key: entry[key] for key in
                          ("question", "measure", "unit", "of", "every", "alert")
                          if key in entry})
+    return monitors
+
+
+def _build_v5(data: dict, name: str,
+              fixture: bool = False) -> tuple[dict, list[dict]]:
+    """The front line a validated v5 brief becomes. No task lines."""
+    goal = (data.get("goal") or "").strip()
+    finish = (data.get("finish-line") or "").strip()
+    decisions = [item.strip() for item in (data.get("decisions") or [])
+                 if isinstance(item, str) and item.strip()]
+    supervisor_raw = (data.get("supervisor") or "").strip()
+    agent, effort = supervisor_raw.split(":", 1)
+    supervisor = _agent_record(agent, effort)
+    team = _team_records(data.get("team") or [])
+    repos = [_repo_record(entry) for entry in (data.get("repository") or [])
+             if isinstance(entry, dict)]
+    front = entities.Front(
+        id=ids.mint("front"),
+        name=name,
+        order=data.get("order", 0),
+        prefer=data.get("prefer", 0),
+        after=[entry for entry in (data.get("after") or [])],
+        want=goal,
+        done_when=finish,
+        land_on=repos[0]["target"] if repos else "",
+        reviews=data.get("reviews") or "",
+        allocation=_allocation_from_team(team),
+        supervisor=supervisor,
+        brief_path=str(paths.brief_path(name)),
+        state="queued",
+        merge=data.get("merge") or "",
+        fixture=fixture,
+        shape="v5",
+        goal=goal,
+        finish_line=finish,
+        decisions=decisions,
+        team=team,
+        repositories=repos,
+    )
+    front_line = front.to_dict()
+    front_line["monitors"] = _monitors_from(data)
+    return front_line, []
+
+
+def _build(data: dict, name: str,
+           fixture: bool = False) -> tuple[dict, list[dict]]:
+    """The front line and task lines a validated brief becomes."""
+    if _is_v5_brief(data):
+        return _build_v5(data, name, fixture=fixture)
+    allocation = dict(data.get("allocation") or {})
     front = entities.Front(
         id=ids.mint("front"),
         name=name,
@@ -581,7 +760,7 @@ def _build(data: dict, name: str,
         fixture=fixture,
     )
     front_line = front.to_dict()
-    front_line["monitors"] = monitors
+    front_line["monitors"] = _monitors_from(data)
     task_lines = []
     for entry in data.get("task") or []:
         task_after = list(entry.get("after") or [])

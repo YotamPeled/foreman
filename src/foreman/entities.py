@@ -61,7 +61,9 @@ class Front(Entity):
     land_on: str = ""
     reviews: str = ""
     allocation: dict[str, int] = field(default_factory=dict)
-    supervisor: str | None = None
+    #: Session id once a supervisor is summoned; on a v5 front line, the
+    #: brief's ``{agent, pool, model, effort}`` until then.
+    supervisor: str | dict | None = None
     brief_path: str = ""
     state: str = "queued"
     #: How this front's built tasks land: "" (the merge desk lands them
@@ -72,6 +74,22 @@ class Front(Entity):
     #: It is marked wherever the front appears, so nobody reads a task a
     #: probe job moved as work the front actually did.
     fixture: bool = False
+    #: ``"v5"`` when the brief carried ``goal``; empty on old-shape fronts.
+    shape: str = ""
+    goal: str = ""
+    finish_line: str = ""
+    decisions: list = field(default_factory=list)
+    team: list = field(default_factory=list)
+    repositories: list = field(default_factory=list)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = super().to_dict()
+        if data.get("shape") != "v5":
+            for key in ("shape", "goal", "finish_line", "decisions",
+                        "team", "repositories"):
+                if not data.get(key):
+                    data.pop(key, None)
+        return data
 
 
 @dataclass(frozen=True)
