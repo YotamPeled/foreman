@@ -346,10 +346,10 @@ def _load_state() -> dict:
     state = store.read_snapshot(paths.collector_path(), default=None)
     if not isinstance(state, dict):
         return {"sessions": {}, "relaunches": [], "parents": {},
-                "turn_attempts": {}, "queue_starts": []}
+                "turn_attempts": {}, "queue_starts": [], "target_shas": {}}
     for key, default in (("sessions", {}), ("relaunches", []),
                          ("parents", {}), ("turn_attempts", {}),
-                         ("queue_starts", [])):
+                         ("queue_starts", []), ("target_shas", {})):
         if not isinstance(state.get(key), (dict, list)):
             state[key] = default
     if not isinstance(state["sessions"], dict):
@@ -360,6 +360,8 @@ def _load_state() -> dict:
         state["parents"] = {}
     if not isinstance(state.get("queue_starts"), list):
         state["queue_starts"] = []
+    if not isinstance(state.get("target_shas"), dict):
+        state["target_shas"] = {}
     return state
 
 
@@ -1060,6 +1062,84 @@ def _queue_tick(cstate: dict, now_iso: str) -> None:
                     waits=waits)
 
 
+def _target_cache_key(url: str, target: str) -> str:
+    return f"{url}#{target}"
+
+
+def _recorded_base_sha(record: dict, entry: dict) -> str:
+    sha = str(record.get("base_sha") or "").strip()
+    if sha:
+        return sha
+    return str(entry.get("base_sha") or "").strip()
+
+
+def _detect_target_moves(cstate: dict, now_iso: str) -> None:
+    """Queue one rebase item per v5 front whose target moved.
+
+    ``git ls-remote`` of the target runs once per repository per tick
+    and the sha is stored on the collector's state. A front whose
+    recorded ``base_sha`` differs gets a ``rebase`` script item (not
+    again while one is open or ``behind`` is set) and ``behind`` is
+    written onto the front record.
+    """
+    from . import fronts as fronts_mod
+    from . import landing as landing_mod
+    from . import node as node_mod
+    from . import progress as progress_mod
+
+    cache = cstate.get("target_shas")
+    if not isinstance(cache, dict):
+        cache = cstate["target_shas"] = {}
+    seen: dict[str, str | None] = {}
+    for name in _queued_front_names():
+        record = fronts_mod.read_front_record(name)
+        if record is None:
+            continue
+        if str(record.get("state") or "") in ("done", "halted", "frozen"):
+            continue
+        if str(record.get("shape") or "") != "v5":
+            continue
+        repos = record.get("repositories") or []
+        if not isinstance(repos, list):
+            continue
+        folded, _by_id = node_mod._read_nodes(name)
+        for entry in repos:
+            if not isinstance(entry, dict):
+                continue
+            url = str(entry.get("url") or "").strip()
+            target = str(entry.get("target") or "").strip()
+            work = str(entry.get("work") or "").strip()
+            if not url or not target:
+                continue
+            key = _target_cache_key(url, target)
+            if key in seen:
+                sha = seen[key]
+            else:
+                sha, _err = fronts_mod._ls_remote(url, target)
+                seen[key] = sha
+                if sha:
+                    cache[key] = {"sha": sha, "at": now_iso}
+            if not sha:
+                continue
+            recorded = _recorded_base_sha(record, entry)
+            if not recorded or recorded == sha:
+                continue
+            if str(record.get("behind") or "").strip():
+                continue
+            if progress_mod._open_script_item(folded, "rebase"):
+                continue
+            repo_name = str(entry.get("name") or "").strip()
+            progress_mod.queue_script_item(
+                name, record, kind="rebase",
+                title=f"rebase {work} onto {target}",
+                repo=repo_name, lands=work, who=COLLECTOR_SUBJECT,
+                onto=sha)
+            landing_mod._revise_front(
+                name, record, COLLECTOR_SUBJECT, behind=sha)
+            record = fronts_mod.read_front_record(name) or record
+            folded, _by_id = node_mod._read_nodes(name)
+
+
 def _tick_inner(moment: datetime, now_iso: str,
                 config: CollectorConfig) -> dict:
     from .pools import _common as pool_common
@@ -1473,6 +1553,10 @@ def _tick_inner(moment: datetime, now_iso: str,
     # and the anomaly passes, start the oldest startable queued job per
     # front and rewrite why the rest wait.
     _queue_tick(cstate, now_iso)
+
+    # After the queue pass so a rebase item queued this tick waits for
+    # the next: the detecting tick is the one that records behind.
+    _detect_target_moves(cstate, now_iso)
 
     # Resolve what this tick no longer asserts. Unregistered-writer lines
     # clear only when the roster learns the id: the ledger line itself is

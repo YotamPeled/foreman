@@ -336,3 +336,73 @@ def test_land_pr_records_pr_url_and_does_not_move_main(
     assert item["command"] == "true"
     assert item["exit"] == 0
     assert scratch_left() == []
+
+
+def rebase_items(front: str = "v5shape") -> list[dict]:
+    return [node for node in folded_tree(front).values()
+            if node.get("kind") == "rebase"]
+
+
+def test_a_moved_target_queues_exactly_one_rebase_item(
+        env, monkeypatch, capsys):
+    """A commit on origin main behind the front queues one rebase item."""
+    _src, bare, _sha = add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    add_ok(monkeypatch, capsys, title="milestone one", node_id="mil-1")
+    clone = open_clone(env, bare)
+    add_work_commit(clone)
+    queue_front_land(monkeypatch, capsys)
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    moved = add_origin_main_commit(clone)
+    tick(now=NOW + timedelta(seconds=2))
+    items = rebase_items()
+    assert len(items) == 1
+    item = items[0]
+    assert item["state"] == "queued"
+    assert item["role"] == "script"
+    assert item["lands"] == "v5work"
+    assert item["onto"] == moved
+    record = fronts.read_front_record("v5shape")
+    assert record is not None
+    assert record.get("behind") == moved
+    tick(now=NOW + timedelta(seconds=4))
+    assert len(rebase_items()) == 1
+
+
+def test_rebase_item_moves_work_and_a_second_tick_queues_nothing(
+        env, monkeypatch, capsys):
+    """Running the rebase puts the moved commit on work and clears behind."""
+    _src, bare, _sha = add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    add_ok(monkeypatch, capsys, title="milestone one", node_id="mil-1")
+    clone = open_clone(env, bare)
+    add_work_commit(clone)
+    queue_front_land(monkeypatch, capsys)
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    moved = add_origin_main_commit(clone)
+    tick(now=NOW + timedelta(seconds=2))
+    items = rebase_items()
+    assert len(items) == 1
+    item = items[0]
+    result = landing.run("v5shape", item, by=SUP)
+    assert result.ok, result.fail_reason
+    work_tree = subprocess.run(
+        ["git", "--git-dir", str(bare), "ls-tree", "-r", "--name-only",
+         "refs/heads/v5work"],
+        check=True, capture_output=True, text=True).stdout
+    assert "main.txt" in work_tree
+    assert "feat.txt" in work_tree
+    record = fronts.read_front_record("v5shape")
+    assert record is not None
+    assert record.get("behind") in (None, "")
+    assert record.get("base_sha") == moved
+    repos = record.get("repositories") or []
+    assert repos and repos[0].get("base_sha") == moved
+    recorded = folded_tree()[item["id"]]
+    assert recorded["state"] == "landed"
+    assert recorded["base_sha"] == moved
+    tick(now=NOW + timedelta(seconds=4))
+    assert len(rebase_items()) == 1
+    assert scratch_left() == []
