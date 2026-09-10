@@ -368,8 +368,16 @@ def _header(roster: dict, observed: dict | None, now: datetime) -> str:
         stale = False
     if stale:
         tick += " \u00b7 collector stale \u2014 foreman collector restart"
-    return (f"Foreman status \u2014 {registered} sessions registered, "
-            f"{seen} observed \u00b7 {frozen} \u00b7 {tick}")
+    header = (f"Foreman status \u2014 {registered} sessions registered, "
+              f"{seen} observed \u00b7 {frozen} \u00b7 {tick}")
+    # A v5 swarm is held by one foreman `foreman start` brought up; the
+    # header names it. Older swarms render exactly as they always have.
+    if any((front_record_of(name) or {}).get("shape") == "v5"
+           for name in front_names()):
+        from .launch import foreman_summary
+
+        header += f"\nforeman: {foreman_summary() or 'none'}"
+    return header
 
 
 def _open_inbox() -> list[dict]:

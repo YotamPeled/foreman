@@ -435,6 +435,14 @@ def doctor_main() -> int:
     caller.check_role(me, verb, FOREMAN, SUPERVISOR, violations=violations)
     if violations:
         return Refusal(violations).report()
+    # What `foreman start` brings up, stated before any divergence: the
+    # unit's state and who holds the swarm. Facts, never problems.
+    from .collector import COLLECTOR_UNIT, unit_state
+    from .launch import foreman_summary
+
+    print(f"doctor: collector unit {COLLECTOR_UNIT}: {unit_state()}")
+    summary = foreman_summary()
+    print(f"doctor: foreman: {summary}" if summary else "doctor: no foreman")
     found = _problems()
     for divergence, fix in found:
         print(f"doctor: {divergence}")

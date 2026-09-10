@@ -3559,6 +3559,21 @@ def live_foreman(ignore: str | None = None
     return live
 
 
+def foreman_summary() -> str | None:
+    """``ses-x (model, effort)`` for the live foreman, None when none is.
+
+    Doctor and status both print it; a foreman launched without an
+    effort says so rather than printing a blank.
+    """
+    live = live_foreman()
+    if not live:
+        return None
+    session_id, entry = live[0]
+    model = entry.get("model") or "no model"
+    effort = entry.get("effort") or "no effort"
+    return f"{session_id} ({model}, {effort})"
+
+
 def _foreman_session(session_id: str, repo: str,
                      launched_by: str | None,
                      model: str | None = None) -> Session:
