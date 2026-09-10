@@ -6,6 +6,7 @@ v5-shape front whose repository is named ``foreman``.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -366,6 +367,7 @@ def test_node_add_tool_is_listed_for_supervisor_not_worker(
                                      "params": {}})["result"]["tools"]}
     assert "node_add" in supervisor
     assert "node_revise" in supervisor
+    assert "node_list" in supervisor
     monkeypatch.setenv(SESSION_ENV, WORKER)
     worker = {tool["name"] for tool in
               mcp_module.handle({"jsonrpc": "2.0", "id": 1,
@@ -373,6 +375,7 @@ def test_node_add_tool_is_listed_for_supervisor_not_worker(
                                  "params": {}})["result"]["tools"]}
     assert "node_add" not in worker
     assert "node_revise" not in worker
+    assert "node_list" not in worker
 
 
 def test_node_revise_appends_and_the_file_only_grows(
@@ -442,3 +445,106 @@ def test_node_revise_state_sets_landed(env, monkeypatch, capsys):
     by_id = {line["id"]: line for line in folded}
     assert by_id[job]["state"] == "landed"
     assert by_id[job]["op"] == "revise"
+
+
+def test_node_list_prints_the_chain_indented(env, monkeypatch, capsys):
+    """A milestone/task/job chain prints indented by depth; tasks show 0/1."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    mil = add_ok(monkeypatch, capsys, title="milestone one")
+    tsk = add_ok(monkeypatch, capsys, parent=mil, kind="task",
+                 title="the door")
+    job = add_ok(monkeypatch, capsys, parent=tsk, kind="job",
+                 title="implement the door")
+    assert run(monkeypatch, ["node", "list", "v5shape"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    lines = out.splitlines()
+    assert lines == [
+        f"{mil}  milestone  milestone one",
+        f"  {tsk}  task  the door  0/1",
+        f"    {job}  job  implement the door",
+    ]
+
+
+def test_node_list_empty_prints_no_tree_yet(env, monkeypatch, capsys):
+    """A front with no nodes prints (no tree yet)."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    assert run(monkeypatch, ["node", "list", "v5shape"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.strip() == "(no tree yet)"
+
+
+def test_node_list_json_prints_the_folded_list(env, monkeypatch, capsys):
+    """--json prints the folded list, not the text rendering."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    mil = add_ok(monkeypatch, capsys, title="milestone one")
+    assert run(monkeypatch, ["node", "list", "v5shape", "--json"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    folded = json.loads(out)
+    assert isinstance(folded, list)
+    assert len(folded) == 1
+    assert folded[0]["id"] == mil
+    assert folded[0]["kind"] == "milestone"
+    assert folded[0]["title"] == "milestone one"
+
+
+def test_node_list_under_and_landed_count(env, monkeypatch, capsys):
+    """--under a task prints that subtree; a landed job counts 1/1."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    mil = add_ok(monkeypatch, capsys, title="milestone one")
+    tsk = add_ok(monkeypatch, capsys, parent=mil, kind="task",
+                 title="the door")
+    job = add_ok(monkeypatch, capsys, parent=tsk, kind="job",
+                 title="implement the door")
+    other = add_ok(monkeypatch, capsys, parent=mil, kind="task",
+                   title="sibling")
+    assert run(monkeypatch, ["node", "revise", "v5shape", job,
+                             "--state", "landed",
+                             "--reason", "until milestone 4"], SUP) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["node", "list", "v5shape", "--under", tsk],
+               SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert mil not in out
+    assert other not in out
+    assert lines_of(out) == [
+        f"  {tsk}  task  the door  1/1",
+        f"    {job}  job  implement the door",
+    ]
+    assert run(monkeypatch, ["node", "list", "v5shape"], SUP) == 0
+    listed, err = capsys.readouterr()
+    assert err == ""
+    assert f"  {tsk}  task  the door  1/1" in listed
+    assert f"  {other}  task  sibling  0/0" in listed
+
+
+def test_node_list_unknown_under_is_refused(env, monkeypatch, capsys):
+    """--under an id not on the fold names under."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    add_ok(monkeypatch, capsys)
+    assert run(monkeypatch, ["node", "list", "v5shape",
+                             "--under", "nod-missing"], SUP) == 1
+    _, err = capsys.readouterr()
+    assert "under" in err
+    assert "nod-missing" in err
+
+
+def test_node_list_unknown_front_is_refused(env, monkeypatch, capsys):
+    """Unknown front is refused; an empty existing front is not unknown."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    assert run(monkeypatch, ["node", "list", "missing"], SUP) == 1
+    _, err = capsys.readouterr()
+    assert "missing" in err
+
+
+def lines_of(out: str) -> list[str]:
+    return out.splitlines()
