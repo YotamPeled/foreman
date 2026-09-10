@@ -8,7 +8,6 @@ same last door before a unit — so nothing here reaches systemd.
 
 from __future__ import annotations
 
-import os
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -446,3 +445,46 @@ def test_two_ticks_with_nothing_changed_append_no_revise_line(
     after = store.read_ledger(paths.front_tree_path("v5shape"))
     assert after == before
     assert launch_args(launch_spawn) == []
+
+
+def test_job_list_shows_tick_reasons_and_running_job(
+        env, monkeypatch, capsys, launch_spawn):
+    """job list prints running <job id> for started nodes and the tick's
+    wait reason for the rest."""
+    add_front(env, monkeypatch, capsys, team=ONE_BUILDER_TEAM)
+    seed_supervisor("v5shape")
+    _mil, _tsk, first = add_chain(monkeypatch, capsys, job_id="job-a")
+    second = add_ok(monkeypatch, capsys, parent="tsk-1", kind="job",
+                    title="the next unit", role="builder", node_id="job-b")
+    assert run(monkeypatch, ["job", "queue", "v5shape", first], SUP) == 0
+    assert run(monkeypatch, ["job", "queue", "v5shape", second], SUP) == 0
+    capsys.readouterr()
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    tree = folded_tree()
+    job_id = tree[first]["job"]
+    assert run(monkeypatch, ["job", "list", "v5shape"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.splitlines() == [
+        f"{first}  builder  grok  running {job_id}",
+        f"{second}  builder  grok  waits: no slot",
+    ]
+
+
+def test_status_shows_queue_counts_for_a_v5_front(
+        env, monkeypatch, capsys, launch_spawn):
+    """status shows queue: N waiting, M running on a v5 front."""
+    add_front(env, monkeypatch, capsys, team=ONE_BUILDER_TEAM)
+    seed_supervisor("v5shape")
+    _mil, _tsk, first = add_chain(monkeypatch, capsys, job_id="job-a")
+    second = add_ok(monkeypatch, capsys, parent="tsk-1", kind="job",
+                    title="the next unit", role="builder", node_id="job-b")
+    assert run(monkeypatch, ["job", "queue", "v5shape", first], SUP) == 0
+    assert run(monkeypatch, ["job", "queue", "v5shape", second], SUP) == 0
+    capsys.readouterr()
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    assert cli.main(["status"]) == 0
+    out, err = capsys.readouterr()
+    assert "queue: 1 waiting, 1 running" in out

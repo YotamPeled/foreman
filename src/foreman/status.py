@@ -830,6 +830,23 @@ def _evidence_line(record: dict, base_sha: str) -> str:
     return f"      {claim}{marker}"
 
 
+def _v5_queue_line(name: str, front_record: dict | None) -> str | None:
+    """``queue: N waiting, M running`` for a v5 front's tree, else None."""
+    if (front_record or {}).get("shape") != "v5":
+        return None
+    try:
+        tree = _fold_by_id(store.read_ledger(paths.front_tree_path(name)))
+    except OSError:
+        tree = []
+    waiting = sum(1 for node in tree
+                  if node.get("kind") == "job"
+                  and str(node.get("state") or "") == "queued")
+    running = sum(1 for node in tree
+                  if node.get("kind") == "job"
+                  and str(node.get("state") or "") == "running")
+    return f"    queue: {waiting} waiting, {running} running"
+
+
 def _working(roster: dict, observed: dict | None, now: datetime,
              loaded: list[tuple[str, list[dict], list[dict]]],
              inbox: list[dict]) -> list[str]:
@@ -880,6 +897,9 @@ def _working(roster: dict, observed: dict | None, now: datetime,
                     else:
                         parts.append(f"{role} {shown}")
                 lines.append(f"    allocation: {', '.join(parts)}")
+            queue_line = _v5_queue_line(name, front_record)
+            if queue_line is not None:
+                lines.append(queue_line)
         try:
             evidence = store.read_ledger(paths.front_evidence_path(name))
         except OSError:

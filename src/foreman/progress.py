@@ -1440,14 +1440,20 @@ def job_list_main(front: str) -> int:
     folded, _by_id = node_mod._read_nodes(front_name)
     queued = [node for node in folded
               if node.get("kind") == "job"
-              and str(node.get("state") or "") == "queued"]
+              and str(node.get("state") or "") in ("queued", "running")]
     lines = []
     for node in _queue_order(queued):
         nid = node.get("id")
         team_role = node.get("role") or ""
         job_role = _job_role_of_node(record, node)
-        waits = node.get("waits") or ""
-        lines.append(f"{nid}  {team_role}  {job_role}  waits: {waits}")
+        if str(node.get("state") or "") == "running":
+            job_id = node.get("job") or ""
+            lines.append(
+                f"{nid}  {team_role}  {job_role}  running {job_id}")
+        else:
+            waits = node.get("waits") or ""
+            lines.append(
+                f"{nid}  {team_role}  {job_role}  waits: {waits}")
     if lines:
         print("\n".join(lines))
     return 0
