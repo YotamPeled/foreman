@@ -10,7 +10,7 @@ from pathlib import Path
 
 import pytest
 
-from foreman import cli, entities, fronts, ids, paths, store
+from foreman import capacity, cli, entities, fronts, ids, paths, store
 from foreman.caller import SESSION_ENV
 from foreman.entities import Session
 from foreman.pools import LaunchContext, PoolAdapter
@@ -183,3 +183,53 @@ def test_an_old_shape_front_reserves_its_allocation_as_builders(env, capsys):
     assert recs[0]["pool"] == "fake"
     assert recs[0]["role"] == "muse"
     assert recs[0]["count"] == 2
+
+
+def test_ceiling_is_the_reserved_count_once_a_front_holds_one(env, capsys):
+    """Allocation is the ceiling only when nothing is reserved."""
+    write_v5("A", builders=2)
+    assert capacity.ceiling("A", "muse") == 2
+    assert cli.main(["front", "reserve", "A"]) == 0
+    capsys.readouterr()
+    assert capacity.ceiling("A", "muse") == 2
+    assert capacity.ceiling("A", "opus") == 0
+
+
+def test_a_launch_on_a_past_two_held_names_the_reservation(env, capsys):
+    write_v5("A", builders=2)
+    assert cli.main(["front", "reserve", "A"]) == 0
+    capsys.readouterr()
+    capacity.grant(pool="fake", front="A", role="muse", job="job-1",
+                   session="ses-a000001")
+    capacity.grant(pool="fake", front="A", role="muse", job="job-2",
+                   session="ses-a000002")
+    problems = capacity.launch_problems("muse", "fake", "A")
+    assert any("reservation" in line for line in problems)
+    assert "role 'muse' on front 'A': 2 held, reservation 2" in problems
+
+
+def test_a_launch_on_an_old_shape_front_names_reserved_when_the_cap_is_held(
+        env, capsys):
+    """A and B hold 3 reserved; C has no reservation and is refused by the
+    pool, naming reserved, not only held."""
+    write_v5("A", builders=2)
+    write_v5("B", builders=1)
+    write_old("C", muse=2)
+    assert cli.main(["front", "reserve", "A"]) == 0
+    assert cli.main(["front", "reserve", "B"]) == 0
+    capsys.readouterr()
+    problems = capacity.launch_problems("muse", "fake", "C")
+    assert any("reserved" in line for line in problems)
+    assert ("role 'muse' on front 'C': 0 held in pool 'fake', "
+            "reserved 3, cap 3") in problems
+    assert capacity.ceiling("C", "muse") == 2
+
+
+def test_status_prints_held_reserved_and_cap_after_a_reserves(env, capsys):
+    write_v5("A", builders=2)
+    assert cli.main(["front", "reserve", "A"]) == 0
+    capsys.readouterr()
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    assert "held 0 / reserved 2 / cap 3" in out
+    assert "A muse: reserved 2, running 0" in out

@@ -10,11 +10,12 @@ carrying ``released_at`` and ``released_because``, and every reader folds
 last-wins.
 
 The two limits are different things. A **pool cap** is the whole system's
-limit on one model family and is shared first come, first served. A
-front's **allocation** is a ceiling per role — the most that front may hold
-at once — and never a reservation: an idle allocation holds nothing and
-another front may take the slot (docs/DESIGN.md section 3, section 9 rule
-12). Both are checked at the moment of a grant and never before.
+limit on one model family. A front's **allocation** is a ceiling per role
+— the most that front may hold at once — and is the ceiling only while
+nothing is reserved. An open reservation on ``reservations.jsonl`` holds
+those slots against the cap until it is released: ``ceiling`` reads the
+reserved count, and the pool check treats every other front's open
+reservation as already held.
 """
 
 from __future__ import annotations
@@ -244,12 +245,22 @@ def ceiling(front: str | None, role: str) -> int | None:
     ledger gets it: nothing said what that front may hold, so only the pool
     cap speaks. A front that does have a record is held to it, and a role
     its allocation does not name is allocated nothing.
+
+    An open reservation replaces the allocation: the reserved count for
+    this role is the ceiling, including zero for a role the front did
+    not reserve. The allocation is the ceiling only when nothing is
+    reserved.
     """
     if not front:
         return None
     record = fronts.read_front_record(front)
     if record is None:
         return None
+    if fronts.front_has_open_reservation(front):
+        value = fronts.reserved_by_front_role().get((front, role), 0)
+        if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+            return 0
+        return value
     allocation = record.get("allocation")
     value = allocation.get(role) if isinstance(allocation, dict) else None
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
@@ -375,14 +386,25 @@ def launch_problems(role: str, pool: str, front: str | None,
     if limit is not None:
         held = held_by_front_role().get((front or "", role), 0)
         if held >= limit:
-            problems.append(f"{_who(role, front)}: "
-                            f"{held} held, ceiling {limit}")
+            if front and fronts.front_has_open_reservation(front):
+                problems.append(f"{_who(role, front)}: "
+                                f"{held} held, reservation {limit}")
+            else:
+                problems.append(f"{_who(role, front)}: "
+                                f"{held} held, ceiling {limit}")
     cap = config.load().cap(pool)
     if cap is not None:
         held = held_by_pool().get(pool, 0)
-        if held >= cap:
-            problems.append(f"{_who(role, front)}: {held} held in pool "
-                            f"{pool!r}, cap {cap}")
+        reserved_others = fronts.reserved_by_pool(except_front=front)
+        reserved = reserved_others.get(pool, 0)
+        if held + reserved >= cap:
+            if reserved:
+                problems.append(
+                    f"{_who(role, front)}: {held} held in pool "
+                    f"{pool!r}, reserved {reserved}, cap {cap}")
+            else:
+                problems.append(f"{_who(role, front)}: {held} held in pool "
+                                f"{pool!r}, cap {cap}")
         running = running_by_pool(table).get(pool, 0)
         if running >= cap and _binary_is_foreman_worker(pool):
             problems.append(f"{_who(role, front)}: {running} {pool} "
@@ -413,11 +435,10 @@ def admit(*, role: str, pool: str, front: str | None, job: str | None,
     reads the winner's grant and is refused by the same sentence it would
     have read a second later.
 
-    Holding the lock across a check and an append is not a reservation and
-    does not make a front's allocation one: nothing is held between the
-    caller deciding to launch and this call, and what is held afterwards is
-    a running worker's slot, first come first served (docs/DESIGN.md
-    section 9 rule 12). The lock is a moment; a reservation is a promise.
+    Holding the lock across a check and an append is a moment, not the
+    front's reservation: an open line on ``reservations.jsonl`` is what
+    holds the team, and ``launch_problems`` already counted it. What is
+    held afterwards is a running worker's slot.
     """
     with store._write_lock():
         problems = launch_problems(role, pool, front)
@@ -531,6 +552,11 @@ def capacity_lines(observed: dict | None,
     from held; a pool whose two numbers agree keeps the row it printed
     before.
 
+    Open reservations change the spelling: a pool with any prints
+    ``held h / reserved r / cap c``, and a front that holds one prints
+    ``reserved r, running h`` per role. Fronts with nothing reserved
+    keep the old held/ceiling line.
+
     ``table`` is the process table the box count is read from; ``None``
     takes a fresh snapshot.
     """
@@ -539,6 +565,9 @@ def capacity_lines(observed: dict | None,
     held_pool = held_by_pool()
     allocations = front_allocations()
     held_front = held_by_front_role()
+    reserved_pool = fronts.reserved_by_pool()
+    reserved_front_role = fronts.reserved_by_front_role()
+    holding = fronts.reserved_fronts()
     out_now = out_pools(now)
     running_pool = running_by_pool(table)
 
@@ -547,6 +576,7 @@ def capacity_lines(observed: dict | None,
     names.update(pool_for_role(role) for _front, role, _n in allocations)
     names.update(out_now)
     names.update(pool for pool, n in running_pool.items() if n)
+    names.update(reserved_pool)
 
     settings = config.load()
 
@@ -563,11 +593,18 @@ def capacity_lines(observed: dict | None,
         total = settings.cap(pool)
         held = held_pool.get(pool, 0)
         running = running_pool.get(pool, 0)
-        if total is None and held == 0 and running == 0:
+        reserved = reserved_pool.get(pool, 0)
+        if total is None and held == 0 and running == 0 and reserved == 0:
             # Nothing configured and nothing held: an empty row about a
             # pool nobody is using is noise on a one-screen panel.
             continue
-        line = f"  {pool}: {held}/{total if total is not None else '-'} held"
+        if reserved:
+            cap_shown = total if total is not None else "-"
+            line = (f"  {pool}: held {held} / reserved {reserved} / "
+                    f"cap {cap_shown}")
+        else:
+            line = (f"  {pool}: {held}/"
+                    f"{total if total is not None else '-'} held")
         if running != held:
             line += f" · {running} running on the box"
         # A queued job is waiting for a slot only where there is no slot to
@@ -577,13 +614,27 @@ def capacity_lines(observed: dict | None,
         if behind and total is not None and held >= total:
             line += f" · {behind} waiting"
         lines.append(line)
-    for front, role, limit in allocations:
+    front_lines: list[tuple[str, str, str]] = []
+    for (front, role), count in reserved_front_role.items():
         shown = allocation_out(role, now)
         if shown is not None:
-            lines.append(f"  {front} {role}: {shown}")
+            text = f"  {front} {role}: {shown}"
+        else:
+            text = (f"  {front} {role}: reserved {count}, "
+                    f"running {held_front.get((front, role), 0)}")
+        front_lines.append((front, role, text))
+    for front, role, limit in allocations:
+        if front in holding:
             continue
-        lines.append(f"  {front} {role}: "
-                     f"{held_front.get((front, role), 0)}/{limit} held")
+        shown = allocation_out(role, now)
+        if shown is not None:
+            text = f"  {front} {role}: {shown}"
+        else:
+            text = (f"  {front} {role}: "
+                    f"{held_front.get((front, role), 0)}/{limit} held")
+        front_lines.append((front, role, text))
+    for _front, _role, text in sorted(front_lines):
+        lines.append(text)
     if not lines:
         return ["Capacity: no collector data yet."]
     return ["Capacity:"] + lines
