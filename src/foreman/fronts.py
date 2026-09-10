@@ -1659,6 +1659,35 @@ def front_import_main(front: str, directory: str | None,
         front, directory, seen_at=seen_at, commit=commit, dry_run=dry_run)
 
 
+def front_policy_main(front: str, repo: str) -> int:
+    """Print the landing policy for a front and a repository, one field per line."""
+    verb = "front policy"
+    me, violations = caller.resolve(verb)
+    key = (front or "").strip()
+    want = (repo or "").strip()
+    if not key:
+        violations.append("field 'front' is required")
+    if not want:
+        violations.append("field 'repo' is required")
+    record = read_front_record(key) if key else None
+    if key and record is None:
+        violations.append(f"unknown front '{key}'")
+    if me is not None and me.role == caller.SUPERVISOR:
+        caller.check_front_supervisor(me, key or None, verb,
+                                      violations=violations)
+    else:
+        caller.check_role(me, verb, caller.FOREMAN, violations=violations)
+    if violations:
+        return Refusal(violations).report()
+    from . import landing
+    try:
+        policy = landing.policy_for(key, want)
+    except Refusal as exc:
+        return exc.report()
+    print(landing.format_policy(policy))
+    return 0
+
+
 def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     verbs = sub.add_subparsers(dest="front_verb", required=True)
     add = verbs.add_parser("add", help="Validate a brief and append its front.")
@@ -1721,10 +1750,15 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
                           "(required when map.md exists)")
     imp.add_argument("--dry-run", action="store_true",
                      help="print the counts and write nothing")
+    policy = verbs.add_parser(
+        "policy", help="Print the landing policy for a repository.")
+    policy.add_argument("front", help="front name")
+    policy.add_argument("repo", help="repository name or url")
 
 
-@cli.subcommand("front", help="Add, list, show, prefer, allocate, reserve, "
-                     "release, close, take, import or mark a front done.")
+@cli.subcommand("front", help="Add, list, show, policy, prefer, allocate, "
+                     "reserve, release, close, take, import or mark a "
+                     "front done.")
 def _front_entry(args: argparse.Namespace) -> int:
     if args.front_verb == "add":
         return front_add_main(args.directory, dry_run=args.dry_run,
@@ -1751,6 +1785,8 @@ def _front_entry(args: argparse.Namespace) -> int:
         return front_import_main(
             args.front, args.directory, seen_at=args.seen_at,
             commit=args.commit, dry_run=args.dry_run)
+    if args.front_verb == "policy":
+        return front_policy_main(args.front, args.repo)
     raise AssertionError(f"unknown front verb {args.front_verb!r}")
 
 
