@@ -597,8 +597,9 @@ class Event(Entity):
 #: ``inbox answered`` to the session that asked, ``rule landed`` to the
 #: supervisor of the rule's front, ``told`` to the named session,
 #: ``heartbeat`` to any session with a live turn contract, ``merge
-#: requested`` to the front's merge desk, and ``merge landed`` /
-#: ``merge failed`` to the supervisor that asked.
+#: requested`` to the front's merge desk, ``merge landed`` /
+#: ``merge failed`` to the supervisor that asked, and ``landing failed``
+#: to the front's supervisor (live, or the session a relaunch will read).
 WAKE_REASONS = (
     "job returned",
     "job returned-with-work",
@@ -612,6 +613,7 @@ WAKE_REASONS = (
     "merge requested",
     "merge landed",
     "merge failed",
+    "landing failed",
 )
 
 

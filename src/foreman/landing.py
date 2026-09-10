@@ -336,10 +336,45 @@ def _file_landing_finding(front: str, item: dict, by: str,
     return fid
 
 
+def _supervisor_session_for(front: str) -> str | None:
+    """The front's live supervisor, else the session a relaunch will read."""
+    from . import fronts
+    from . import wake as wake_mod
+
+    target = wake_mod.supervisor_for(front)
+    if target:
+        return target
+    record = fronts.read_front_record(front)
+    if record is None:
+        return None
+    supervisor = record.get("supervisor")
+    if isinstance(supervisor, str) and supervisor.startswith("ses-"):
+        return supervisor
+    return None
+
+
+def _wake_landing(front: str, item: dict, result: LandingResult,
+                  finding_id: str) -> None:
+    """Wake the front's supervisor about this landing. Never the owner."""
+    from . import wake as wake_mod
+
+    sid = _supervisor_session_for(front)
+    if not sid:
+        return
+    item_id = str(item.get("id") or "")
+    if result.ok:
+        wake_mod.append_event(
+            sid, "job returned", job=item_id, sha=result.head)
+        return
+    wake_mod.append_event(
+        sid, "landing failed", job=item_id, text=finding_id)
+
+
 def _record_item(front: str, item: dict, by: str, result: LandingResult) -> None:
     from . import progress as progress_mod
 
     changes: dict[str, object] = {}
+    finding_id = ""
     if result.ok:
         changes["state"] = "landed"
         changes["landed_sha"] = result.head
@@ -348,7 +383,8 @@ def _record_item(front: str, item: dict, by: str, result: LandingResult) -> None
     else:
         changes["state"] = "failed"
         changes["fail_reason"] = result.fail_reason
-        changes["finding"] = _file_landing_finding(front, item, by, result)
+        finding_id = _file_landing_finding(front, item, by, result)
+        changes["finding"] = finding_id
     if result.command:
         changes["command"] = result.command
     if result.exit is not None:
@@ -367,6 +403,7 @@ def _record_item(front: str, item: dict, by: str, result: LandingResult) -> None
         changes["pr_url"] = result.pr_url
     progress_mod._write_node_revise(
         front, item, by, "landing", **changes)
+    _wake_landing(front, item, result, finding_id)
 
 
 def _mark_built_landed(front: str, built: dict, by: str, head: str) -> None:

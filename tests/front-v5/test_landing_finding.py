@@ -1,8 +1,9 @@
-"""A failed landing files a finding on the front with the check output.
+"""A failed landing files a finding and wakes the front's supervisor.
 
-A red check copies the output under the front's findings directory and
-names the finding on the item. A rebase conflict or empty range files
-the reason alone. A green landing files nothing. Inbox stays empty.
+A red check copies the output under the front's findings directory,
+names the finding on the item, and wakes with ``landing failed``. A
+rebase conflict or empty range files the reason alone. A green landing
+files nothing and wakes ``job returned``. Inbox stays empty.
 """
 
 from __future__ import annotations
@@ -253,6 +254,10 @@ def findings(front: str = "v5shape") -> list[dict]:
     return store.read_ledger(paths.front_findings_path(front))
 
 
+def events_for(sid: str) -> list[dict]:
+    return store.read_ledger(paths.session_events_path(sid))
+
+
 def test_red_check_files_one_landing_finding_with_the_output(
         env, monkeypatch, capsys):
     """A red check files one finding of class landing; evidence is the output."""
@@ -286,6 +291,10 @@ def test_red_check_files_one_landing_finding_with_the_output(
     assert "LANDING-RED" in evidence.read_text(encoding="utf-8")
     recorded = folded_tree()[item_id]
     assert recorded["finding"] == finding["id"]
+    wakes = events_for(SUP)
+    assert [(e.get("reason"), e.get("job"), e.get("text")) for e in wakes] == [
+        ("landing failed", item_id, finding["id"]),
+    ]
     assert store.read_ledger(paths.inbox_path()) == []
 
 
@@ -371,7 +380,7 @@ def test_empty_range_files_a_finding_with_the_reason_alone(
 
 
 def test_green_landing_files_no_finding(env, monkeypatch, capsys):
-    """A landing that succeeds writes no finding and leaves the inbox empty."""
+    """A landing that succeeds writes no finding and wakes job returned."""
     _src, bare, _sha = add_front(env, monkeypatch, capsys)
     seed_supervisor("v5shape")
     _mil, _tsk, node_id = add_chain(monkeypatch, capsys, job_id="job-a")
@@ -384,6 +393,10 @@ def test_green_landing_files_no_finding(env, monkeypatch, capsys):
     assert findings() == []
     recorded = folded_tree()[item_id]
     assert "finding" not in recorded
+    wakes = events_for(SUP)
+    assert [(e.get("reason"), e.get("job"), e.get("sha")) for e in wakes] == [
+        ("job returned", item_id, result.head),
+    ]
     assert store.read_ledger(paths.inbox_path()) == []
 
 
@@ -408,4 +421,28 @@ def test_front_landing_red_check_files_a_finding(
     assert evidence.is_file()
     assert "FRONT-RED" in evidence.read_text(encoding="utf-8")
     assert folded_tree()[item_id]["finding"] == finding["id"]
+    assert store.read_ledger(paths.inbox_path()) == []
+
+
+def test_no_live_supervisor_still_gets_the_landing_failed_event(
+        env, monkeypatch, capsys):
+    """With no live supervisor the event is written to that session anyway."""
+    _src, bare, _sha = add_front(
+        env, monkeypatch, capsys, check="echo LANDING-RED; false")
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(monkeypatch, capsys, job_id="job-a")
+    clone = open_clone(env, bare)
+    checkout_work(clone)
+    add_job_commit(clone, f"job/v5shape-{node_id}")
+    item_id = queue_landing(monkeypatch, capsys, node_id, clone)
+    seed_supervisor("v5shape", state="exited")
+    result = landing.run("v5shape", folded_tree()[item_id], by=SUP)
+    assert not result.ok
+    recorded = folded_tree()[item_id]
+    fid = recorded["finding"]
+    assert fid
+    wakes = events_for(SUP)
+    assert [(e.get("reason"), e.get("job"), e.get("text")) for e in wakes] == [
+        ("landing failed", item_id, fid),
+    ]
     assert store.read_ledger(paths.inbox_path()) == []
