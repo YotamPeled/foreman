@@ -720,15 +720,22 @@ def _wrap_systemctl():
 def _wrap_spawn_and_wait():
     # Clause 5.1: captured window launcher. Refuses a missing executable
     # or a missing run script the way production would, writes the world's
-    # live pid, starts nothing.
+    # live pid, starts nothing. Headless workers still go through
+    # spawn_and_wait so PATH finds the world's fake systemd-run
+    # (5ffc2e2 swallowed that argv as a missing window launcher).
     log = os.environ.get("FOREMAN_PROOF_SPAWN_WAIT_LOG")
     if not log:
         return
     from foreman.pools import _common
 
+    real = _common.spawn_and_wait
+
     def wrapped(argv, *, pid_path, session_id, popen):
         launcher = next(a for a in argv
                         if not str(a).startswith(("env", "AGENT_WS")))
+        if os.path.basename(str(launcher)) == "systemd-run":
+            return real(argv, pid_path=pid_path, session_id=session_id,
+                        popen=popen)
         if not os.access(launcher, os.X_OK):
             raise FileNotFoundError(launcher)
         script = Path(argv[-1])
