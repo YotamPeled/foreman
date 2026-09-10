@@ -136,6 +136,17 @@ def test_derive_team_never_exceeds_the_owner_ceiling(env):
         assert entry.count <= entry.ceiling, entry
 
 
+def test_a_ceiling_of_one_holds_when_the_leaves_want_two(env):
+    """Four leaves want two builders; a ceiling of one derives one:
+    the owner's ceiling clamps the derived count, never the reverse."""
+    record = write_front("alpha", grok=1)
+    write_leaves("alpha", 4)
+    tree = store.fold_by_id(store.read_ledger(paths.front_tree_path("alpha")))
+    grok = grok_builder(derive_team(record, tree, []))
+    assert grok.count == 1
+    assert grok.ceiling == 1
+
+
 def test_front_team_prints_count_of_ceiling_and_reason(env, capsys):
     write_front("alpha", grok=3)
     write_leaves("alpha", 4)
