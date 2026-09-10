@@ -150,6 +150,27 @@ clause CONFIRMED by running on the live installation, with the proof recorded as
     record goes to the supervisor, who classifies it under the mutation ruling (gap, ineffective, or
     vacuous test) before the node proceeds. A node with no break named is refused at the door. This is
     the last serial step of verification moved off the supervisor.
+34. A node earns its place or it does not exist. A node may be added only if it either holds work with
+    its own verify and break, or splits work into at least two children. The door refuses: a node whose
+    verify command equals its parent's; a node with no verify of its own and fewer than two children
+    (fold it into the child). Work too small for a node is done by the supervisor inside the parent
+    node's job and recorded as one line on that node (what it did, why it was too small), so it stays
+    visible without a queue slot, a worktree and a landing.
+35. The tree speaks the design's language: milestones and nodes, and the nodes at the bottom are jobs.
+    The kind named "task" is renamed "node" everywhere (verbs, records, screens, prompts, docs), with a
+    migration for existing fronts; "task" survives only where an old-shape front's record needs reading.
+36. Every verb the decisions give the foreman, the foreman may call. The role/verb table is derived from
+    these decisions, not hand-maintained: the foreman can order the front queue (prefer), import a
+    front, reserve and release a team, start, stop, resume and land a front, ask the owner, and clear a
+    pool's out mark. A test asserts, for each role, that every verb its decisions name is permitted and
+    every verb they do not is refused. Known today, all refused wrongly: front prefer, front import,
+    front reserve, ask, finding, cap.
+37. Nothing Foreman runs may alter a repository it did not create. Concretely: every scratch repository
+    is created with `git init --bare <path>` from a neutral working directory, never `git -C <root>
+    init --bare <path>`, which converts <root> itself; a test asserts that after the whole suite and
+    after `foreman-proof`, the install clone and the dev checkout are still work trees at the head they
+    started on; `foreman doctor` checks the install clone is a work tree at its recorded head and offers
+    the one-command repair; and no job's spec may name the install clone as a working directory.
 
 ## Team
 
