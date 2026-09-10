@@ -413,6 +413,17 @@ class Measurement(Entity):
 
 
 @dataclass(frozen=True)
+class Flake(Entity):
+    """One registered flake on a front (``fronts/<name>/flakes.jsonl``)."""
+
+    id: str | None = None
+    front: str = ""
+    node: str = ""
+    test: str = ""
+    reason: str = ""
+
+
+@dataclass(frozen=True)
 class MapFact(Entity):
     """One fact on a front's map ledger (``fronts/<name>/map.jsonl``).
 
@@ -542,6 +553,11 @@ class Node(Entity):
     review_rounds: list = field(default_factory=list)
     #: Finding id filed when this landing item failed. Empty otherwise.
     finding: str = ""
+    #: Green runs and total runs of a landing check under contention.
+    greens: int | None = None
+    runs: int | None = None
+    #: The registered flake test a 1/2 green landing retried.
+    flake: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -587,6 +603,12 @@ class Node(Entity):
             data.pop("review_rounds", None)
         if not data.get("finding"):
             data.pop("finding", None)
+        if data.get("greens") is None:
+            data.pop("greens", None)
+        if data.get("runs") is None:
+            data.pop("runs", None)
+        if not data.get("flake"):
+            data.pop("flake", None)
         return data
 
 

@@ -39,7 +39,7 @@ PANEL_BRIEF = ROOT / "briefs" / "panel"
 #: here, not derived: the drift being caught is exactly the server
 #: disagreeing with the table.
 SUPERVISOR_TOOLS = frozenset({
-    "ask", "attach", "checkpoint", "doctor", "evidence", "finding",
+    "ask", "attach", "check_flake", "checkpoint", "doctor", "evidence", "finding",
     "front_done", "front_import", "front_policy", "front_show", "front_take", "job_cancel", "job_edit", "job_fail", "job_front", "job_land", "job_list", "job_queue", "job_repoint", "job_retry", "job_verify", "kill", "launch", "map_add", "map_import", "map_resolve", "map_show", "measure", "merge_request", "milestone_add", "milestone_list", "milestone_merge", "milestone_split", "node_add", "node_list", "node_prove", "node_revise", "pool_list", "register", "relaunch", "resource_list", "rule",
     "status", "task_add", "task_built", "task_landed", "task_reset", "turn",
     "version", "wait", "wake",
@@ -167,7 +167,7 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     # policy job; plus job land from the landing script; plus job retry
     # from the review-states job.
     # Counted, not derived, so a verb added without intent fails here.
-    assert len(names) == 75
+    assert len(names) == 76
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):

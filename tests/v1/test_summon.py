@@ -59,7 +59,9 @@ SUPERVISOR_COMMANDS = (
     "foreman task landed <task> --head <head>",
     "foreman front done <name>",
     "foreman rule <scope> <text ...>",
-    "foreman evidence --on <on> --claim <claim> --status <status> --command <command>",
+    "foreman evidence [<action>] [<front>] --on <on> --claim <claim> --status <status> --command <command>",
+    "foreman evidence list <front>",
+    "foreman check flake <front> <node> --test <test> --reason <reason>",
     "foreman finding --on <on> --class <class> --title <title> --detail <detail>",
     "foreman measure <front> <monitor> --value <value> --of <of> "
     "--command <command> --output <output>",

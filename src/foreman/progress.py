@@ -1998,9 +1998,17 @@ def job_list_main(front: str) -> int:
             lines.append(
                 f"{nid}  {team_role}  {job_role}  running {job_id}")
         elif state == "landed":
-            sha = node.get("landed_sha") or node.get("head") or ""
-            lines.append(
-                f"{nid}  {team_role}  {job_role}  landed {sha}")
+            flake = str(node.get("flake") or "")
+            greens = node.get("greens")
+            runs = node.get("runs")
+            if flake and greens is not None and runs is not None:
+                lines.append(
+                    f"{nid}  {team_role}  {job_role}  "
+                    f"green {greens}/{runs} (flake: {flake})")
+            else:
+                sha = node.get("landed_sha") or node.get("head") or ""
+                lines.append(
+                    f"{nid}  {team_role}  {job_role}  landed {sha}")
         elif state == "failed":
             reason = node.get("fail_reason") or ""
             lines.append(

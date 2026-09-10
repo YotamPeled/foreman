@@ -15,9 +15,11 @@ onto a moved target and pushes work.
 
 from __future__ import annotations
 
+import argparse
 import fcntl
 import hashlib
 import os
+import re
 import subprocess
 import time
 from contextlib import contextmanager
@@ -25,6 +27,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterator
 
+from . import cli, ids, store
 from .caller import Refusal, SESSION_ENV
 
 #: Script items the queue tick runs without a slot. A job landing is
@@ -172,6 +175,9 @@ class LandingResult:
     dropped: list[str] = field(default_factory=list)
     fail_reason: str = ""
     pr_url: str = ""
+    greens: int | None = None
+    runs: int | None = None
+    flake: str = ""
 
 
 def lock_path_for(repo: str) -> Path:
@@ -401,6 +407,12 @@ def _record_item(front: str, item: dict, by: str, result: LandingResult) -> None
         changes["dropped"] = list(result.dropped)
     if result.pr_url:
         changes["pr_url"] = result.pr_url
+    if result.greens is not None:
+        changes["greens"] = result.greens
+    if result.runs is not None:
+        changes["runs"] = result.runs
+    if result.flake:
+        changes["flake"] = result.flake
     progress_mod._write_node_revise(
         front, item, by, "landing", **changes)
     _wake_landing(front, item, result, finding_id)
@@ -541,6 +553,83 @@ def _run_check(area: str, command: str, item_id: str
     return exit_code, elapsed, str(log_path), output
 
 
+_FAILED_TEST = re.compile(r"^(?:FAILED|ERROR)\s+(\S+)", re.MULTILINE)
+
+
+def _failed_tests(output: str) -> list[str]:
+    return [match.group(1) for match in _FAILED_TEST.finditer(output or "")]
+
+
+def _test_matches(failed: str, name: str) -> bool:
+    want = (name or "").strip()
+    if not want:
+        return False
+    nodeid = failed.strip()
+    if nodeid == want:
+        return True
+    tail = nodeid.split("::")[-1]
+    return tail == want or nodeid.endswith("::" + want)
+
+
+def matching_flake(front: str, node_id: str, output: str) -> str | None:
+    """The registered test name when it is the output's only failure."""
+    from . import paths as paths_mod
+
+    failed = _failed_tests(output)
+    if len(failed) != 1:
+        return None
+    nid = (node_id or "").strip()
+    if not nid or not front:
+        return None
+    try:
+        lines = store.read_ledger(paths_mod.front_flakes_path(front))
+    except OSError:
+        return None
+    only = failed[0]
+    for line in lines:
+        if not isinstance(line, dict):
+            continue
+        if str(line.get("node") or "") != nid:
+            continue
+        name = str(line.get("test") or "")
+        if _test_matches(only, name):
+            return name
+    return None
+
+
+def _run_counted_check(area: str, command: str, item_id: str,
+                       front: str, node_id: str
+                       ) -> tuple[int, float, str, str, int, int, str]:
+    """Run the check; retry once when the only failure is a registered flake.
+
+    Returns ``(exit, seconds, output_file, output, greens, runs, flake)``.
+    Unregistered failures are never re-run. A second failure of the same
+    test is red.
+    """
+    exit_code, elapsed, output_file, output = _run_check(
+        area, command, item_id)
+    greens = 1 if exit_code == 0 else 0
+    runs = 1
+    flake = ""
+    if exit_code != 0:
+        name = matching_flake(front, node_id, output)
+        if name:
+            exit2, elapsed2, output_file, output = _run_check(
+                area, command, item_id)
+            runs = 2
+            elapsed = elapsed + elapsed2
+            flake = name
+            greens = 1 if exit2 == 0 else 0
+            exit_code = exit2
+    return exit_code, elapsed, output_file, output, greens, runs, flake
+
+
+def _flake_fields(greens: int, runs: int, flake: str) -> dict[str, object]:
+    if runs == 2 and flake:
+        return {"greens": greens, "runs": runs, "flake": flake}
+    return {}
+
+
 def _trailer_commit(area: str, front: str, target: str,
                     trailers: list[str]) -> str:
     if not trailers:
@@ -617,14 +706,15 @@ def _run_front_landing_locked(front: str, item: dict, *, by: str,
         after_set = set(after)
         dropped = [sha for sha in before if sha not in after_set]
         command = policy.check
-        exit_code, elapsed, output_file, _output = _run_check(
-            area, command, item_id)
+        node_id = str(item.get("lands") or item.get("id") or "")
+        exit_code, elapsed, output_file, _output, greens, runs, flake = (
+            _run_counted_check(area, command, item_id, front, node_id))
         head_proc = _git(area, "rev-parse", "HEAD")
         head = head_proc.stdout.strip() if head_proc.returncode == 0 else ""
         fields = dict(
             command=command, exit=exit_code, seconds=elapsed,
             output_file=output_file, head=head, base_sha=base_sha,
-            dropped=dropped)
+            dropped=dropped, **_flake_fields(greens, runs, flake))
         if exit_code != 0:
             return _fail(
                 f"check '{command}' failed (exit {exit_code})",
@@ -706,14 +796,15 @@ def _run_rebase_locked(front: str, item: dict, *, by: str,
         after_set = set(after)
         dropped = [sha for sha in before if sha not in after_set]
         command = policy.check
-        exit_code, elapsed, output_file, _output = _run_check(
-            area, command, item_id)
+        node_id = str(item.get("lands") or item.get("id") or "")
+        exit_code, elapsed, output_file, _output, greens, runs, flake = (
+            _run_counted_check(area, command, item_id, front, node_id))
         head_proc = _git(area, "rev-parse", "HEAD")
         head = head_proc.stdout.strip() if head_proc.returncode == 0 else ""
         fields = dict(
             command=command, exit=exit_code, seconds=elapsed,
             output_file=output_file, head=head, base_sha=onto,
-            dropped=dropped)
+            dropped=dropped, **_flake_fields(greens, runs, flake))
         if exit_code != 0:
             return _fail(
                 f"check '{command}' failed (exit {exit_code})",
@@ -810,25 +901,15 @@ def _run_locked(front: str, item: dict, *, by: str,
         after_set = set(after)
         dropped = [sha for sha in before if sha not in after_set]
         command = policy.check
-        child_env = _check_env(command)
-        started = time.perf_counter()
-        proc = subprocess.run(
-            command, shell=True, cwd=area,
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            env=child_env)
-        elapsed = time.perf_counter() - started
-        output = proc.stdout or ""
-        log_path = paths.landing_check_log_path(item_id)
-        log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_path.write_text(output, encoding="utf-8")
-        output_file = str(log_path)
-        exit_code = proc.returncode if proc.returncode is not None else 1
+        node_id = str(built.get("id") or item.get("lands") or "")
+        exit_code, elapsed, output_file, _output, greens, runs, flake = (
+            _run_counted_check(area, command, item_id, front, node_id))
         head_proc = _git(area, "rev-parse", "HEAD")
         head = head_proc.stdout.strip() if head_proc.returncode == 0 else ""
         fields = dict(
             command=command, exit=exit_code, seconds=elapsed,
             output_file=output_file, head=head, base_sha=base_sha,
-            dropped=dropped)
+            dropped=dropped, **_flake_fields(greens, runs, flake))
         if exit_code != 0:
             return _fail(
                 f"check '{command}' failed (exit {exit_code})",
@@ -894,4 +975,72 @@ def run(front: str, item: dict, *, by: str) -> LandingResult:
     if result.ok and kind not in SCRIPT_KINDS:
         _mark_built_landed(front_name, built, by, result.head)
     return result
+
+
+def check_flake_main(front: str, node_id: str | None,
+                     test: str | None, reason: str | None) -> int:
+    """Register a flaky test on a tree node. Front supervisor only."""
+    from . import caller, entities, fronts
+    from . import node as node_mod
+    from . import paths as paths_mod
+
+    verb = "check flake"
+    me, violations = caller.resolve(verb)
+    front_name = (front or "").strip()
+    if not front_name:
+        violations.append("field 'front' is required")
+    record = fronts.read_front_record(front_name) if front_name else None
+    if front_name and record is None:
+        violations.append(f"unknown front '{front_name}'")
+    caller.check_front_supervisor(me, front_name or None, verb,
+                                  violations=violations)
+    nid = "" if node_id is None else str(node_id).strip()
+    if not nid:
+        violations.append("field 'node' is required")
+    name = (test or "").strip()
+    if not name:
+        violations.append("field '--test' is required")
+    why = (reason or "").strip()
+    if not why:
+        violations.append("field '--reason' is required")
+    if record is not None and nid:
+        _folded, by_id = node_mod._read_nodes(front_name)
+        if nid not in by_id:
+            violations.append(f"unknown node '{nid}'")
+    if violations:
+        return Refusal(violations).report()
+    who = caller.by_line(me)
+    fid = ids.mint("flake")
+    store.append_ledger(
+        paths_mod.front_flakes_path(front_name),
+        entities.Flake(id=fid, front=front_name, node=nid,
+                       test=name, reason=why).to_dict(),
+        session_id=who,
+    )
+    print(f"flake {name} on {nid}")
+    return 0
+
+
+def add_check_arguments(sub: argparse.ArgumentParser) -> None:
+    verbs = sub.add_subparsers(dest="check_verb", required=True)
+    flake = verbs.add_parser(
+        "flake",
+        help="Register a flaky test; a landing check retries it once.")
+    flake.add_argument("front", help="front the node belongs to")
+    flake.add_argument("node", help="tree node the flake is on")
+    flake.add_argument("--test", default=None,
+                       help="failing test name (required)")
+    flake.add_argument("--reason", default=None,
+                       help="why it is a flake (required)")
+
+
+@cli.subcommand("check", help="Register a flaky landing check.")
+def _check_entry(args: argparse.Namespace) -> int:
+    if args.check_verb == "flake":
+        return check_flake_main(args.front, args.node,
+                                test=args.test, reason=args.reason)
+    raise AssertionError(f"unknown check verb {args.check_verb!r}")
+
+
+_check_entry.add_arguments = add_check_arguments  # type: ignore[attr-defined]
 

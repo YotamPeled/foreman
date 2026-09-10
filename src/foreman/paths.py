@@ -154,6 +154,10 @@ def front_tree_path(name: str) -> Path:
     return front_dir(name) / "tree.jsonl"
 
 
+def front_flakes_path(name: str) -> Path:
+    return front_dir(name) / "flakes.jsonl"
+
+
 def sessions_dir() -> Path:
     return state_dir() / "sessions"
 

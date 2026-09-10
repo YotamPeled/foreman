@@ -34,6 +34,7 @@ KIND_PREFIXES = {
     "map": "map",
     "milestone": "mil",
     "node": "nod",
+    "flake": "flk",
     "checkpoint": "chk",
     "inbox": "inb",
     "turn": "trn",

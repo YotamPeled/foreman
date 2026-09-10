@@ -8,6 +8,7 @@ green without the binding are not in this file.
 from __future__ import annotations
 
 import subprocess
+import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -42,7 +43,7 @@ url = "{url}"
 base = "main"
 work = "v5work"
 target = "main"
-check = "true"
+check = "{check}"
 '''
 
 FLOW_BRIEF = '''\
@@ -131,13 +132,15 @@ def seed_supervisor(front, sid=SUP):
 
 
 def add_v5(env: Path, monkeypatch, capsys,
-           name: str = "harbor") -> tuple[str, Path]:
+           name: str = "harbor",
+           check: str = "true") -> tuple[str, Path]:
     monkeypatch.delenv(SESSION_ENV, raising=False)
     src, bare, sha = make_bare(env)
     brief_dir = env / name
     brief_dir.mkdir(parents=True, exist_ok=True)
     (brief_dir / "brief.toml").write_text(
-        V5_BRIEF.format(name=name, url=str(bare)), encoding="utf-8")
+        V5_BRIEF.format(name=name, url=str(bare), check=check),
+        encoding="utf-8")
     assert cli.main(["front", "add", str(brief_dir)]) == 0
     capsys.readouterr()
     record = fronts.read_front_record(name)
@@ -325,4 +328,154 @@ def test_rebase_marks_bound_evidence_stale_and_front_done_names_the_node(
     out, err = capsys.readouterr()
     assert err == ""
     assert out.strip() == "harbor done"
+
+
+def write_flake_check(env: Path, *, always_fail: bool,
+                      test_name: str = "test_flaky") -> str:
+    script = env / "flake_check.py"
+    script.write_text(
+        "import os, pathlib, sys\n"
+        "p = pathlib.Path(os.environ['FLAKE_RUNS'])\n"
+        "n = int(p.read_text()) if p.exists() else 0\n"
+        "n += 1\n"
+        "p.write_text(str(n))\n"
+        f"name = {test_name!r}\n"
+        f"if n == 1 or {always_fail!r}:\n"
+        "    print(f'FAILED tests/test_x.py::{name}')\n"
+        "    sys.exit(1)\n"
+        "print('ok')\n",
+        encoding="utf-8")
+    return f"{sys.executable} {script}"
+
+
+def mark_verified(front: str, node_id: str, job_id: str = "job-ver001",
+                  branch: str | None = None,
+                  worktree: Path | str | None = None) -> str:
+    store.append_ledger(paths.front_jobs_path(front), {
+        "id": job_id, "state": "verified", "task": "tsk-1",
+        "branch": branch or f"job/{front}-{node_id}",
+        "worktree": str(worktree) if worktree else "",
+        "verified_at": iso(NOW),
+    })
+    node = folded_tree(front)[node_id]
+    _write_node_revise(front, node, SUP, "job verified", job=job_id)
+    return job_id
+
+
+def checkout_work(clone: Path, work: str = "v5work") -> str:
+    git(clone, "fetch", "-q", "origin", work)
+    git(clone, "checkout", "-q", "-B", work, f"origin/{work}")
+    return git(clone, "rev-parse", "HEAD")
+
+
+def add_job_commit(clone: Path, branch: str, filename: str = "feat.txt",
+                   body: str = "feat\n") -> str:
+    git(clone, "checkout", "-qb", branch)
+    (clone / filename).write_text(body, encoding="utf-8")
+    git(clone, "add", filename)
+    git(clone, "commit", "-qm", "job work")
+    sha = git(clone, "rev-parse", "HEAD")
+    git(clone, "checkout", "-q", "-")
+    return sha
+
+
+def origin_work_sha(bare: Path, work: str = "v5work") -> str:
+    return subprocess.run(
+        ["git", "--git-dir", str(bare), "rev-parse", f"refs/heads/{work}"],
+        check=True, capture_output=True, text=True).stdout.strip()
+
+
+def queue_landing(monkeypatch, capsys, node_id: str, clone: Path,
+                  front: str = "harbor") -> str:
+    branch = f"job/{front}-{node_id}"
+    mark_verified(front, node_id, worktree=clone, branch=branch)
+    capsys.readouterr()
+    assert run(monkeypatch, ["job", "land", front, node_id], SUP) == 0
+    return capsys.readouterr().out.strip()
+
+
+def _flake_world(env, monkeypatch, capsys, *, always_fail: bool,
+                 test_name: str = "test_flaky"):
+    monkeypatch.setenv("FLAKE_RUNS", str(env / "flake_runs.txt"))
+    check = write_flake_check(env, always_fail=always_fail,
+                              test_name=test_name)
+    _sha, bare = add_v5(env, monkeypatch, capsys, check=check)
+    seed_supervisor("harbor")
+    mil = add_ok(monkeypatch, capsys, title="milestone one", node_id="mil-1")
+    tsk = add_ok(monkeypatch, capsys, parent=mil, kind="task",
+                 title="the door", node_id="tsk-1")
+    node_id = add_ok(monkeypatch, capsys, parent=tsk, kind="job",
+                     title="implement the door", role="builder",
+                     node_id="nod-x")
+    clone = open_clone(env, bare)
+    checkout_work(clone)
+    add_job_commit(clone, f"job/harbor-{node_id}")
+    item_id = queue_landing(monkeypatch, capsys, node_id, clone)
+    return bare, node_id, item_id
+
+
+def test_registered_flake_retries_once_and_records_green(
+        env, monkeypatch, capsys):
+    """A landing whose only failure is a registered flake is green 1/2."""
+    bare, node_id, item_id = _flake_world(
+        env, monkeypatch, capsys, always_fail=False)
+    assert run(monkeypatch, ["check", "flake", "harbor", node_id,
+                             "--test", "test_flaky",
+                             "--reason", "fails under contention"],
+               SUP) == 0
+    capsys.readouterr()
+    before = origin_work_sha(bare)
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    assert origin_work_sha(bare) != before
+    item = folded_tree()[item_id]
+    assert item["state"] == "landed"
+    assert item["greens"] == 1
+    assert item["runs"] == 2
+    assert item["flake"] == "test_flaky"
+    assert (env / "flake_runs.txt").read_text(encoding="utf-8") == "2"
+    assert run(monkeypatch, ["job", "list", "harbor"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert f"{item_id}  script    green 1/2 (flake: test_flaky)" in out.splitlines()
+
+
+def test_registered_flake_failing_twice_is_red(env, monkeypatch, capsys):
+    """The same registered test failing on the retry stays red."""
+    bare, node_id, item_id = _flake_world(
+        env, monkeypatch, capsys, always_fail=True)
+    assert run(monkeypatch, ["check", "flake", "harbor", node_id,
+                             "--test", "test_flaky",
+                             "--reason", "fails under contention"],
+               SUP) == 0
+    capsys.readouterr()
+    before = origin_work_sha(bare)
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    assert origin_work_sha(bare) == before
+    item = folded_tree()[item_id]
+    assert item["state"] == "failed"
+    assert (env / "flake_runs.txt").read_text(encoding="utf-8") == "2"
+
+
+def test_unregistered_failure_is_red_on_the_first_run(
+        env, monkeypatch, capsys):
+    """An unregistered failing test is never re-run."""
+    bare, node_id, item_id = _flake_world(
+        env, monkeypatch, capsys, always_fail=True, test_name="test_other")
+    assert run(monkeypatch, ["check", "flake", "harbor", node_id,
+                             "--test", "test_flaky",
+                             "--reason", "a different test"],
+               SUP) == 0
+    capsys.readouterr()
+    before = origin_work_sha(bare)
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    assert origin_work_sha(bare) == before
+    item = folded_tree()[item_id]
+    assert item["state"] == "failed"
+    assert (env / "flake_runs.txt").read_text(encoding="utf-8") == "1"
+    assert item.get("greens") is None
+    assert not item.get("flake")
+
 
