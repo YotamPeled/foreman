@@ -48,7 +48,11 @@ schema file the launcher passes to your model:
   "title": "Foreman review verdict",
   "type": "object",
   "additionalProperties": false,
-  "required": ["passed", "summary", "findings"],
+  "required": [
+    "passed",
+    "summary",
+    "findings"
+  ],
   "properties": {
     "passed": {
       "type": "boolean",
@@ -58,21 +62,23 @@ schema file the launcher passes to your model:
       "type": "string",
       "description": "One or two sentences saying what was judged and the outcome."
     },
-    "class": {
-      "type": "string",
-      "description": "The finding class, or clean when the review passes."
-    },
     "findings": {
       "type": "array",
       "description": "One entry per issue found; empty when the review passes cleanly.",
       "items": {
         "type": "object",
         "additionalProperties": false,
-        "required": ["title", "detail"],
+        "required": [
+          "title",
+          "detail"
+        ],
         "properties": {
-          "title": {"type": "string"},
-          "detail": {"type": "string"},
-          "class": {"type": "string"}
+          "title": {
+            "type": "string"
+          },
+          "detail": {
+            "type": "string"
+          }
         }
       }
     }
