@@ -406,3 +406,56 @@ def test_rebase_item_moves_work_and_a_second_tick_queues_nothing(
     tick(now=NOW + timedelta(seconds=4))
     assert len(rebase_items()) == 1
     assert scratch_left() == []
+
+
+def test_front_done_is_refused_while_behind_naming_main_and_the_sha(
+        env, monkeypatch, capsys):
+    """front done names the target and sha while a rebase item is queued."""
+    _src, bare, _sha = add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    add_ok(monkeypatch, capsys, title="milestone one", node_id="mil-1")
+    clone = open_clone(env, bare)
+    add_work_commit(clone)
+    queue_front_land(monkeypatch, capsys)
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    moved = add_origin_main_commit(clone)
+    tick(now=NOW + timedelta(seconds=2))
+    items = rebase_items()
+    assert len(items) == 1
+    assert run(monkeypatch, ["front", "done", "v5shape"], SUP) == 1
+    _out, err = capsys.readouterr()
+    assert "main" in err
+    assert moved in err
+    assert items[0]["id"] in err
+    assert "rebase" in err
+    assert "queued" in err
+    record = fronts.read_front_record("v5shape")
+    assert record is not None and record.get("state") != "done"
+
+
+def test_front_done_succeeds_after_the_rebase_item_runs(
+        env, monkeypatch, capsys):
+    """Once work contains the moved commit and behind is cleared, done lands."""
+    _src, bare, _sha = add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    add_ok(monkeypatch, capsys, title="milestone one", node_id="mil-1")
+    clone = open_clone(env, bare)
+    add_work_commit(clone)
+    queue_front_land(monkeypatch, capsys)
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    add_origin_main_commit(clone)
+    tick(now=NOW + timedelta(seconds=2))
+    item = rebase_items()[0]
+    result = landing.run("v5shape", item, by=SUP)
+    assert result.ok, result.fail_reason
+    tick(now=NOW + timedelta(seconds=4))
+    assert len(rebase_items()) == 1
+    capsys.readouterr()
+    assert run(monkeypatch, ["front", "done", "v5shape"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.strip() == "v5shape done"
+    record = fronts.read_front_record("v5shape")
+    assert record is not None and record.get("state") == "done"

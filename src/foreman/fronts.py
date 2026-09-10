@@ -1446,6 +1446,55 @@ def front_close_main(name: str, merged: str | None = None) -> int:
     return 0
 
 
+def _finish_blocked_reason(name: str, record: dict) -> str | None:
+    """Why a v5 front cannot finish, or None when it is not behind.
+
+    Refused while ``behind`` is set or a rebase or front-landing item
+    is open or failed, naming the target and the sha.
+    """
+    from . import node as node_mod
+    from . import progress as progress_mod
+
+    folded, _by_id = node_mod._read_nodes(name)
+    behind = str(record.get("behind") or "").strip()
+    blocking = progress_mod._open_script_item(
+        folded, "rebase",
+        states=progress_mod._BLOCKING_SCRIPT_STATES)
+    if blocking is None:
+        blocking = progress_mod._open_script_item(
+            folded, "front-landing",
+            states=progress_mod._BLOCKING_SCRIPT_STATES)
+    if not behind and blocking is None:
+        return None
+    target = ""
+    repos = record.get("repositories") or []
+    if isinstance(repos, list):
+        for entry in repos:
+            if not isinstance(entry, dict):
+                continue
+            target = str(entry.get("target") or "").strip()
+            if target:
+                break
+    sha = behind
+    if not sha and blocking is not None:
+        sha = str(blocking.get("onto") or blocking.get("base_sha")
+                  or "").strip()
+    if not sha:
+        sha = str(record.get("base_sha") or "").strip()
+        if not sha and isinstance(repos, list):
+            for entry in repos:
+                if isinstance(entry, dict):
+                    sha = str(entry.get("base_sha") or "").strip()
+                    if sha:
+                        break
+    msg = f"front {name} is behind {target} ({sha})"
+    if blocking is not None:
+        kind = str(blocking.get("kind") or "script")
+        state = str(blocking.get("state") or "queued")
+        msg += f"; its {kind} item {blocking.get('id')} is {state}"
+    return msg
+
+
 def front_done_main(name: str) -> int:
     """Mark a front done: every task landed, every monitor measured.
 
@@ -1453,7 +1502,10 @@ def front_done_main(name: str) -> int:
     `front close` stays for closing early. Refused — naming which tasks
     are not landed and which monitors have no measurement — unless the
     front is truly finished, and then it appends a revised copy of the
-    front line at state `done`, the way `front close` does.
+    front line at state `done`, the way `front close` does. A v5 front
+    that is behind its target, or that still has a rebase or
+    front-landing item open or failed, is refused naming the target
+    and the sha.
     """
     verb = "front done"
     me, violations = caller.resolve(verb)
@@ -1496,6 +1548,9 @@ def front_done_main(name: str) -> int:
             violations.append(
                 f"front '{key}' is not done: monitors with no measurement: "
                 + ", ".join(f"'{label}'" for label in unmeasured))
+        blocked = _finish_blocked_reason(key, record)
+        if blocked:
+            violations.append(blocked)
     if violations:
         return Refusal(violations).report()
     assert record is not None
