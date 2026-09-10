@@ -1,4 +1,4 @@
-"""`foreman front add|list|prefer|allocate|close`: a brief becomes a front on the ledger.
+"""`foreman front add|list|show|prefer|allocate|close`: a brief becomes a front on the ledger.
 
 ``front add <dir>`` reads ``<dir>/brief.toml`` with :mod:`tomllib`, refuses
 with every violation named at once (docs/DESIGN.md section 4.3), and otherwise
@@ -1290,6 +1290,76 @@ def front_take_main(name: str) -> int:
     return 0
 
 
+def front_show_text(name: str, record: dict) -> str:
+    """The folded front as text: inputs, then state, session, allocation.
+
+    Old-shape fronts then list each task with its state and units. The
+    inputs block is the same string the supervisor prompt interpolates.
+    """
+    supervisor = record.get("supervisor")
+    if isinstance(supervisor, str) and supervisor.strip():
+        session = supervisor.strip()
+    else:
+        session = _NONE
+    allocation = record.get("allocation")
+    if isinstance(allocation, dict) and allocation:
+        alloc = ", ".join(
+            f"{role} {count}"
+            for role, count in sorted(allocation.items()))
+    else:
+        alloc = _NONE
+    chunks = [
+        front_inputs_block(record),
+        f"state: {_shown(record.get('state'))}\n"
+        f"supervisor session: {session}\n"
+        f"allocation: {alloc}",
+    ]
+    if record.get("shape") == "v5":
+        return "\n\n".join(chunks)
+    try:
+        tasks = store.fold_by_id(
+            store.read_ledger(paths.front_tasks_path(name)))
+    except OSError:
+        tasks = []
+    if tasks:
+        chunks.append("\n".join(
+            f'- "{task.get("title") or "(untitled)"}" — '
+            f'{task.get("state") or "unknown"} · units '
+            f'{task.get("units_done", 0)}/{task.get("units_total", 0)}'
+            for task in tasks
+        ))
+    return "\n\n".join(chunks)
+
+
+def front_show_main(name: str, as_json: bool = False) -> int:
+    """Print one front's folded record as text, or as JSON.
+
+    The owner at a terminal, the foreman, and the front's own supervisor
+    may read it. A supervisor of another front is refused by name.
+    """
+    verb = "front show"
+    me, violations = caller.resolve(verb)
+    key = (name or "").strip()
+    if not key:
+        violations.append("field 'name' is required")
+    record = read_front_record(key) if key else None
+    if key and record is None:
+        violations.append(f"unknown front '{key}'")
+    if me is not None and me.role == caller.SUPERVISOR:
+        caller.check_front_supervisor(me, key or None, verb,
+                                      violations=violations)
+    else:
+        caller.check_role(me, verb, caller.FOREMAN, violations=violations)
+    if violations:
+        return Refusal(violations).report()
+    assert record is not None
+    if as_json:
+        print(json.dumps(record))
+        return 0
+    print(front_show_text(key, record))
+    return 0
+
+
 def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     verbs = sub.add_subparsers(dest="front_verb", required=True)
     add = verbs.add_parser("add", help="Validate a brief and append its front.")
@@ -1303,6 +1373,10 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
                      help="a front that already ran and is done: the record "
                           "only, no tasks")
     verbs.add_parser("list", help="Print one line per front.")
+    show = verbs.add_parser("show", help="Print a front's folded record.")
+    show.add_argument("name", help="front name")
+    show.add_argument("--json", dest="as_json", action="store_true",
+                      help="print the folded front line as JSON")
     prefer = verbs.add_parser("prefer", help="Set a front's queue preference.")
     prefer.add_argument("name", help="front name")
     prefer.add_argument("prefer", help="new preference (integer)")
@@ -1325,7 +1399,7 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     done.add_argument("name", help="front name")
 
 
-@cli.subcommand("front", help="Add, list, prefer, allocate, close, take "
+@cli.subcommand("front", help="Add, list, show, prefer, allocate, close, take "
                      "or mark a front done.")
 def _front_entry(args: argparse.Namespace) -> int:
     if args.front_verb == "add":
@@ -1333,6 +1407,8 @@ def _front_entry(args: argparse.Namespace) -> int:
                               fixture=args.fixture, closed=args.closed)
     if args.front_verb == "list":
         return front_list_main()
+    if args.front_verb == "show":
+        return front_show_main(args.name, as_json=args.as_json)
     if args.front_verb == "prefer":
         return front_prefer_main(args.name, args.prefer)
     if args.front_verb == "allocate":

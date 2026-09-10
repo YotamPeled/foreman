@@ -9,12 +9,13 @@ template.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from pathlib import Path
 
 import pytest
 
-from foreman import cli, fronts, launch, paths, store
+from foreman import cli, entities, fronts, launch, paths, store
 from foreman.caller import SESSION_ENV
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -171,3 +172,104 @@ def test_old_shape_prompt_points_at_its_tasks(env, capsys):
     assert fronts.OLD_SHAPE_INPUTS in prompt
     assert '(a v5 front has no brief tasks; its work is the tree)' not in prompt
     assert '- "plugin skeleton and data feed" — ready' in prompt
+
+
+def run(monkeypatch, argv, session=None):
+    if session is None:
+        monkeypatch.delenv(SESSION_ENV, raising=False)
+    else:
+        monkeypatch.setenv(SESSION_ENV, session)
+    return cli.main(argv)
+
+
+def session_entry(sid, role, front):
+    return entities.Session.from_dict({
+        "id": sid, "role": role, "pool": "opus", "model": "opus",
+        "front": front, "job": None, "pid": None, "pgid": None,
+        "worktree": "", "log": "", "timeout": "20m",
+        "launched_by": "owner", "state": "running",
+    }).to_dict()
+
+
+def seed_roster(*entries):
+    store.write_snapshot(
+        paths.roster_path(),
+        {"sessions": {entry["id"]: entry for entry in entries}})
+
+
+def test_front_show_prints_the_same_inputs_and_exits_0(env, capsys):
+    """`front show` on a v5 front prints the prompt's inputs, then state."""
+    record = add_v5(env)
+    capsys.readouterr()
+    rc = cli.main(["front", "show", "v5shape"])
+    assert rc == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    inputs = fronts.front_inputs_block(record)
+    assert out.startswith(inputs)
+    assert_v5_inputs(out, record)
+    assert "state: queued" in out
+    assert "supervisor session:" in out
+    assert "allocation:" in out
+    assert "astra 1" in out
+    assert "grok 2" in out
+    assert "opus 1" in out
+
+
+def test_front_show_old_shape_prints_its_tasks(env, capsys):
+    """An old-shape front's show lists each task with state and units."""
+    assert cli.main(["front", "add", str(PANEL_BRIEF)]) == 0
+    capsys.readouterr()
+    rc = cli.main(["front", "show", "panel"])
+    assert rc == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert fronts.OLD_SHAPE_INPUTS in out
+    assert '- "plugin skeleton and data feed" — ready · units 0/1' in out
+    assert '- "blocks in the v0 layout" — waiting · units 0/7' in out
+    assert "state:" in out
+    assert "supervisor session:" in out
+    assert "allocation:" in out
+
+
+def test_front_show_other_supervisor_is_refused_by_name(
+        env, monkeypatch, capsys):
+    """A supervisor of another front is refused naming both fronts."""
+    add_v5(env)
+    seed_roster(session_entry("ses-other", "supervisor", "elsewhere"))
+    capsys.readouterr()
+    rc = run(monkeypatch, ["front", "show", "v5shape"], "ses-other")
+    assert rc == 1
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert "elsewhere" in err
+    assert "v5shape" in err
+
+
+def test_front_show_json_parses_and_carries_shape(env, capsys):
+    """`--json` prints the folded front line, including shape."""
+    add_v5(env)
+    capsys.readouterr()
+    rc = cli.main(["front", "show", "v5shape", "--json"])
+    assert rc == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    payload = json.loads(out)
+    assert payload["shape"] == "v5"
+    assert payload["name"] == "v5shape"
+    assert payload["goal"]
+
+
+def test_front_show_own_supervisor_and_foreman_may_read(
+        env, monkeypatch, capsys):
+    """The front's supervisor and the foreman both exit 0."""
+    add_v5(env)
+    seed_roster(
+        session_entry("ses-own", "supervisor", "v5shape"),
+        session_entry("ses-for", "foreman", None),
+    )
+    capsys.readouterr()
+    assert run(monkeypatch, ["front", "show", "v5shape"], "ses-own") == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["front", "show", "v5shape"], "ses-for") == 0
+    capsys.readouterr()
