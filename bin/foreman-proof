@@ -26,7 +26,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -1430,10 +1429,22 @@ def _exit_status(failed: bool) -> int:
     return 1 if failed else 0
 
 
-def _run_loaded_clauses(files: list[Path], break_clause: object) -> int:
+def make_world_root(explicit: Path | None) -> Path:
+    """World lives under <repo>/build/proof, never /tmp (decision 25)."""
+    if explicit is not None:
+        root = Path(explicit)
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
+    root = REPO / "build" / "proof" / f"{stamp}-{os.getpid()}"
+    root.mkdir(parents=True, exist_ok=False)
+    return root
+
+
+def _run_loaded_clauses(files: list[Path], break_clause: object,
+                        root: Path) -> int:
     global _REAL_GROK
     _REAL_GROK = shutil.which("grok", path=_ORIG_PATH)
-    root = Path(tempfile.mkdtemp(prefix="foreman-proof-"))
     atexit.register(cleanup)
     failed = False
     try:
@@ -1474,7 +1485,7 @@ def _main_v5(args: argparse.Namespace) -> int:
             f"unknown milestone {args.milestone}: no clause files in {V5_DIR_NAME}")
     if args.list_only:
         return list_v5_clauses(files)
-    return _run_loaded_clauses(files, args.break_clause)
+    return _run_loaded_clauses(files, args.break_clause, make_world_root(args.root))
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1491,6 +1502,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--list", action="store_true", dest="list_only",
         help="print CLAUSE id title per v5 file and exit without a world")
+    parser.add_argument(
+        "--root", type=Path, default=None,
+        help="world root (default: <repo>/build/proof/<utc timestamp>-<pid>)")
     args = parser.parse_args(argv)
 
     # Never inherit the caller's world. The harness sets its own.
@@ -1507,7 +1521,7 @@ def main(argv: list[str] | None = None) -> int:
 
     _REAL_GROK = shutil.which("grok", path=_ORIG_PATH)
 
-    root = Path(tempfile.mkdtemp(prefix="foreman-proof-"))
+    root = make_world_root(args.root)
     atexit.register(cleanup)
     failed = False
     try:

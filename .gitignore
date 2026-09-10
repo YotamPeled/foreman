@@ -2,6 +2,9 @@
 __pycache__/
 *.egg-info/
 
+# Proof worlds live here, never under /tmp (decision 25).
+build/
+
 # A worker's per-job prompt files, written into its worktree by the
 # launcher. They quote the machine's own paths; this repository is public.
 FOREMAN-JOB.md
