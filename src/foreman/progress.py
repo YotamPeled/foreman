@@ -1139,11 +1139,49 @@ def _job_role_of_node(record: dict | None, node: dict) -> str:
     return ""
 
 
+def _node_job_ids(front: str, node: dict) -> list[str]:
+    """Job ids recorded on this node, including earlier revise lines."""
+    found: list[str] = []
+    seen: set[str] = set()
+    current = node.get("job")
+    if isinstance(current, str) and current:
+        found.append(current)
+        seen.add(current)
+    nid = node.get("id")
+    try:
+        lines = store.read_ledger(paths.front_tree_path(front))
+    except OSError:
+        return found
+    for line in lines:
+        if not isinstance(line, dict) or line.get("id") != nid:
+            continue
+        jid = line.get("job")
+        if isinstance(jid, str) and jid and jid not in seen:
+            seen.add(jid)
+            found.append(jid)
+    return found
+
+
+def _node_has_failed_job(front: str, node: dict) -> bool:
+    """True when a jobs.jsonl line of this node is ``failed``."""
+    job_ids = set(_node_job_ids(front, node))
+    if not job_ids:
+        return False
+    try:
+        jobs = store.fold_by_id(store.read_ledger(paths.front_jobs_path(front)))
+    except OSError:
+        return False
+    return any(job.get("id") in job_ids and job.get("state") == "failed"
+               for job in jobs)
+
+
 def compute_node_waits(front: str, node: dict, by_id: dict[str, dict],
                        record: dict | None) -> str:
-    """Why a queued job is not starting: dependency, no slot, or ready.
+    """Why a queued job is not starting.
 
     An ``after`` node that is missing or not ``landed`` is a dependency.
+    A ``backup-builder`` waits until a job of this node has failed.
+    A ``script`` node skips the slot check and waits ``script runner``.
     Otherwise the front's reserved (or allocated) count for the node's
     job role, compared with what is held, is ``no slot`` when full.
     """
@@ -1154,6 +1192,11 @@ def compute_node_waits(front: str, node: dict, by_id: dict[str, dict],
         other = by_id.get(dep_id)
         if other is None or str(other.get("state") or "") != "landed":
             return f"dependency {dep_id}"
+    role = str(node.get("role") or "").strip()
+    if role == "backup-builder" and not _node_has_failed_job(front, node):
+        return "backup builder: no failed run"
+    if role == "script":
+        return "script runner"
     job_role = _job_role_of_node(record, node)
     if job_role:
         limit = capacity.ceiling(front, job_role)

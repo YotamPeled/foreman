@@ -14,12 +14,14 @@ from pathlib import Path
 
 import pytest
 
-from foreman import cli, fronts, paths, store
+from foreman import capacity, cli, fronts, paths, store
 from foreman import launch as launch_module
 from foreman.caller import SESSION_ENV
+from foreman.collector import tick
 from foreman.entities import Session
 from foreman.launch import start_queued
 from foreman.pools import _common as pool_common
+from foreman.progress import _write_node_revise
 
 SPEC_VERIFY = "python -m pytest tests -q"
 
@@ -35,9 +37,7 @@ decisions = [
 ]
 supervisor = "grok-4.6:high"
 team = [
-  "grok-4.6:high:1:supervisor",
-  "grok-4.6:high:1:builder",
-  "grok-4.6:high:1:backup-builder",
+{team}
 ]
 
 [[repository]]
@@ -48,6 +48,16 @@ work = "v5work"
 target = "main"
 check = "python -m pytest tests -q"
 '''
+
+DEFAULT_TEAM = (
+    "grok-4.6:high:1:supervisor",
+    "grok-4.6:high:1:builder",
+    "grok-4.6:high:1:backup-builder",
+)
+ONE_BUILDER_TEAM = (
+    "grok-4.6:high:1:supervisor",
+    "grok-4.6:high:1:builder",
+)
 
 
 @pytest.fixture()
@@ -78,7 +88,9 @@ def launch_spawn(env, monkeypatch):
     calls: list = []
 
     def fake_spawn(argv, *, pid_path, session_id, popen):
-        pid = os.getpid()
+        # A pid that is not this process: a later tick must not observe
+        # the test runner as the worker and kill it on timeout.
+        pid = 2_000_000 + len(calls)
         Path(pid_path).write_text(f"{pid}\n", encoding="utf-8")
         calls.append({"kind": "spawn", "argv": list(argv),
                       "session": session_id})
@@ -117,19 +129,23 @@ def make_bare(root: Path) -> tuple[Path, Path, str]:
     return src, bare, sha
 
 
-def write_v5(root: Path, name: str, url: str) -> Path:
+def write_v5(root: Path, name: str, url: str,
+             team: tuple[str, ...] = DEFAULT_TEAM) -> Path:
     brief_dir = root / name
     brief_dir.mkdir(parents=True, exist_ok=True)
+    team_toml = ",\n".join(f'  "{entry}"' for entry in team)
     (brief_dir / "brief.toml").write_text(
-        V5_BRIEF.format(name=name, url=url), encoding="utf-8")
+        V5_BRIEF.format(name=name, url=url, team=team_toml), encoding="utf-8")
     return brief_dir
 
 
-def add_front(env: Path, monkeypatch, capsys, name: str = "v5shape") -> str:
+def add_front(env: Path, monkeypatch, capsys, name: str = "v5shape",
+              team: tuple[str, ...] = DEFAULT_TEAM) -> str:
     import subprocess
     monkeypatch.delenv(SESSION_ENV, raising=False)
     src, bare, sha = make_bare(env)
-    assert cli.main(["front", "add", str(write_v5(env, name, str(bare)))]) == 0
+    assert cli.main(["front", "add",
+                     str(write_v5(env, name, str(bare), team=team))]) == 0
     capsys.readouterr()
     record = fronts.read_front_record(name)
     work = (record or {}).get("repositories", [{}])[0].get("work") or "v5work"
@@ -288,3 +304,145 @@ def test_start_queued_returns_none_when_the_launcher_refuses(
     assert job_id is None
     assert reason
     assert folded_tree()[node_id]["state"] == "queued"
+
+
+def test_tick_starts_the_oldest_ready_job(
+        env, monkeypatch, capsys, launch_spawn):
+    """One tick starts the oldest ready job; the captured command names
+    its pool, branch and --headless. The newer ready job stays queued."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, first = add_chain(monkeypatch, capsys, job_id="job-a")
+    second = add_ok(monkeypatch, capsys, parent="tsk-1", kind="job",
+                    title="the next unit", role="builder", node_id="job-b")
+    assert run(monkeypatch, ["job", "queue", "v5shape", first], SUP) == 0
+    assert run(monkeypatch, ["job", "queue", "v5shape", second], SUP) == 0
+    capsys.readouterr()
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    args = launch_args(launch_spawn)
+    assert len(args) == 1, launch_spawn
+    launched = args[0]
+    assert launched.pool == "grok"
+    assert launched.branch == f"job/v5shape-{first}"
+    assert launched.headless is True
+    tree = folded_tree()
+    assert tree[first]["state"] == "running"
+    assert tree[second]["state"] == "queued"
+    starts = store.read_snapshot(paths.collector_path())["queue_starts"]
+    assert starts[0]["front"] == "v5shape"
+    assert starts[0]["node"] == first
+    assert starts[0]["job"] == tree[first]["job"]
+
+
+def test_tick_does_not_start_a_job_waiting_on_an_unlanded_after(
+        env, monkeypatch, capsys, launch_spawn):
+    """A job whose after is unlanded is not started and waits dependency."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, first = add_chain(monkeypatch, capsys, job_id="job-a")
+    second = add_ok(monkeypatch, capsys, parent="tsk-1", kind="job",
+                    title="the next unit", role="builder", node_id="job-b",
+                    after=[first])
+    assert run(monkeypatch, ["job", "queue", "v5shape", second], SUP) == 0
+    capsys.readouterr()
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    assert launch_args(launch_spawn) == []
+    node = folded_tree()[second]
+    assert node["state"] == "queued"
+    assert node["waits"] == f"dependency {first}"
+
+
+def test_tick_second_job_waits_no_slot_until_the_slot_frees(
+        env, monkeypatch, capsys, launch_spawn):
+    """With the one reserved slot held, the second job waits no slot;
+    a later tick after the slot frees starts it."""
+    add_front(env, monkeypatch, capsys, team=ONE_BUILDER_TEAM)
+    seed_supervisor("v5shape")
+    _mil, _tsk, first = add_chain(monkeypatch, capsys, job_id="job-a")
+    second = add_ok(monkeypatch, capsys, parent="tsk-1", kind="job",
+                    title="the next unit", role="builder", node_id="job-b")
+    assert run(monkeypatch, ["job", "queue", "v5shape", first], SUP) == 0
+    assert run(monkeypatch, ["job", "queue", "v5shape", second], SUP) == 0
+    capsys.readouterr()
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    tree = folded_tree()
+    assert tree[first]["state"] == "running"
+    assert tree[second]["state"] == "queued"
+    assert tree[second]["waits"] == "no slot"
+    session_id = tree[first]["session"]
+    capacity.release_for_session(session_id, iso(NOW), "returned")
+    tick(now=NOW + timedelta(seconds=2))
+    tree = folded_tree()
+    assert tree[second]["state"] == "running"
+    args = launch_args(launch_spawn)
+    assert [item.branch for item in args] == [
+        f"job/v5shape-{first}", f"job/v5shape-{second}"]
+
+
+def test_tick_backup_builder_waits_until_a_job_of_its_node_has_failed(
+        env, monkeypatch, capsys, launch_spawn):
+    """A backup-builder node waits until a job of its node has failed."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(
+        monkeypatch, capsys, job_id="job-a", role="backup-builder")
+    assert run(monkeypatch, ["job", "queue", "v5shape", node_id], SUP) == 0
+    capsys.readouterr()
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    assert launch_args(launch_spawn) == []
+    node = folded_tree()[node_id]
+    assert node["state"] == "queued"
+    assert node["waits"] == "backup builder: no failed run"
+    failed_id = "job-fail01"
+    store.append_ledger(paths.front_jobs_path("v5shape"), {
+        "id": failed_id, "state": "failed", "role": "grok",
+    })
+    _write_node_revise(
+        "v5shape", node, "collector", "prior run failed", job=failed_id)
+    tick(now=NOW + timedelta(seconds=2))
+    tree = folded_tree()
+    assert tree[node_id]["state"] == "running"
+    assert len(launch_args(launch_spawn)) == 1
+
+
+def test_tick_script_node_waits_script_runner_and_holds_no_slot(
+        env, monkeypatch, capsys, launch_spawn):
+    """A script node waits script runner and takes no slot."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(
+        monkeypatch, capsys, job_id="job-s", role="script")
+    assert run(monkeypatch, ["job", "queue", "v5shape", node_id], SUP) == 0
+    capsys.readouterr()
+    before = list(capacity.open_grants())
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    assert launch_args(launch_spawn) == []
+    node = folded_tree()[node_id]
+    assert node["state"] == "queued"
+    assert node["waits"] == "script runner"
+    assert capacity.open_grants() == before
+
+
+def test_two_ticks_with_nothing_changed_append_no_revise_line(
+        env, monkeypatch, capsys, launch_spawn):
+    """A wait reason already on the node is not rewritten every tick."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, first = add_chain(monkeypatch, capsys, job_id="job-a")
+    second = add_ok(monkeypatch, capsys, parent="tsk-1", kind="job",
+                    title="the next unit", role="builder", node_id="job-b",
+                    after=[first])
+    assert run(monkeypatch, ["job", "queue", "v5shape", second], SUP) == 0
+    capsys.readouterr()
+    before = store.read_ledger(paths.front_tree_path("v5shape"))
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    tick(now=NOW + timedelta(seconds=2))
+    after = store.read_ledger(paths.front_tree_path("v5shape"))
+    assert after == before
+    assert launch_args(launch_spawn) == []

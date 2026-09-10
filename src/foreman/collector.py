@@ -346,9 +346,10 @@ def _load_state() -> dict:
     state = store.read_snapshot(paths.collector_path(), default=None)
     if not isinstance(state, dict):
         return {"sessions": {}, "relaunches": [], "parents": {},
-                "turn_attempts": {}}
+                "turn_attempts": {}, "queue_starts": []}
     for key, default in (("sessions", {}), ("relaunches", []),
-                         ("parents", {}), ("turn_attempts", {})):
+                         ("parents", {}), ("turn_attempts", {}),
+                         ("queue_starts", [])):
         if not isinstance(state.get(key), (dict, list)):
             state[key] = default
     if not isinstance(state["sessions"], dict):
@@ -357,6 +358,8 @@ def _load_state() -> dict:
         state["relaunches"] = []
     if not isinstance(state["parents"], dict):
         state["parents"] = {}
+    if not isinstance(state.get("queue_starts"), list):
+        state["queue_starts"] = []
     return state
 
 
@@ -962,6 +965,69 @@ def _carry_wakes(sessions: dict, cstate: dict) -> int:
     return carried
 
 
+def _queued_front_names() -> list[str]:
+    try:
+        return sorted(entry.name for entry in Path(paths.fronts_dir()).iterdir()
+                      if entry.is_dir())
+    except OSError:
+        return []
+
+
+def _queue_tick(cstate: dict, now_iso: str) -> None:
+    """Start the oldest startable queued job per front, rewrite waits.
+
+    After observation and the anomaly passes. One start per front: the
+    first node whose wait is empty (``ready``) goes through
+    ``start_queued``. Every other queued node gets a revise line only
+    when its reason changed.
+    """
+    from . import fronts as fronts_mod
+    from . import launch as launch_module
+    from . import node as node_mod
+    from . import progress as progress_mod
+
+    starts = cstate.get("queue_starts")
+    if not isinstance(starts, list):
+        starts = cstate["queue_starts"] = []
+    for name in _queued_front_names():
+        record = fronts_mod.read_front_record(name)
+        if record is None:
+            continue
+        if str(record.get("state") or "") in ("done", "halted", "frozen"):
+            continue
+        folded, by_id = node_mod._read_nodes(name)
+        queued = [node for node in folded
+                  if node.get("kind") == "job"
+                  and str(node.get("state") or "") == "queued"]
+        if not queued:
+            continue
+        started = False
+        for node in progress_mod._queue_order(queued):
+            nid = str(node.get("id") or "")
+            if not nid:
+                continue
+            waits = progress_mod.compute_node_waits(
+                name, node, by_id, record)
+            if not started and waits in ("", "ready"):
+                try:
+                    job_id, err = launch_module.start_queued(
+                        name, nid, by=COLLECTOR_SUBJECT)
+                except Exception as exc:  # noqa: BLE001 - a failed start
+                    job_id, err = None, (  # is a wait reason, not a dead tick
+                        f"{type(exc).__name__}: {exc}")
+                if job_id:
+                    started = True
+                    starts.append({"front": name, "node": nid,
+                                   "job": job_id, "at": now_iso})
+                    continue
+                waits = err or "launcher refused"
+            current = str(node.get("waits") or "")
+            if current != waits:
+                progress_mod._write_node_revise(
+                    name, node, COLLECTOR_SUBJECT, "queue tick",
+                    waits=waits)
+
+
 def _tick_inner(moment: datetime, now_iso: str,
                 config: CollectorConfig) -> dict:
     from .pools import _common as pool_common
@@ -1370,6 +1436,11 @@ def _tick_inner(moment: datetime, now_iso: str,
     # cannot move a roster or job state; the resolve pass below is
     # untouched by it.
     _carry_wakes(sessions, cstate)
+
+    # Decision 32: the collector owns the queue tick. After observation
+    # and the anomaly passes, start the oldest startable queued job per
+    # front and rewrite why the rest wait.
+    _queue_tick(cstate, now_iso)
 
     # Resolve what this tick no longer asserts. Unregistered-writer lines
     # clear only when the roster learns the id: the ledger line itself is
