@@ -1116,6 +1116,32 @@ def finding_main(on: str, class_: str, title: str,
     return 0
 
 
+def _muse_shaped_pool(pool: str | None) -> bool:
+    """True when the pool's manifest names ``effort_min`` (muse-shaped)."""
+    if not pool:
+        return False
+    try:
+        from .pools import get as get_pool
+        adapter = get_pool(pool)
+    except ValueError:
+        return False
+    minimum = getattr(adapter, "effort_min", None)
+    return isinstance(minimum, str) and bool(minimum.strip())
+
+
+def muse_mechanical_refusal(record: dict | None, node: dict) -> str | None:
+    """Refusal when a muse-shaped pool is aimed at a non-mechanical node."""
+    from . import launch as launch_mod
+
+    pool = launch_mod._team_pool(record, node)
+    if not _muse_shaped_pool(pool):
+        return None
+    if node.get("mechanical"):
+        return None
+    nid = node.get("id") or "node"
+    return f"{nid} is not mechanical; muse takes mechanical leaves only"
+
+
 def _job_role_of_node(record: dict | None, node: dict) -> str:
     """The JOB_ROLES name a tree node's team role occupies on this front.
 
@@ -1527,6 +1553,9 @@ def job_queue_main(front: str, node_id: str | None,
                     str(existing.get("role") or ""), queued_node)
                 if missing:
                     violations.append(missing)
+                muse_refused = muse_mechanical_refusal(record, existing)
+                if muse_refused:
+                    violations.append(muse_refused)
         for after_id in extra_after:
             if after_id not in by_id:
                 violations.append(

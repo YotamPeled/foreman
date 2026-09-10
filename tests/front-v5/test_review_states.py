@@ -585,3 +585,107 @@ def test_node_revise_queued_clears_redesign(
     node = folded_tree()[node_id]
     assert node["state"] == "queued"
     assert node.get("review_rounds") in (None, [])
+
+
+MUSE_TEAM = (
+    "grok-4.6:high:1:supervisor",
+    "muse:high:1:builder",
+)
+
+FAKE_MUSE_TEAM = (
+    "grok-4.6:high:1:supervisor",
+    "fakemuse:xhigh:1:builder",
+)
+
+
+def write_fake_muse_pool():
+    from foreman.pools import plugins
+    dest = Path(plugins.user_dir("fakemuse"))
+    dest.mkdir(parents=True, exist_ok=True)
+    (dest / "manifest.toml").write_text(
+        'name = "fakemuse"\n'
+        'model = "fake-muse-model"\n'
+        'timeout_default = "5m"\n'
+        'effort_default = "xhigh"\n'
+        'effort_min = "xhigh"\n'
+        'interactive = false\n'
+        'roles = ["muse"]\n'
+        'adapter = "grok"\n',
+        encoding="utf-8",
+    )
+
+
+def test_non_mechanical_node_on_fake_muse_pool_is_refused(
+        env, monkeypatch, capsys):
+    """A non-mechanical node queued onto a muse-shaped pool is refused
+    naming mechanical."""
+    write_fake_muse_pool()
+    add_front(env, monkeypatch, capsys, team=FAKE_MUSE_TEAM)
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(monkeypatch, capsys, role="builder")
+    capsys.readouterr()
+    before = store.read_ledger(paths.front_tree_path("v5shape"))
+    assert run(monkeypatch, ["job", "queue", "v5shape", node_id], SUP) == 1
+    _out, err = capsys.readouterr()
+    assert f"{node_id} is not mechanical; muse takes mechanical leaves only" in err
+    assert store.read_ledger(paths.front_tree_path("v5shape")) == before
+
+
+def test_mechanical_node_on_fake_muse_pool_queues(
+        env, monkeypatch, capsys):
+    """A mechanical node on a muse-shaped pool queues."""
+    write_fake_muse_pool()
+    add_front(env, monkeypatch, capsys, team=FAKE_MUSE_TEAM)
+    seed_supervisor("v5shape")
+    mil = add_ok(monkeypatch, capsys, title="milestone one", node_id="mil-1")
+    tsk = add_ok(monkeypatch, capsys, parent=mil, kind="task",
+                 title="the door", node_id="tsk-1")
+    node_id = add_ok(monkeypatch, capsys, parent=tsk, kind="job",
+                     title="mechanical leaf", role="builder",
+                     node_id="job-a", mechanical=True)
+    capsys.readouterr()
+    assert run(monkeypatch, ["job", "queue", "v5shape", node_id], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert f"queued {node_id}" in out
+    assert folded_tree()[node_id]["state"] == "queued"
+
+
+def test_tick_starts_mechanical_muse_at_manifest_minimum(
+        env, monkeypatch, capsys, launch_spawn):
+    """The tick never starts a muse job below effort_min: team high is
+    launched at xhigh."""
+    add_front(env, monkeypatch, capsys, team=MUSE_TEAM)
+    seed_supervisor("v5shape")
+    mil = add_ok(monkeypatch, capsys, title="milestone one", node_id="mil-1")
+    tsk = add_ok(monkeypatch, capsys, parent=mil, kind="task",
+                 title="the door", node_id="tsk-1")
+    node_id = add_ok(monkeypatch, capsys, parent=tsk, kind="job",
+                     title="mechanical leaf", role="builder",
+                     node_id="job-a", mechanical=True)
+    assert run(monkeypatch, ["job", "queue", "v5shape", node_id], SUP) == 0
+    capsys.readouterr()
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    args = launch_args(launch_spawn)
+    assert len(args) == 1, launch_spawn
+    launched = args[0]
+    assert launched.pool == "muse"
+    assert launched.effort == "xhigh"
+    assert folded_tree()[node_id]["state"] == "running"
+
+
+def test_tick_does_not_start_a_non_mechanical_muse_node(
+        env, monkeypatch, capsys, launch_spawn):
+    """A non-mechanical muse node that is already queued is not started."""
+    add_front(env, monkeypatch, capsys, team=MUSE_TEAM)
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(monkeypatch, capsys, role="builder")
+    capsys.readouterr()
+    node = folded_tree()[node_id]
+    _write_node_revise("v5shape", node, SUP, "queued by hand",
+                       state="queued", queued_at=iso(NOW), waits="ready")
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    assert launch_args(launch_spawn) == []
+    assert folded_tree()[node_id]["state"] == "queued"

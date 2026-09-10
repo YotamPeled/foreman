@@ -1076,6 +1076,9 @@ def start_queued(front: str, node_id: str, *,
         str(existing.get("role") or ""), existing)
     if missing:
         return None, missing
+    muse_refused = progress_mod.muse_mechanical_refusal(record, existing)
+    if muse_refused:
+        return None, muse_refused
     pool = _team_pool(record, existing)
     role = _queued_job_role(record, existing)
     if not pool or not role:
@@ -1120,6 +1123,17 @@ def start_queued(front: str, node_id: str, *,
         "--headless",
         "--timeout", adapter.timeout_default,
     ]
+    effort = getattr(adapter, "effort_default", None)
+    minimum = getattr(adapter, "effort_min", None)
+    if (isinstance(effort, str) and effort
+            and isinstance(minimum, str) and minimum
+            and effort_below(effort, minimum)):
+        effort = minimum
+    elif not (isinstance(effort, str) and effort
+              ) and isinstance(minimum, str) and minimum:
+        effort = minimum
+    if isinstance(effort, str) and effort:
+        argv.extend(["--effort", effort])
     if base:
         argv.extend(["--base", base])
     parent = str(existing.get("parent") or "").strip()
