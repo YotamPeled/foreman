@@ -219,3 +219,196 @@ def test_the_dead_supervisor_relaunch_is_an_item_line(env, monkeypatch):
     assert relaunch[0]["exit"] == 0
     assert relaunch[0]["by"] == "collector"
     assert relaunch[0]["at"] == iso(NOW)
+
+
+# -- configured items ------------------------------------------------------
+
+@pytest.fixture()
+def spawns(env, monkeypatch):
+    """Capture every item start; the double finishes it at once with the
+    exit and output the test sets per item, the way the wrapper would:
+    output first, then the exit file."""
+    calls: list[dict] = []
+    exits: dict[str, int] = {}
+
+    def fake_spawn(command, output, exit_path):
+        name = Path(output).name.rsplit("-", 1)[0]
+        assert Path(output).parent == paths.clockwork_output_dir()
+        calls.append({"item": name, "command": command})
+        Path(output).write_text(f"ran {command}\n", encoding="utf-8")
+        Path(exit_path).write_text(f"{exits.get(name, 0)}\n",
+                                   encoding="utf-8")
+        return 4_000_000 + len(calls)
+
+    monkeypatch.setattr(clockwork, "spawn_item", fake_spawn)
+    return calls, exits
+
+
+def open_red(item: str) -> list[dict]:
+    folded: dict = {}
+    for record in store.read_ledger(paths.anomalies_path()):
+        folded[(record.get("kind"), record.get("subject"))] = record
+    return [r for (kind, subject), r in folded.items()
+            if kind == "clockwork red" and subject == item
+            and r.get("resolved_at") is None]
+
+
+def test_nightly_every_24h_runs_once_and_records_exit_and_output(
+        env, spawns):
+    """Breaks if the item does not run, runs every tick, or loses its
+    exit or output: one start, one line, then nothing until 24h pass."""
+    calls, _exits = spawns
+    write_config(env, '[clockwork]\nnightly = "make nightly"\n'
+                      'nightly_every = "24h"\n')
+    tick(now=NOW)
+    assert calls == [{"item": "nightly", "command": "make nightly"}]
+    nightly = lines("nightly")
+    assert len(nightly) == 1
+    assert nightly[0]["exit"] == 0
+    assert nightly[0]["command"] == "make nightly"
+    assert nightly[0]["by"] == "collector"
+    ref = nightly[0]["output_ref"]
+    assert not ref.startswith("/")
+    assert (paths.state_dir() / ref).read_text(encoding="utf-8") == \
+        "ran make nightly\n"
+
+    tick(now=NOW + timedelta(seconds=2))
+    tick(now=NOW + timedelta(hours=23))
+    assert len(calls) == 1 and len(lines("nightly")) == 1
+    tick(now=NOW + timedelta(hours=24))
+    assert len(calls) == 2
+
+
+def test_a_red_merge_gate_opens_the_anomaly_and_waits_its_interval(
+        env, spawns):
+    """Breaks if a red item retries on the next tick or opens no anomaly:
+    exit 3 is one line and one open 'clockwork merge_gate red'; the item
+    runs again only after its hour, and a green run closes the anomaly."""
+    calls, exits = spawns
+    exits["merge_gate"] = 3
+    write_config(env, '[clockwork]\nmerge_gate = "gate"\n'
+                      'merge_gate_every = "1h"\n')
+    tick(now=NOW)
+    assert [r["exit"] for r in lines("merge_gate")] == [3]
+    red = open_red("merge_gate")
+    assert len(red) == 1
+    assert red[0]["detail"].startswith("clockwork merge_gate red: exit 3")
+
+    tick(now=NOW + timedelta(seconds=2))
+    tick(now=NOW + timedelta(minutes=59))
+    assert len(calls) == 1
+    assert len([r for r in store.read_ledger(paths.anomalies_path())
+                if r.get("kind") == "clockwork red"]) == 1
+
+    exits["merge_gate"] = 0
+    tick(now=NOW + timedelta(hours=1))
+    assert len(calls) == 2
+    assert [r["exit"] for r in lines("merge_gate")] == [3, 0]
+    assert open_red("merge_gate") == []
+
+
+def test_upgrade_waits_while_a_job_runs_and_says_so(env, spawns, capsys):
+    """Breaks if upgrade runs outside the safe point or waits silently."""
+    calls, _exits = spawns
+    write_config(env, '[clockwork]\nupgrade = "foreman-upgrade"\n'
+                      'upgrade_every = "24h"\n')
+    jobs = paths.front_jobs_path("f")
+    jobs.parent.mkdir(parents=True, exist_ok=True)
+    store.append_ledger(jobs, {"id": "job-run1", "state": "running"})
+    tick(now=NOW)
+    tick(now=NOW + timedelta(seconds=2))
+    assert calls == []
+    out = capsys.readouterr().out
+    assert out.count("upgrade waits: job job-run1 running on f") == 1
+    assert cli.main(["clockwork", "list"]) == 0
+    assert "waits: job job-run1 running on f" in capsys.readouterr().out
+
+    store.append_ledger(jobs, {"id": "job-run1", "state": "returned"})
+    tick(now=NOW + timedelta(seconds=4))
+    assert calls == [{"item": "upgrade", "command": "foreman-upgrade"}]
+
+
+def test_upgrade_waits_while_a_landing_is_open(env, spawns, capsys):
+    calls, _exits = spawns
+    write_config(env, '[clockwork]\nupgrade = "foreman-upgrade"\n'
+                      'upgrade_at = "03:00"\n')
+    tree = paths.front_tree_path("f")
+    tree.parent.mkdir(parents=True, exist_ok=True)
+    store.append_ledger(tree, {"id": "lnd-1", "op": "add", "kind": "job",
+                               "role": "script", "lands": "job-a",
+                               "state": "queued"})
+    tick(now=NOW)
+    assert calls == []
+    assert "upgrade waits: landing lnd-1 open on f" in capsys.readouterr().out
+
+
+def test_an_item_with_no_schedule_is_skipped(env, spawns):
+    calls, _exits = spawns
+    write_config(env, '[clockwork]\nowner_report = "report"\n')
+    tick(now=NOW)
+    assert calls == []
+
+
+def test_at_runs_once_per_day_after_its_time(env, spawns):
+    calls, _exits = spawns
+    write_config(env, '[clockwork]\nowner_report = "report"\n'
+                      'owner_report_at = "03:00"\n')
+    tick(now=NOW)                                  # 12:00, never run: runs
+    tick(now=NOW + timedelta(hours=14))            # 02:00 next day: not yet
+    assert len(calls) == 1
+    tick(now=NOW + timedelta(hours=15, minutes=1))  # 03:01: runs
+    tick(now=NOW + timedelta(hours=16))
+    assert len(calls) == 2
+
+
+def test_clockwork_list_prints_the_table(env, spawns, capsys):
+    """Breaks if list drops an item, invents an unconfigured one, or
+    misreports the last run and its exit."""
+    _calls, exits = spawns
+    exits["nightly"] = 2
+    write_config(env, '[clockwork]\nnightly = "n"\nnightly_every = "24h"\n'
+                      'upgrade = "u"\nupgrade_at = "03:00"\n'
+                      'owner_report = "r"\n')
+    tick(now=NOW)
+    capsys.readouterr()
+    assert cli.main(["clockwork", "list"]) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.splitlines() == [
+        "relaunch       every tick             never run",
+        "pool-reset     every tick             never run",
+        "clean          every tick, after 24h  never run",
+        "dead-sessions  every tick, after 24h  never run",
+        "nightly        every 24h              last 2026-09-10 12:00Z exit 2",
+        "owner_report   no schedule            never run",
+        "upgrade        at 03:00 UTC           last 2026-09-10 12:00Z exit 0",
+    ]
+
+
+def test_clockwork_list_is_refused_to_a_supervisor(env, monkeypatch, capsys):
+    seed_roster({"id": "ses-sup", "role": "supervisor", "pool": "claude",
+                 "front": "f", "pid": None, "state": "running"})
+    monkeypatch.setenv(SESSION_ENV, "ses-sup")
+    assert cli.main(["clockwork", "list"]) != 0
+
+
+def test_the_real_spawn_records_exit_and_output(env):
+    """The detached wrapper leaves output and exit where a later tick
+    reads them: exit 4 and the command's own words."""
+    write_config(env, '[clockwork]\nnightly = "echo from-nightly; exit 4"\n'
+                      'nightly_every = "24h"\n')
+    import time
+
+    moment = NOW
+    for _ in range(100):
+        tick(now=moment)
+        if lines("nightly"):
+            break
+        time.sleep(0.05)
+        moment += timedelta(seconds=2)
+    nightly = lines("nightly")
+    assert len(nightly) == 1
+    assert nightly[0]["exit"] == 4
+    assert (paths.state_dir() / nightly[0]["output_ref"]).read_text(
+        encoding="utf-8") == "from-nightly\n"
+    assert len(open_red("nightly")) == 1

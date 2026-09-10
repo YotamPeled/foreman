@@ -28,7 +28,8 @@ import re
 import sys
 import tomllib
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 
 from . import caller, paths, store
 from .caller import Refusal
@@ -292,13 +293,188 @@ def _sessions_tick(moment: datetime, now_iso: str,
                    at=now_iso, count=len(old), sessions=old)
 
 
+#: The anomaly a configured item's non-zero exit opens, subject the item.
+RED_KIND = "clockwork red"
+
+#: Runs ``$1`` with its output in ``$2``, then leaves its exit in ``$3``
+#: by rename, so a reader never sees half an exit file.
+_WRAPPER = 'sh -c "$1" >"$2" 2>&1; echo $? >"$3.part"; mv "$3.part" "$3"'
+
+
+def spawn_item(command: str, output: Path, exit_path: Path) -> int:
+    """Start one configured item detached; return its pid at once.
+
+    The item's exit arrives as a file a later tick reads, never as a wait:
+    a nightly check may take an hour, and a collector that blocked on it
+    would stop observing the swarm. No session travels with it, and it
+    runs from the state directory. Tests replace this function.
+    """
+    import subprocess
+
+    from .caller import SESSION_ENV
+
+    env = dict(os.environ)
+    env.pop(SESSION_ENV, None)
+    proc = subprocess.Popen(
+        ["sh", "-c", _WRAPPER, "clockwork", command, str(output),
+         str(exit_path)],
+        stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True,
+        cwd=str(paths.state_dir()), env=env)
+    return proc.pid
+
+
+def _due(item: Item, last_run: datetime | None, moment: datetime) -> bool:
+    """True when ``item`` should start at ``moment``.
+
+    ``every``: never run, or its interval has passed since the last start.
+    ``at``: the latest HH:MM (UTC) at or before now is later than the last
+    start. An item never run is due at once under either schedule.
+    """
+    if item.every is not None:
+        return last_run is None or \
+            (moment - last_run).total_seconds() >= item.every
+    if item.at is not None:
+        slot = moment.replace(hour=item.at[0], minute=item.at[1],
+                              second=0, microsecond=0)
+        if slot > moment:
+            slot -= timedelta(days=1)
+        return last_run is None or last_run < slot
+    return False
+
+
+def _upgrade_waits() -> str:
+    """Why this is not a safe point to upgrade, or "" when it is.
+
+    Safe means no job running on any front and no landing item (a script
+    node that lands) queued or running.
+    """
+    from . import node as node_mod
+    from .collector import _queued_front_names, read_jobs
+
+    for jid, (front, record) in sorted(read_jobs().items()):
+        if record.get("state") == "running":
+            return f"job {jid} running on {front}"
+    for front in _queued_front_names():
+        try:
+            folded, _by_id = node_mod._read_nodes(front)
+        except Exception:  # noqa: BLE001 - an unreadable tree is not
+            continue        # a landing
+        for node in folded:
+            landing = (str(node.get("role") or "") == "script"
+                       or str(node.get("lands") or "").strip())
+            if landing and str(node.get("state") or "") in (
+                    "queued", "running"):
+                return f"landing {node.get('id')} open on {front}"
+    return ""
+
+
+def _finish_runs(cw: dict, moment: datetime, now_iso: str, note_open,
+                 open_now: dict) -> None:
+    """Record every started item whose exit file has appeared."""
+    from . import procs
+
+    running = cw["running"]
+    for name in sorted(running):
+        run = running[name]
+        if not isinstance(run, dict):
+            del running[name]
+            continue
+        exit_path = Path(str(run.get("exit_path") or ""))
+        code: int | None
+        try:
+            code = int(exit_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            code = None
+            pid = run.get("pid")
+            if isinstance(pid, int) and procs.pid_alive(pid):
+                continue
+            try:  # the exit may have landed between the read and the check
+                code = int(exit_path.read_text(encoding="utf-8").strip())
+            except (OSError, ValueError):
+                code = None
+        started = _parse_time(run.get("started_at"))
+        seconds = (moment - started).total_seconds() if started else 0.0
+        output_ref = str(run.get("output_ref") or "")
+        record_run(name, str(run.get("command") or ""), code, seconds,
+                   output_ref, at=now_iso)
+        del running[name]
+        if code == 0:
+            existing = open_now.get((RED_KIND, name))
+            if existing is not None:
+                store.append_ledger(paths.anomalies_path(),
+                                    dict(existing, resolved_at=now_iso))
+                del open_now[(RED_KIND, name)]
+            continue
+        shown = "no exit (the process vanished)" if code is None \
+            else f"exit {code}"
+        note_open(RED_KIND, name,
+                  f"clockwork {name} red: {shown}; output {output_ref}; "
+                  f"runs again at its next due time", set())
+
+
+def _configured_tick(moment: datetime, now_iso: str, cstate: dict,
+                     note_open, open_now: dict,
+                     config: ClockworkConfig) -> None:
+    """Start each configured item that is due; record the ones that ended.
+
+    A red item is a line and an anomaly, never a retry: it is due again
+    only at its next scheduled time. ``upgrade`` starts only at a safe
+    point and says why it waited, once per reason.
+    """
+    cw = cstate.get("clockwork")
+    if not isinstance(cw, dict):
+        cw = cstate["clockwork"] = {}
+    for key in ("last_run", "running"):
+        if not isinstance(cw.get(key), dict):
+            cw[key] = {}
+    _finish_runs(cw, moment, now_iso, note_open, open_now)
+    for name in CONFIGURED_ITEMS:
+        item = config.items.get(name)
+        if item is None or not item.scheduled or name in cw["running"]:
+            continue
+        if not _due(item, _parse_time(cw["last_run"].get(name)), moment):
+            continue
+        if name == "upgrade":
+            why = _upgrade_waits()
+            if why:
+                if cw.get("upgrade_waits") != why:
+                    print(f"foreman clockwork: upgrade waits: {why}")
+                    cw["upgrade_waits"] = why
+                continue
+            cw.pop("upgrade_waits", None)
+        stamp = moment.strftime("%Y%m%dT%H%M%SZ")
+        out_dir = paths.clockwork_output_dir()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output = out_dir / f"{name}-{stamp}.log"
+        exit_path = out_dir / f"{name}-{stamp}.exit"
+        try:
+            pid = spawn_item(item.command, output, exit_path)
+        except Exception as exc:  # noqa: BLE001 - a failed start is a
+            record_run(name, item.command, None, 0.0, at=now_iso,  # red line
+                       error=f"{type(exc).__name__}: {exc}")
+            cw["last_run"][name] = now_iso
+            note_open(RED_KIND, name,
+                      f"clockwork {name} red: did not start ({exc})", set())
+            continue
+        cw["last_run"][name] = now_iso
+        cw["running"][name] = {
+            "pid": pid, "started_at": now_iso, "command": item.command,
+            "output_ref": str(output.relative_to(paths.state_dir())),
+            "exit_path": str(exit_path)}
+    # A spawn that finished at once is recorded this tick, not the next.
+    _finish_runs(cw, moment, now_iso, note_open, open_now)
+
+
 def tick(moment: datetime, now_iso: str, cstate: dict, note_open,
          open_now: dict, config: ClockworkConfig | None = None) -> None:
     """One pass of every item. Called by the collector's tick, under its
     lock, after the roster write; nothing here raises into the tick."""
     config = config or load_config()
     for step in (lambda: _pool_reset(moment, now_iso),
-                 lambda: _sessions_tick(moment, now_iso, config)):
+                 lambda: _sessions_tick(moment, now_iso, config),
+                 lambda: _configured_tick(moment, now_iso, cstate,
+                                          note_open, open_now, config)):
         try:
             step()
         except Exception as exc:  # noqa: BLE001 - the daemon stays up
@@ -326,11 +502,21 @@ def list_lines(config: ClockworkConfig | None = None) -> list[str]:
         if name in ("clean", "dead-sessions"):
             schedule = f"every tick, after {config.clean_after_text}"
         rows.append((name, schedule, _last_text(latest.get(name))))
+    state = store.read_snapshot(paths.collector_path(), default=None)
+    cw = state.get("clockwork") if isinstance(state, dict) else None
+    cw = cw if isinstance(cw, dict) else {}
+    running = cw.get("running") if isinstance(cw.get("running"), dict) \
+        else {}
     for name in CONFIGURED_ITEMS:
         item = config.items.get(name)
         if item is None:
             continue
-        rows.append((name, item.schedule(), _last_text(latest.get(name))))
+        last = _last_text(latest.get(name))
+        if name in running:
+            last += "; running now"
+        if name == "upgrade" and cw.get("upgrade_waits"):
+            last += f"; waits: {cw['upgrade_waits']}"
+        rows.append((name, item.schedule(), last))
     width = max(len(name) for name, _, _ in rows)
     sched = max(len(schedule) for _, schedule, _ in rows)
     return [f"{name.ljust(width)}  {schedule.ljust(sched)}  {last}"
