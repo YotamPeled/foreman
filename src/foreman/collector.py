@@ -1156,7 +1156,8 @@ def _queue_tick(cstate: dict, now_iso: str) -> None:
         record = fronts_mod.read_front_record(name)
         if record is None:
             continue
-        if str(record.get("state") or "") in ("done", "halted", "frozen"):
+        if str(record.get("state") or "") in (
+                "done", "halted", "frozen", "stopped"):
             continue
         folded, by_id = node_mod._read_nodes(name)
         queued = [node for node in folded
@@ -1252,7 +1253,8 @@ def _detect_target_moves(cstate: dict, now_iso: str) -> None:
         record = fronts_mod.read_front_record(name)
         if record is None:
             continue
-        if str(record.get("state") or "") in ("done", "halted", "frozen"):
+        if str(record.get("state") or "") in (
+                "done", "halted", "frozen", "stopped"):
             continue
         if str(record.get("shape") or "") != "v5":
             continue

@@ -307,7 +307,9 @@ def test_from_dict_ignores_unknown_keys():
 
 
 def test_state_tuples_cover_listed_states():
-    assert set(entities.FRONT_STATES) == {"queued", "active", "done", "halted", "frozen"}
+    assert set(entities.FRONT_STATES) == {
+        "queued", "active", "done", "halted", "frozen", "stopped",
+    }
     assert set(entities.TASK_STATES) == {"waiting", "ready", "active", "built", "landed"}
     assert set(entities.JOB_STATES) == {
         "planned",

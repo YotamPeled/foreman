@@ -17,6 +17,7 @@ from foreman.caller import SESSION_ENV
 from foreman.collector import tick
 from foreman.entities import Session
 from foreman.pools import LaunchContext, PoolAdapter
+from foreman.pools import _common
 
 NOW = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
 
@@ -49,6 +50,7 @@ def env(tmp_path, monkeypatch):
     paths.config_dir().mkdir(parents=True, exist_ok=True)
     paths.config_file().write_text(
         "[pool.fake]\ncap = 3\nroles = [\"muse\"]\n", encoding="utf-8")
+    monkeypatch.setattr(_common, "stop_unit", lambda *a, **k: False)
     try:
         yield tmp_path
     finally:
@@ -274,3 +276,96 @@ def supervisor_spawn_not_called(env):
     return all(entry.get("role") != "supervisor"
                for entry in sessions.values()
                if isinstance(entry, dict))
+
+
+def roster_session(sid: str) -> dict | None:
+    roster = store.read_snapshot(paths.roster_path(), default={"sessions": {}})
+    sessions = roster.get("sessions") or {}
+    entry = sessions.get(sid)
+    return entry if isinstance(entry, dict) else None
+
+
+def test_stop_kills_releases_and_the_next_tick_starts_the_second(
+        env, capsys, supervisor_spawn):
+    """front stop on the active front kills its session, releases the
+    reservation, and the next tick starts the second."""
+    write_v5("alpha", builders=2)
+    write_v5("beta", builders=2)
+    store.append_ledger(paths.front_jobs_path("alpha"), {
+        "id": "job-queued1", "state": "queued", "role": "muse",
+    })
+    tick(now=NOW)
+    sid = supervisor_spawn[0]["session"]
+    capsys.readouterr()
+    assert cli.main(["front", "stop", "alpha",
+                     "--reason", "owner paused this front"]) == 0
+    out = capsys.readouterr().out
+    assert "alpha stopped" in out
+    assert roster_session(sid)["state"] == "killed"
+    assert open_for("alpha") == []
+    alpha = fronts.read_front_record("alpha")
+    assert alpha["state"] == "stopped"
+    assert alpha["stop_reason"] == "owner paused this front"
+    jobs = store.fold_by_id(store.read_ledger(paths.front_jobs_path("alpha")))
+    assert jobs[0]["state"] == "queued"
+    tick(now=NOW + timedelta(seconds=2))
+    assert [item["front"] for item in supervisor_spawn] == ["alpha", "beta"]
+    assert fronts.read_front_record("beta")["state"] == "active"
+    recs = open_for("beta")
+    assert len(recs) == 1 and recs[0]["count"] == 2
+
+
+def test_resume_requeues_the_stopped_front(
+        env, capsys, supervisor_spawn):
+    """front resume puts a stopped front back in the queue with prefer
+    unchanged, so it waits behind the one that started in its place."""
+    write_v5("alpha", builders=2, prefer=0)
+    write_v5("beta", builders=2, prefer=0)
+    tick(now=NOW)
+    capsys.readouterr()
+    assert cli.main(["front", "stop", "alpha",
+                     "--reason", "owner paused this front"]) == 0
+    capsys.readouterr()
+    tick(now=NOW + timedelta(seconds=2))
+    capsys.readouterr()
+    assert cli.main(["front", "resume", "alpha"]) == 0
+    out = capsys.readouterr().out
+    assert "alpha queued" in out
+    alpha = fronts.read_front_record("alpha")
+    assert alpha["state"] == "queued"
+    assert alpha["prefer"] == 0
+    assert not alpha.get("stop_reason")
+    assert cli.main(["front", "queue"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "alpha  pool fake: cap 3, reserved 2, wants 2",
+    ]
+
+
+def test_stop_and_resume_refuse_the_wrong_state(env, capsys, supervisor_spawn):
+    """Both verbs name the state the front is actually in."""
+    write_v5("alpha", builders=2)
+    write_v5("beta", builders=2)
+    assert cli.main(["front", "stop", "alpha",
+                     "--reason", "too soon"]) == 1
+    assert "is queued, not active" in capsys.readouterr().err
+    tick(now=NOW)
+    capsys.readouterr()
+    assert cli.main(["front", "resume", "alpha"]) == 1
+    assert "is active, not stopped" in capsys.readouterr().err
+    assert cli.main(["front", "stop", "alpha",
+                     "--reason", "owner paused this front"]) == 0
+    capsys.readouterr()
+    assert cli.main(["front", "stop", "alpha",
+                     "--reason", "again"]) == 1
+    assert "is stopped, not active" in capsys.readouterr().err
+    assert cli.main(["front", "resume", "beta"]) == 1
+    assert "is queued, not stopped" in capsys.readouterr().err
+
+
+def test_stop_without_a_reason_is_refused(env, capsys, supervisor_spawn):
+    write_v5("alpha", builders=2)
+    tick(now=NOW)
+    capsys.readouterr()
+    assert cli.main(["front", "stop", "alpha"]) == 1
+    assert "field '--reason' is required" in capsys.readouterr().err
+    assert fronts.read_front_record("alpha")["state"] == "active"
