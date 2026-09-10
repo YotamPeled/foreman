@@ -415,6 +415,13 @@ def test_tick_script_node_waits_script_runner_and_holds_no_slot(
     seed_supervisor("v5shape")
     _mil, _tsk, node_id = add_chain(
         monkeypatch, capsys, job_id="job-s", role="script")
+    assert run(monkeypatch, [
+        "node", "revise", "v5shape", node_id,
+        "--sheet-replace", "Run the landing script and record the head.",
+        "--sheet-reason", "script items have no default sheet",
+        "--reason", "attach a sheet so the node can be queued",
+    ], SUP) == 0
+    capsys.readouterr()
     assert run(monkeypatch, ["job", "queue", "v5shape", node_id], SUP) == 0
     capsys.readouterr()
     before = list(capacity.open_grants())

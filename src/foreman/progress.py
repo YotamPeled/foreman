@@ -1276,6 +1276,15 @@ def job_queue_main(front: str, node_id: str | None,
                     violations.append(
                         f"{nid} is {state}; only a job with no state "
                         f"is queued")
+                from . import launch as launch_mod
+
+                queued_node = dict(existing)
+                if sheet_add is not None:
+                    queued_node["sheet_add"] = str(sheet_add)
+                missing = launch_mod.missing_sheet_message(
+                    str(existing.get("role") or ""), queued_node)
+                if missing:
+                    violations.append(missing)
         for after_id in extra_after:
             if after_id not in by_id:
                 violations.append(

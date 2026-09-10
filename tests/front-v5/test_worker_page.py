@@ -464,3 +464,43 @@ def test_hand_launch_page_is_byte_identical_for_the_same_spec(
     assert "## Map facts" not in page
     assert "Added by the supervisor" not in page
     assert "- repository:" not in page
+
+
+def test_job_queue_refuses_a_role_with_no_sheet(env, monkeypatch, capsys):
+    """A node whose role has no default sheet and no replacement is refused."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, job = add_chain(
+        monkeypatch, capsys, job_id="job-s", role="script")
+    capsys.readouterr()
+    before = store.read_ledger(paths.front_tree_path("v5shape"))
+    assert run(monkeypatch, ["job", "queue", "v5shape", job], SUP) == 1
+    _, err = capsys.readouterr()
+    assert "role script has no sheet; add one with node revise --sheet-replace" in err
+    assert "--sheet-replace" in err
+    assert store.read_ledger(paths.front_tree_path("v5shape")) == before
+
+
+def test_start_queued_refuses_a_role_with_no_sheet(
+        env, monkeypatch, capsys, launch_spawn):
+    """start_queued names the same missing-sheet flag and does not launch."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, job = add_chain(
+        monkeypatch, capsys, job_id="job-s", role="script")
+    # Bypass job queue so the node is queued without a sheet, the way a
+    # ledger line from before this refusal would look.
+    node = folded_tree()[job]
+    from foreman.progress import _write_node_revise
+    _write_node_revise(
+        "v5shape", node, SUP, "queued",
+        state="queued", waits="ready")
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    job_id, reason = start_queued("v5shape", job, by="collector")
+    assert job_id is None
+    assert reason == (
+        "role script has no sheet; add one with node revise --sheet-replace")
+    assert "--sheet-replace" in reason
+    launched = [item for item in launch_spawn if item.get("kind") == "launch"]
+    assert launched == []
+    assert folded_tree()[job]["state"] == "queued"

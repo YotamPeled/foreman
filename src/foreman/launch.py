@@ -1072,6 +1072,10 @@ def start_queued(front: str, node_id: str, *,
     if str(existing.get("state") or "") != "queued":
         shown = str(existing.get("state") or "unstarted")
         return None, f"{nid} is {shown}; only a queued job is started"
+    missing = missing_sheet_message(
+        str(existing.get("role") or ""), existing)
+    if missing:
+        return None, missing
     pool = _team_pool(record, existing)
     role = _queued_job_role(record, existing)
     if not pool or not role:
