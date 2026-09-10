@@ -969,6 +969,29 @@ def refresh_window_pid() -> None:
     os.environ["FOREMAN_PROOF_SPAWN_PID"] = str(_WINDOW_HOLD.pid)
 
 
+def end_runner_sessions() -> None:
+    """End the sessions earlier clauses registered on the runner's pid.
+
+    Clauses register their supervisor with ``--pid`` of this process, so
+    each stays live for every later clause. 3.3 leaves one on front qt1;
+    in the full run 5.2 queues its own qt1 and the tick, seeing a live
+    supervisor on it, starts nothing. A clause's sessions end with it.
+    """
+    path = Path(os.environ[STATE_ENV]) / "roster.json"
+    data = read_json(path)
+    sessions = data.get("sessions") if isinstance(data, dict) else None
+    if not isinstance(sessions, dict):
+        return
+    changed = False
+    for entry in sessions.values():
+        if (isinstance(entry, dict) and str(entry.get("pid")) == str(os.getpid())
+                and entry.get("state") in ("starting", "running")):
+            entry["state"] = "exited"
+            changed = True
+    if changed:
+        path.write_text(json.dumps(data) + "\n", encoding="utf-8")
+
+
 def build_world(root: Path) -> dict:
     global _TEMP, _STATE, _CONFIG, _BIN
     _TEMP = root
@@ -2028,6 +2051,7 @@ def _run_loaded_clauses(files: list[Path], break_clause: object,
                 failed = True
                 continue
             refresh_window_pid()
+            end_runner_sessions()
             if _break_is(break_clause, cid):
                 if _execute_break(cid, module, world, path.name):
                     failed = True
