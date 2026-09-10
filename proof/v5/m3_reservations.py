@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -109,8 +110,31 @@ BREAK = (
 )
 
 
+def _free_fake_held() -> None:
+    """Release leftover fake-pool workers so status can show held 0."""
+    roster_path = Path(os.environ["FOREMAN_STATE"]) / "roster.json"
+    if not roster_path.is_file():
+        return
+    try:
+        roster = json.loads(roster_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    sessions = roster.get("sessions") if isinstance(roster, dict) else {}
+    if not isinstance(sessions, dict):
+        return
+    for sid, rec in sessions.items():
+        if not isinstance(rec, dict):
+            continue
+        if rec.get("pool") != "fake":
+            continue
+        if rec.get("state") not in ("running", "starting"):
+            continue
+        run_foreman(["kill", sid, "--reason", "proof 3.1 needs held 0"])
+
+
 def run(world) -> str:
     assert_world()
+    _free_fake_held()
     capped = run_foreman(["cap", "fake", "3"])
     if capped.returncode != 0:
         raise Failure(f"cap fake 3 failed: {capped.stderr[-800:]}")
@@ -124,29 +148,35 @@ def run(world) -> str:
     reserved = run_foreman(["front", "reserve", front_a, "--phase", "builders"])
     if reserved.returncode != 0:
         raise Failure(f"front reserve {front_a} failed: {reserved.stderr[-800:]}")
-    refused = run_foreman(["front", "reserve", front_b, "--phase", "builders"])
-    if refused.returncode == 0:
-        raise Failure(f"front reserve {front_b} was admitted")
-    err = refused.stderr or ""
-    if "cap 3, reserved 2" not in err:
-        raise Failure(
-            f"B refusal did not name cap 3, reserved 2: {err[-800:]}")
-    status = run_foreman(["status"])
-    if status.returncode != 0:
-        raise Failure(f"status failed: {status.stderr[-400:]}")
-    if "held 0 / reserved 2 / cap 3" not in status.stdout:
-        raise Failure(
-            f"status missing held 0 / reserved 2 / cap 3:\n"
-            f"{status.stdout[-1500:]}")
-    released = run_foreman(["front", "release", front_a])
-    if released.returncode != 0:
-        raise Failure(f"front release {front_a} failed: {released.stderr[-800:]}")
-    second = run_foreman(["front", "reserve", front_b, "--phase", "builders"])
-    if second.returncode != 0:
-        raise Failure(
-            f"front reserve {front_b} after release failed: "
-            f"{second.stderr[-800:]}")
-    run_foreman(["front", "release", front_b])
+    try:
+        refused = run_foreman(
+            ["front", "reserve", front_b, "--phase", "builders"])
+        if refused.returncode == 0:
+            raise Failure(f"front reserve {front_b} was admitted")
+        err = refused.stderr or ""
+        if "cap 3, reserved 2" not in err:
+            raise Failure(
+                f"B refusal did not name cap 3, reserved 2: {err[-800:]}")
+        status = run_foreman(["status"])
+        if status.returncode != 0:
+            raise Failure(f"status failed: {status.stderr[-400:]}")
+        if "held 0 / reserved 2 / cap 3" not in status.stdout:
+            raise Failure(
+                f"status missing held 0 / reserved 2 / cap 3:\n"
+                f"{status.stdout[-1500:]}")
+        released = run_foreman(["front", "release", front_a])
+        if released.returncode != 0:
+            raise Failure(
+                f"front release {front_a} failed: {released.stderr[-800:]}")
+        second = run_foreman(
+            ["front", "reserve", front_b, "--phase", "builders"])
+        if second.returncode != 0:
+            raise Failure(
+                f"front reserve {front_b} after release failed: "
+                f"{second.stderr[-800:]}")
+    finally:
+        run_foreman(["front", "release", front_a])
+        run_foreman(["front", "release", front_b])
     return (
         f"{front_a} reserved 2; {front_b} refused cap 3, reserved 2; "
         f"status held 0 / reserved 2 / cap 3; release let {front_b} reserve"

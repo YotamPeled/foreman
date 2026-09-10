@@ -183,6 +183,9 @@ def run(world) -> str:
     work = f"w{name}"
     _add_front(world, name, str(bare), work)
     _ensure_work(src, bare, work)
+    reserved = run_foreman(["front", "reserve", name, "--phase", "builders"])
+    if reserved.returncode != 0:
+        raise Failure(f"front reserve {name} failed: {reserved.stderr[-800:]}")
     sid = _register(name)
     mil = _add_ok(name, sid, name, "milestone", "milestone one",
                   node_id=f"mil-rs{n}")
