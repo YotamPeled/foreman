@@ -304,6 +304,7 @@ class CodexAdapter(PoolAdapter):
     model = MODEL
     binary = "codex"
     timeout_default = "25m"
+    effort_default = "low"
     interactive = False
 
     def command_str(self, ctx: LaunchContext) -> str:

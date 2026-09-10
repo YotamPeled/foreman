@@ -125,6 +125,11 @@ def test_packaged_manifest_matches_its_adapter(env, name, model, timeout,
     assert manifest.model == model == get_pool(name).model
     assert manifest.timeout_default == timeout == \
         get_pool(name).timeout_default
+    expected_effort = {
+        "muse": "xhigh", "grok": "high", "claude": "high", "codex": "low",
+    }[name]
+    assert manifest.effort_default == expected_effort == \
+        get_pool(name).effort_default
     assert manifest.interactive is False
     assert manifest.adapter == adapter
     assert list(manifest.roles) == roles
@@ -160,6 +165,7 @@ def test_user_override_replaces_packaged_entirely(env, capsys):
     assert isinstance(adapter, plugins.DirectoryPool)
     assert adapter.model == "custom-model-1"
     assert adapter.timeout_default == "7m"
+    assert adapter.effort_default is None
     assert adapter.roles == ("muse", "opus")
     ctx = make_ctx(env, "muse", MuseAdapter.model)
     assert adapter.command_str(ctx) == MuseAdapter().command_str(ctx)
@@ -172,6 +178,8 @@ BROKEN_MUSE_MANIFESTS = [
     'name = "muse"\nmodel = "x"\ntimeout_default = "soon"\nadapter = "muse"\n',
     'name = "muse"\nmodel = "x"\ntimeout_default = "5m"\nadapter = "nope"\n',
     'name = "muse"\nmodel = ""\ntimeout_default = "5m"\nadapter = "muse"\n',
+    'name = "muse"\nmodel = "x"\ntimeout_default = "5m"\n'
+    'effort_default = "soon"\nadapter = "muse"\n',
 ]
 
 

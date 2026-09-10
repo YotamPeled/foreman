@@ -168,6 +168,7 @@ class ClaudeAdapter(PoolAdapter):
     # The owner's own sessions run the same binary.
     binary_is_foreman_worker = False
     timeout_default = "20m"
+    effort_default = "high"
     interactive = False
 
     def model_for_role(self, role: str) -> str:

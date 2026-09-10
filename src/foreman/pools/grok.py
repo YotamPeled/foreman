@@ -201,6 +201,7 @@ class GrokAdapter(PoolAdapter):
     model = MODEL
     binary = "grok"
     timeout_default = "20m"
+    effort_default = "high"
     interactive = False
 
     def command_str(self, ctx: LaunchContext) -> str:

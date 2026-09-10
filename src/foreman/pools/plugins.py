@@ -1,9 +1,9 @@
 """Pool plugin directories: packaged defaults, user overrides.
 
 A pool is a directory holding ``manifest.toml`` (name, model,
-timeout_default, interactive, the roles it serves, and either the
-packaged ``adapter`` implementing it or a ``[vendor]`` command) plus a
-``SKILL.md`` saying what the pool is for.
+timeout_default, effort_default, interactive, the roles it serves, and
+either the packaged ``adapter`` implementing it or a ``[vendor]``
+command) plus a ``SKILL.md`` saying what the pool is for.
 
 Packaged pools live under this package (``src/foreman/pools/<name>/``);
 user pools live under the user pools directory
@@ -81,6 +81,10 @@ class PoolManifest:
     model: str
     timeout_default: str
     interactive: bool
+    #: One of :data:`foreman.pools._common.LAUNCH_EFFORTS`, or None when
+    #: the directory omitted the key. A packaged pool always names one;
+    #: a user pool without it inherits nothing.
+    effort_default: str | None = None
     roles: tuple[str, ...] = ()
     #: Extra names an agent string may use for this pool (a model
     #: nickname, a role the owner types). Optional; validated like roles.
@@ -128,16 +132,37 @@ def _invalid(reason: str) -> InvalidManifest:
     return InvalidManifest(reason)
 
 
+def _optional_effort(path: Path, raw: dict, field: str) -> str | None:
+    """``field`` if present and one of the launcher efforts, else None.
+
+    Absent is allowed: a user pool may omit ``effort_default`` and the
+    launcher then refuses a launch that does not pass ``--effort``.
+    Present but not one of :data:`_common.LAUNCH_EFFORTS` is the same
+    class of error as a timeout that does not parse.
+    """
+    value = raw.get(field)
+    if value is None:
+        return None
+    if value not in _common.LAUNCH_EFFORTS:
+        allowed = ", ".join(_common.LAUNCH_EFFORTS)
+        raise _invalid(f"{path} names no effort (field {field!r} must "
+                       f"be one of {allowed}, got {value!r})")
+    return value
+
+
 def load_manifest(directory: Path | str) -> PoolManifest:
     """Read and validate a pool directory's manifest.
 
     Raises :class:`InvalidManifest` naming what is wrong: a missing
     file, an unparsable one, a name that is not the directory's, a
     missing or empty identity field, a timeout nothing parses, an
+    ``effort_default`` that is not one of the launcher efforts, an
     ``adapter`` no adapter registers, or a ``[vendor]`` table with no
-    usable argv. Unknown keys are ignored. A manifest naming neither an
-    adapter nor a vendor command is valid but unlaunchable: it lists,
-    and a launch of it is refused with the reason instead of crashing.
+    usable argv. Unknown keys are ignored. A missing ``effort_default``
+    is valid: the pool lists, and a launch of it without ``--effort``
+    is refused naming the key. A manifest naming neither an adapter nor
+    a vendor command is valid but unlaunchable: it lists, and a launch
+    of it is refused with the reason instead of crashing.
     """
     directory = Path(directory)
     path = directory / MANIFEST_FILENAME
@@ -168,6 +193,7 @@ def load_manifest(directory: Path | str) -> PoolManifest:
         raise _invalid(f"{path} names no timeout (field "
                        f"'timeout_default' must parse like '20m', "
                        f"got {timeout!r})")
+    effort_default = _optional_effort(path, raw, "effort_default")
     interactive = raw.get("interactive", False)
     if not isinstance(interactive, bool):
         raise _invalid(f"{path} misnames 'interactive' "
@@ -212,6 +238,7 @@ def load_manifest(directory: Path | str) -> PoolManifest:
         vendor_stdin = stdin
     return PoolManifest(
         name=name, model=model, timeout_default=timeout,
+        effort_default=effort_default,
         interactive=interactive, roles=tuple(roles),
         aliases=tuple(aliases),
         adapter=adapter, vendor_argv=vendor_argv,
@@ -444,8 +471,8 @@ def _binary_is_foreman_worker(manifest: PoolManifest) -> bool:
 class DirectoryPool(PoolAdapter):
     """A pool read from a directory: a user override or a new pool.
 
-    Identity (name, model, timeout, interactive, roles) always comes
-    from the manifest. Behaviour comes from the manifest's ``[vendor]``
+    Identity (name, model, timeout, effort, interactive, roles) always
+    comes from the manifest. Behaviour comes from the manifest's ``[vendor]``
     command when it declares one, else from the named packaged adapter,
     so a clone edited only in prose launches exactly what it always did.
     """
@@ -455,6 +482,7 @@ class DirectoryPool(PoolAdapter):
         self.name = manifest.name
         self.model = manifest.model
         self.timeout_default = manifest.timeout_default
+        self.effort_default = manifest.effort_default
         self.interactive = manifest.interactive
         self.roles: tuple[str, ...] = manifest.roles
         self.binary = _vendor_binary(manifest)

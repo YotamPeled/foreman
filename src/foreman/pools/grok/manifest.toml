@@ -14,6 +14,7 @@
 name = "grok"
 model = "grok-4.6"
 timeout_default = "20m"
+effort_default = "high"
 interactive = false
 roles = ["grok"]
 aliases = ["grok-4.6"]

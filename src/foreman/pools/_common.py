@@ -42,8 +42,9 @@ WINDOW_LAUNCHER_ENV = "FOREMAN_WINDOW_LAUNCHER"
 PID_WAIT_SECONDS = 30.0
 #: Values the launcher accepts for ``--effort``: the union of what every
 #: pool understands. Each adapter documents its own subset and passes
-#: ``ctx.effort`` straight to its vendor flag.
-LAUNCH_EFFORTS = ("high", "medium", "xhigh")
+#: ``ctx.effort`` straight to its vendor flag. Order is rank: a pool's
+#: ``effort_min`` refuses anything earlier in this tuple.
+LAUNCH_EFFORTS = ("low", "medium", "high", "xhigh")
 
 #: A vendor quota/rate refusal names when the window resets. Captured as
 #: an ISO instant; anything we cannot parse is not a refusal.

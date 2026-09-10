@@ -25,6 +25,11 @@ Adapter contract (the whole interface a new pool must implement):
   also the owner's own tool. Default True: a new pool is treated as
   Foreman-owned unless it says otherwise.
 - ``timeout_default``: e.g. ``"20m"``; used unless ``--timeout`` overrides.
+- ``effort_default``: one of ``low``, ``medium``, ``high``, ``xhigh``;
+  used unless ``--effort`` overrides. A directory pool that omitted the
+  key has ``None`` and a launch without ``--effort`` is refused naming
+  the key to add. Default ``"high"`` so an in-memory adapter (a test
+  fake) keeps today's behaviour.
 - ``interactive``: only ``interactive = True`` pools may open a window.
 - ``launch(ctx) -> int``: start the worker detached, return its pid. The
   worker shell writes its own pid to ``ctx.pid_path`` as its first act;
@@ -94,6 +99,7 @@ class PoolAdapter:
     binary: str = ""
     binary_is_foreman_worker: bool = True
     timeout_default: str = "20m"
+    effort_default: str | None = "high"
     interactive: bool = False
 
     def launch(self, ctx: LaunchContext) -> int:

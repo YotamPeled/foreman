@@ -9,6 +9,7 @@
 name = "fakepool"
 model = "fake-test-model"
 timeout_default = "5m"
+effort_default = "high"
 interactive = false
 roles = ["muse"]
 

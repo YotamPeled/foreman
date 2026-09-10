@@ -93,8 +93,10 @@ def pool_list_main() -> int:
         manifest, source = plugins.describe(name)
         if manifest is not None:
             roles = ", ".join(manifest.roles) or "-"
+            effort = manifest.effort_default or "-"
             print(f"{manifest.name} {manifest.model} [{source}] "
-                  f"roles: {roles} timeout: {manifest.timeout_default}")
+                  f"roles: {roles} timeout: {manifest.timeout_default} "
+                  f"effort: {effort}")
         else:
             print(f"{name} [{source}]")
     return _done(0)

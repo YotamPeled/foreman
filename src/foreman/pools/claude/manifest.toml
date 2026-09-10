@@ -14,6 +14,7 @@
 name = "claude"
 model = "claude-opus-5"
 timeout_default = "20m"
+effort_default = "high"
 interactive = false
 roles = ["opus", "supervisor", "foreman"]
 aliases = ["opus-5", "opus"]

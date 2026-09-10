@@ -14,6 +14,7 @@
 name = "codex"
 model = "gpt-6-astra"
 timeout_default = "25m"
+effort_default = "low"
 interactive = false
 roles = ["astra"]
 aliases = ["astra-6", "astra"]
