@@ -323,6 +323,58 @@ def format_out_reason(record: dict) -> str:
     return because
 
 
+#: A clear line's ``because`` is this prefix plus the caller's reason.
+CLEARED_PREFIX = "cleared: "
+#: How long status keeps a clear visible under the pool row.
+CLEARED_WINDOW_S = 3600
+
+
+def _age_label(seconds: float) -> str:
+    """The same short age status uses: 14m, 2h. Never a timestamp."""
+    total = max(0, int(seconds))
+    if total < 60:
+        return f"{total}s"
+    if total < 3600:
+        return f"{total // 60}m"
+    if total < 86400:
+        return f"{total // 3600}h"
+    return f"{total // 86400}d"
+
+
+def cleared_reason(record: dict) -> str | None:
+    """The caller's reason if ``record`` is a clear line, else None."""
+    because = record.get("because")
+    if not isinstance(because, str) or not because.startswith(CLEARED_PREFIX):
+        return None
+    return because[len(CLEARED_PREFIX):]
+
+
+def recently_cleared(now: datetime | None = None) -> dict[str, dict]:
+    """Pool name -> folded record, for every pool cleared within the hour.
+
+    A pool that is out again (a later mark with a future ``out_until``)
+    is not recently cleared: the out line is what the screen must show.
+    """
+    moment = _as_utc(now)
+    found: dict[str, dict] = {}
+    for record in folded_pools():
+        name = record.get("id")
+        if not isinstance(name, str) or not name:
+            continue
+        if cleared_reason(record) is None:
+            continue
+        until = _parse_iso(record.get("out_until"))
+        if until is not None and moment < until:
+            continue
+        at = _parse_iso(record.get("at"))
+        if at is None:
+            continue
+        if (moment - at).total_seconds() >= CLEARED_WINDOW_S:
+            continue
+        found[name] = record
+    return found
+
+
 def folded_pools() -> list[dict]:
     """Every pool-state record, folded last-wins by pool name."""
     try:
@@ -564,10 +616,12 @@ def capacity_lines(observed: dict | None,
     A pool that is out until a named reset prints that instead of
     held/cap, for as long as the reset is in the future. A front's
     allocation over such a pool prints the same out line in place of
-    held/ceiling. The box count — vendor processes on the machine,
-    whoever started them — prints on the pool's row when it differs
-    from held; a pool whose two numbers agree keeps the row it printed
-    before.
+    held/ceiling. A pool cleared within the last hour prints
+    ``cleared <age> ago (<reason>)`` under its row, so a false mark
+    the foreman just lifted is still visible. The box count — vendor
+    processes on the machine, whoever started them — prints on the
+    pool's row when it differs from held; a pool whose two numbers
+    agree keeps the row it printed before.
 
     Open reservations change the spelling: a pool with any prints
     ``held h / reserved r / cap c``, and a front that holds one prints
@@ -585,13 +639,16 @@ def capacity_lines(observed: dict | None,
     reserved_pool = fronts.reserved_by_pool()
     reserved_front_role = fronts.reserved_by_front_role()
     holding = fronts.reserved_fronts()
-    out_now = out_pools(now)
+    moment = _as_utc(now)
+    out_now = out_pools(moment)
+    cleared_now = recently_cleared(moment)
     running_pool = running_by_pool(table)
 
     names = set(held_pool)
     names.update(name for name in pool_view if isinstance(name, str))
     names.update(pool_for_role(role) for _front, role, _n in allocations)
     names.update(out_now)
+    names.update(cleared_now)
     names.update(pool for pool, n in running_pool.items() if n)
     names.update(reserved_pool)
 
@@ -611,26 +668,39 @@ def capacity_lines(observed: dict | None,
         held = held_pool.get(pool, 0)
         running = running_pool.get(pool, 0)
         reserved = reserved_pool.get(pool, 0)
-        if total is None and held == 0 and running == 0 and reserved == 0:
+        skip_empty = (total is None and held == 0 and running == 0
+                      and reserved == 0)
+        if skip_empty and pool not in cleared_now:
             # Nothing configured and nothing held: an empty row about a
             # pool nobody is using is noise on a one-screen panel.
             continue
-        if reserved:
-            cap_shown = total if total is not None else "-"
-            line = (f"  {pool}: held {held} / reserved {reserved} / "
-                    f"cap {cap_shown}")
+        if not skip_empty:
+            if reserved:
+                cap_shown = total if total is not None else "-"
+                line = (f"  {pool}: held {held} / reserved {reserved} / "
+                        f"cap {cap_shown}")
+            else:
+                line = (f"  {pool}: {held}/"
+                        f"{total if total is not None else '-'} held")
+            if running != held:
+                line += f" · {running} running on the box"
+            # A queued job is waiting for a slot only where there is no
+            # slot to give it. With one free, the job waits on the
+            # supervisor's order, which the Job queue block already
+            # shows by name.
+            behind = waiting.get(pool, 0)
+            if behind and total is not None and held >= total:
+                line += f" · {behind} waiting"
+            lines.append(line)
         else:
-            line = (f"  {pool}: {held}/"
-                    f"{total if total is not None else '-'} held")
-        if running != held:
-            line += f" · {running} running on the box"
-        # A queued job is waiting for a slot only where there is no slot to
-        # give it. With one free, the job waits on the supervisor's order,
-        # which the Job queue block already shows by name.
-        behind = waiting.get(pool, 0)
-        if behind and total is not None and held >= total:
-            line += f" · {behind} waiting"
-        lines.append(line)
+            lines.append(f"  {pool}:")
+        cleared = cleared_now.get(pool)
+        if cleared is not None:
+            reason = cleared_reason(cleared) or ""
+            at = _parse_iso(cleared.get("at"))
+            age = _age_label((moment - at).total_seconds()) if at is not None \
+                else "?"
+            lines.append(f"    cleared {age} ago ({reason})")
     front_lines: list[tuple[str, str, str]] = []
     for (front, role), count in reserved_front_role.items():
         shown = allocation_out(role, now)

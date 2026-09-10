@@ -8,11 +8,11 @@ without the work are not in this file.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from foreman import capacity, cli, paths, store
+from foreman import capacity, cli, mcp, paths, status, store
 from foreman.caller import SESSION_ENV
 
 RESET = "2099-01-01T00:00:00Z"
@@ -125,3 +125,43 @@ def test_unknown_pool_is_refused_naming_the_known_ones(
     assert "unknown pool 'nope'" in err
     assert "known pools:" in err
     assert "grok" in err
+
+
+def test_status_shows_the_cleared_line_for_the_hour(
+        env, capsys, monkeypatch):
+    """After a clear, status prints ``cleared <age> ago (<reason>)``
+    under the pool for the rest of the hour, then drops it."""
+    mark_out()
+    roster("ses-for00001", "foreman")
+    monkeypatch.setenv(SESSION_ENV, "ses-for00001")
+    assert cli.main(["pool", "clear", "grok", "--reason",
+                     "false detection"]) == 0
+    capsys.readouterr()
+    line = store.fold_by_id(store.read_ledger(paths.pools_path()))[0]
+    at = datetime.fromisoformat(str(line["at"]).replace("Z", "+00:00"))
+    if at.tzinfo is None:
+        at = at.replace(tzinfo=timezone.utc)
+    screen = status.render(now=at + timedelta(minutes=5))
+    rows = screen.splitlines()
+    grok = next(i for i, row in enumerate(rows) if row.startswith("  grok:"))
+    assert rows[grok + 1] == "    cleared 5m ago (false detection)"
+    later = status.render(now=at + timedelta(minutes=61))
+    assert "cleared 5m ago (false detection)" not in later
+    assert "    cleared " not in later
+
+
+def test_mcp_carries_pool_clear_for_the_foreman_only(env, monkeypatch):
+    """The verb is in the foreman's MCP tool row and not the supervisor's."""
+    roster("ses-for00001", "foreman")
+    monkeypatch.setenv(SESSION_ENV, "ses-for00001")
+    listed = mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    names = {tool["name"] for tool in listed["result"]["tools"]}
+    assert "pool_clear" in names
+    store.write_snapshot(paths.roster_path(), {"sessions": {
+        "ses-sup00001": {"id": "ses-sup00001", "role": "supervisor",
+                         "front": "comp", "state": "running"},
+    }})
+    monkeypatch.setenv(SESSION_ENV, "ses-sup00001")
+    listed = mcp.handle({"jsonrpc": "2.0", "id": 1, "method": "tools/list"})
+    names = {tool["name"] for tool in listed["result"]["tools"]}
+    assert "pool_clear" not in names
