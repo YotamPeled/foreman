@@ -234,3 +234,75 @@ def test_launch_refuses_task_without_front(env, fake_pool, capsys):
     assert "a task belongs to a front" in err
     assert roster_sessions() == {}
     assert worktrees() == []
+
+
+def test_job_repoint_moves_verified_job_and_its_units(env, monkeypatch, capsys):
+    """A verified job's task and units move together, by revised lines."""
+    add_front(env, "f")
+    seed_supervisor("f")
+    tasks = tasks_by_title("f")
+    first, other = tasks["the real one"], tasks["the other one"]
+    store.append_ledger(paths.front_tasks_path("f"),
+                        dict(first, units_done=3))
+    seed_job("f", "job-1", first["id"], 3, "verified")
+    jobs_before = len(store.read_ledger(paths.front_jobs_path("f")))
+    tasks_before = len(store.read_ledger(paths.front_tasks_path("f")))
+    assert run(monkeypatch, ["job", "repoint", "job-1",
+                             "--task", "the other one",
+                             "--reason", "credited to the wrong task"],
+               SUP) == 0
+    out = capsys.readouterr().out
+    assert f"job job-1: task {first['id']} -> {other['id']}" in out
+    job = folded_job("f", "job-1")
+    assert job["task"] == other["id"]
+    assert job["repointed_from"] == first["id"]
+    assert job["repointed_by"] == SUP
+    assert job.get("repointed_at")
+    assert job["repoint_reason"] == "credited to the wrong task"
+    folded = tasks_by_title("f")
+    assert folded["the real one"]["units_done"] == 0
+    assert folded["the other one"]["units_done"] == 3
+    assert len(store.read_ledger(
+        paths.front_jobs_path("f"))) == jobs_before + 1
+    assert len(store.read_ledger(
+        paths.front_tasks_path("f"))) == tasks_before + 2
+
+
+def test_job_repoint_refuses_a_running_job_by_state(env, monkeypatch, capsys):
+    """A job still running is refused, naming the state, and writes nothing."""
+    add_front(env, "f")
+    seed_supervisor("f")
+    first = tasks_by_title("f")["the real one"]
+    seed_job("f", "job-run", first["id"], 1, "running")
+    before = store.read_ledger(paths.front_jobs_path("f"))
+    assert run(monkeypatch, ["job", "repoint", "job-run",
+                             "--task", "the other one",
+                             "--reason", "still running"], SUP) == 1
+    err = capsys.readouterr().err
+    assert "job 'job-run' is 'running'" in err
+    assert store.read_ledger(paths.front_jobs_path("f")) == before
+
+
+def test_job_repoint_refuses_another_fronts_supervisor_by_name(
+        env, monkeypatch, capsys):
+    """Only the job's own front supervisor may re-point it."""
+    add_front(env, "f")
+    store.write_snapshot(paths.roster_path(), {"sessions": {
+        OTHER_SUP: entities.Session(
+            id=OTHER_SUP, role="supervisor", pool="opus", model="opus",
+            front="elsewhere", state="running",
+            started_at=iso(NOW - timedelta(minutes=30)),
+        ).to_dict()}})
+    first = tasks_by_title("f")["the real one"]
+    seed_job("f", "job-1", first["id"], 1, "verified")
+    before_jobs = store.read_ledger(paths.front_jobs_path("f"))
+    before_tasks = store.read_ledger(paths.front_tasks_path("f"))
+    assert run(monkeypatch, ["job", "repoint", "job-1",
+                             "--task", "the other one",
+                             "--reason", "wrong front"], OTHER_SUP) == 1
+    err = capsys.readouterr().err
+    assert OTHER_SUP in err
+    assert "elsewhere" in err
+    assert "'f'" in err
+    assert store.read_ledger(paths.front_jobs_path("f")) == before_jobs
+    assert store.read_ledger(paths.front_tasks_path("f")) == before_tasks

@@ -6,7 +6,9 @@ the task's verify in a detached worktree of the job's head and, on
 exit 0, does the same; ``job fail`` marks the job failed with a finding
 on the task; ``job fail --closed`` records a job on a done front as
 history and writes no finding, because the task may no longer be on the
-ledger and the work already landed; ``task built`` and ``task landed``
+ledger and the work already landed; ``job repoint`` moves a finished
+job onto a different task on the same front, and when the job was
+verified its units move with it; ``task built`` and ``task landed``
 move the task once every unit is accounted for; ``evidence`` and
 ``finding`` append free-standing records to the front's ledgers. A
 CONFIRMED claim with no command behind it is refused: running the
@@ -30,7 +32,7 @@ import time
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import caller, cli, entities, fronts, hooks, ids, paths, store
+from . import caller, cli, entities, fronts, hooks, ids, paths, store, wait
 from .caller import MERGE_DESK, OWNER, SUPERVISOR, Refusal
 
 CONFIRMED = "CONFIRMED"
@@ -185,6 +187,20 @@ def _task_of_job(front: str, record: dict) -> tuple[dict | None, str]:
         if task.get("title") == ref:
             return task, ""
     return None, (f"job '{record.get('id')}' names unknown task '{ref}'")
+
+
+def _task_on_front(front: str, ref: str) -> dict | None:
+    """The folded task ``ref`` names on ``front``, by id then title."""
+    key = (ref or "").strip()
+    if not key:
+        return None
+    tasks, by_id = _read_tasks(front)
+    if key in by_id:
+        return by_id[key]
+    for task in tasks:
+        if task.get("title") == key:
+            return task
+    return None
 
 
 #: Job states a verify can take as they stand: the worker came back, with
@@ -713,6 +729,74 @@ def job_fail_main(job_id: str, finding: str | None = None,
     return 0
 
 
+def job_repoint_main(job_id: str, task: str | None,
+                     reason: str | None) -> int:
+    """Move a finished job onto a different task on its front.
+
+    A job that named no task, or the wrong one, can be re-pointed once it
+    is terminal. A verified job's units leave the old task and land on
+    the new one, never below zero. A running job is refused by state;
+    only the front's supervisor may call this.
+    """
+    verb = "job repoint"
+    me, violations = caller.resolve(verb)
+    key = (job_id or "").strip()
+    if not key:
+        violations.append("field 'job' is required")
+    front, record = _find_job(key) if key else (None, None)
+    if key and record is None:
+        violations.append(f"unknown job '{key}'")
+    _check(me, front, verb, violations)
+    reason_text = (reason or "").strip()
+    if not reason_text:
+        violations.append("field '--reason' is required")
+    new_ref = (task or "").strip()
+    if not new_ref:
+        violations.append("field '--task' is required")
+    new_task = None
+    if record is not None:
+        state = record.get("state")
+        if state not in wait.TERMINAL:
+            violations.append(f"job '{key}' is '{state}'")
+        if front is not None and new_ref:
+            new_task = _task_on_front(front, new_ref)
+            if new_task is None:
+                violations.append(
+                    f"--task {new_ref!r} names no task on front {front!r}")
+    if violations:
+        return _refuse(violations)
+    assert front is not None and record is not None and new_task is not None
+    who = caller.by_line(me)
+    now = store.utcnow_iso()
+    old_ref = record.get("task") or ""
+    new_id = new_task.get("id") or new_ref
+    store.append_ledger(
+        paths.front_jobs_path(front),
+        dict(record, task=new_id, repointed_from=old_ref,
+             repointed_by=who, repointed_at=now,
+             repoint_reason=reason_text),
+        session_id=who)
+    if record.get("state") == "verified":
+        units = job_units_count(record)
+        old_task, _ = _task_of_job(front, record)
+        old_id = old_task.get("id") if old_task is not None else None
+        if old_id != new_task.get("id"):
+            if old_task is not None:
+                old_done = old_task.get("units_done") or 0
+                store.append_ledger(
+                    paths.front_tasks_path(front),
+                    _moved(old_task,
+                           units_done=max(0, old_done - units)),
+                    session_id=who)
+            new_done = new_task.get("units_done") or 0
+            store.append_ledger(
+                paths.front_tasks_path(front),
+                _moved(new_task, units_done=new_done + units),
+                session_id=who)
+    print(f"job {key}: task {old_ref} -> {new_id}")
+    return 0
+
+
 def _resolve_task(ref: str, violations: list[str],
                   field: str = "task") -> tuple[str | None, dict | None]:
     key = (ref or "").strip()
@@ -1052,9 +1136,16 @@ def add_job_arguments(sub: argparse.ArgumentParser) -> None:
     fail.add_argument("--closed", action="store_true",
                       help="record a job on a done front as history, "
                            "with no finding")
+    repoint = verbs.add_parser(
+        "repoint", help="Move a finished job onto a different task.")
+    repoint.add_argument("job", help="job id")
+    repoint.add_argument("--task", default=None,
+                         help="task id or title (required)")
+    repoint.add_argument("--reason", default=None,
+                         help="why the job is being re-pointed (required)")
 
 
-@cli.subcommand("job", help="Verify or fail a job.")
+@cli.subcommand("job", help="Verify, fail or repoint a job.")
 def _job_entry(args: argparse.Namespace) -> int:
     if args.job_verb == "verify":
         return job_verify_main(args.job, args.confirmed,
@@ -1065,6 +1156,9 @@ def _job_entry(args: argparse.Namespace) -> int:
     if args.job_verb == "fail":
         return job_fail_main(args.job, finding=args.finding,
                              closed=args.closed)
+    if args.job_verb == "repoint":
+        return job_repoint_main(args.job, task=args.task,
+                                reason=args.reason)
     raise AssertionError(f"unknown job verb {args.job_verb!r}")
 
 
