@@ -456,6 +456,8 @@ class Node(Entity):
     job: str | None = None
     #: Shared resources this node holds while ``state`` is ``running``.
     resources: list = field(default_factory=list)
+    #: The tree node a landing item lands. Empty on every other job.
+    lands: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -469,6 +471,8 @@ class Node(Entity):
             data.pop("job", None)
         if not data.get("resources"):
             data.pop("resources", None)
+        if not data.get("lands"):
+            data.pop("lands", None)
         return data
 
 

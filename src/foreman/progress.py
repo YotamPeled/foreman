@@ -1175,6 +1175,33 @@ def _node_has_failed_job(front: str, node: dict) -> bool:
                for job in jobs)
 
 
+def _node_has_verified_job(front: str, node: dict) -> bool:
+    """True when a jobs.jsonl line of this node is ``verified``."""
+    job_ids = set(_node_job_ids(front, node))
+    if not job_ids:
+        return False
+    try:
+        jobs = store.fold_by_id(store.read_ledger(paths.front_jobs_path(front)))
+    except OSError:
+        return False
+    return any(job.get("id") in job_ids and job.get("state") == "verified"
+               for job in jobs)
+
+
+#: A landing item still in flight: queued or running, not failed/landed.
+_OPEN_LANDING_STATES = ("queued", "running")
+
+
+def _open_landing_item(folded: list[dict], node_id: str) -> dict | None:
+    """The open script item that lands ``node_id``, or None."""
+    for node in folded:
+        if str(node.get("lands") or "") != node_id:
+            continue
+        if str(node.get("state") or "") in _OPEN_LANDING_STATES:
+            return node
+    return None
+
+
 def compute_node_waits(front: str, node: dict, by_id: dict[str, dict],
                        record: dict | None) -> str:
     """Why a queued job is not starting.
@@ -1245,6 +1272,94 @@ def _write_node_revise(front_name: str, existing: dict, who: str,
     store.append_ledger(
         paths.front_tree_path(front_name), line, session_id=who)
     return line
+
+
+def job_land_main(front: str, node_id: str | None) -> int:
+    """Queue a script landing item for a verified tree job.
+
+    Front supervisor only. Refused when the node's job has no verified
+    line, or when a landing item for it is already open.
+    """
+    verb = "job land"
+    me, violations = caller.resolve(verb)
+    front_name = (front or "").strip()
+    if not front_name:
+        violations.append("field 'front' is required")
+    record = fronts.read_front_record(front_name) if front_name else None
+    if front_name and record is None:
+        violations.append(f"unknown front '{front_name}'")
+    _check(me, front_name or None, verb, violations)
+    nid = "" if node_id is None else str(node_id).strip()
+    if not nid:
+        violations.append("field 'node' is required")
+    existing: dict | None = None
+    by_id: dict[str, dict] = {}
+    folded: list[dict] = []
+    if record is not None:
+        folded, by_id = node_mod._read_nodes(front_name)
+        if nid:
+            existing = by_id.get(nid)
+            if existing is None:
+                violations.append(f"unknown node '{nid}'")
+            else:
+                kind = str(existing.get("kind") or "")
+                if kind != "job":
+                    violations.append(
+                        f"{nid} is kind {kind}; only a job is landed")
+                elif not _node_has_verified_job(front_name, existing):
+                    violations.append(
+                        f"{nid} has no recorded verify; job verify first")
+                open_item = _open_landing_item(folded, nid)
+                if open_item is not None:
+                    violations.append(
+                        f"landing item for {nid} is already open "
+                        f"({open_item.get('id')})")
+    if violations:
+        return _refuse(violations)
+    assert record is not None and existing is not None
+    who = caller.by_line(me)
+    now = store.utcnow_iso()
+    lid = ids.mint("node")
+    parent = str(existing.get("parent") or "")
+    queued = {
+        "id": lid,
+        "front": front_name,
+        "parent": parent,
+        "kind": "job",
+        "title": f"land {nid}",
+        "repo": str(existing.get("repo") or ""),
+        "what": str(existing.get("what") or ""),
+        "verify": str(existing.get("verify") or ""),
+        "must_not_touch": str(existing.get("must_not_touch") or ""),
+        "reason": str(existing.get("reason") or ""),
+        "break": str(existing.get("break") or ""),
+        "property": str(existing.get("property") or ""),
+        "scope": str(existing.get("scope") or "source-test"),
+        "role": "script",
+        "after": [nid],
+        "lands": nid,
+        "state": "queued",
+        "queued_at": now,
+        "sheet_replace": "Run the landing script and record the head.",
+        "sheet_reason": "script items have no default sheet",
+        "at": now,
+        "by": who,
+    }
+    waits = compute_node_waits(front_name, queued, by_id, record)
+    queued["waits"] = waits
+    line = entities.Node.from_dict(queued).to_dict()
+    line["lands"] = nid
+    line["state"] = "queued"
+    line["queued_at"] = now
+    line["waits"] = waits
+    line["sheet_replace"] = queued["sheet_replace"]
+    line["sheet_reason"] = queued["sheet_reason"]
+    line["at"] = now
+    line["by"] = who
+    store.append_ledger(
+        paths.front_tree_path(front_name), line, session_id=who)
+    print(lid)
+    return 0
 
 
 def job_queue_main(front: str, node_id: str | None,
@@ -1511,6 +1626,10 @@ def add_job_arguments(sub: argparse.ArgumentParser) -> None:
     listing = verbs.add_parser(
         "list", help="Print the front's queued jobs in queue order.")
     listing.add_argument("front", help="front whose queue to print")
+    land = verbs.add_parser(
+        "land", help="Queue a script item that lands a verified job.")
+    land.add_argument("front", help="front the node belongs to")
+    land.add_argument("node", help="verified job node to land")
     verify = verbs.add_parser("verify", help="Verify a returned job.")
     verify.add_argument("job", help="job id")
     verify.add_argument("--confirmed", action="store_true",
@@ -1563,6 +1682,8 @@ def _job_entry(args: argparse.Namespace) -> int:
                              after=args.after, sheet_add=args.sheet_add)
     if args.job_verb == "list":
         return job_list_main(args.front)
+    if args.job_verb == "land":
+        return job_land_main(args.front, args.node)
     if args.job_verb == "verify":
         return job_verify_main(args.job, args.confirmed,
                                command=args.command, output=args.output,
