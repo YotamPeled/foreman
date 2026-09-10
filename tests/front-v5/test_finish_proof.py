@@ -26,6 +26,38 @@ def _env() -> dict[str, str]:
     return env
 
 
+def test_live_unknown_front_refuses_without_writing(tmp_path):
+    state = tmp_path / "state"
+    state.mkdir()
+    marker = state / "untouched"
+    marker.write_text("ok\n", encoding="utf-8")
+    before = marker.read_text(encoding="utf-8")
+    os.chmod(state, 0o555)
+    env = os.environ.copy()
+    for name in FOREMAN_VARS:
+        env.pop(name, None)
+    env["FOREMAN_STATE"] = str(state)
+    env["PYTHONPATH"] = str(REPO / "src") + (
+        os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    try:
+        proc = subprocess.run(
+            [sys.executable, str(PROOF), "v5", "--live", "--front", "nosuch"],
+            cwd=str(REPO),
+            env=env,
+            capture_output=True,
+            text=True,
+            timeout=60,
+        )
+    finally:
+        os.chmod(state, 0o755)
+    combined = proc.stdout + proc.stderr
+    assert proc.returncode != 0, combined
+    assert "nosuch" in combined
+    assert "live: read-only" in proc.stdout
+    assert marker.read_text(encoding="utf-8") == before
+    assert {path.name for path in state.iterdir()} == {"untouched"}
+
+
 def test_list_prints_the_four_finish_line_ids():
     proc = subprocess.run(
         [sys.executable, str(PROOF), "v5", "--list"],

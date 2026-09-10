@@ -211,6 +211,46 @@ BREAK = (
 )
 
 
+def _live_read(argv: list[str]) -> str:
+    proc = run_live_foreman(argv)
+    if proc.returncode != 0:
+        raise Failure(
+            f"foreman {' '.join(argv)} failed: "
+            f"{(proc.stderr or proc.stdout)[-800:]}")
+    return proc.stdout
+
+
+def run_live(front: str) -> str:
+    shown = _live_read(["front", "show", front])
+    maps = _live_read(["map", "show", front])
+    mils = _live_read(["milestone", "list", front])
+    nodes = _live_read(["node", "list", front])
+    if not shown.strip():
+        raise Failure(f"front show {front} printed nothing")
+    if "(no map yet)" in maps or not maps.strip():
+        raise Failure(f"map show {front} printed no facts")
+    miss_m = []
+    miss_n = []
+    if front == "v5" and _V5_FILES.is_dir():
+        mil_ids = _jsonl_ids(_V5_FILES / "milestones.jsonl")
+        node_ids = _jsonl_ids(_V5_FILES / "tree.jsonl")
+        miss_m = _missing(mil_ids, mils)
+        miss_n = _missing(node_ids, nodes)
+        if miss_m:
+            raise Failure(f"milestone list missed {miss_m[:8]}")
+        if miss_n:
+            raise Failure(f"node list missed {miss_n[:8]}")
+    elif not mils.strip():
+        raise Failure(f"milestone list {front} printed nothing")
+    elif "(no tree yet)" in nodes or not nodes.strip():
+        raise Failure(f"node list {front} printed no tree")
+    return (
+        f"ran foreman front show {front}; map show {front}; "
+        f"milestone list {front}; node list {front}; "
+        f"import is held"
+    )
+
+
 def run(world) -> str:
     assert_world()
     if not _V5_FILES.is_dir():

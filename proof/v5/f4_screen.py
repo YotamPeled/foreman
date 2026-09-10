@@ -122,6 +122,27 @@ BREAK = (
 )
 
 
+def run_live(front: str) -> str:
+    proc = run_live_foreman(["status"])
+    if proc.returncode != 0:
+        raise Failure(f"status failed: {(proc.stderr or proc.stdout)[-800:]}")
+    out = proc.stdout
+    if "queue:" not in out:
+        raise Failure(f"status printed no queue:\n{out[-1500:]}")
+    if "reserved" not in out:
+        raise Failure(f"status printed no reservations:\n{out[-1500:]}")
+    if "pieces" not in out or "split from" not in out:
+        raise Failure(f"status missed milestone pieces/split:\n{out[-1500:]}")
+    if "tree:" not in out:
+        raise Failure(f"status printed no tree:\n{out[-1500:]}")
+    if front not in out:
+        raise Failure(f"status missed front {front}:\n{out[-1500:]}")
+    return (
+        f"ran foreman status; queue with reservations, "
+        f"milestone pieces and split count, and the tree"
+    )
+
+
 def run(world) -> str:
     assert_world()
     _make_room()

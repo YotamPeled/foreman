@@ -6,6 +6,7 @@
     PYTHONPATH=src python bin/foreman-proof v5 --list
     PYTHONPATH=src python bin/foreman-proof v5 --milestone N --break ID
     PYTHONPATH=src python bin/foreman-proof v5
+    PYTHONPATH=src python bin/foreman-proof v5 --live --front v5
 
 Drives this checkout's CLI against an isolated state directory, a fake
 worker, and two fixture repositories. Prints one ``CLAUSE id PASS|FAIL``
@@ -135,6 +136,27 @@ def run_foreman(args: list[str], *, session: str | None = None,
         cmd = [str(_BIN / "foreman"), *args]
     return subprocess.run(
         cmd, cwd=cwd or str(REPO), env=env_for(session=session, extra=extra_env),
+        capture_output=True, text=True, timeout=timeout)
+
+
+def _live_bin() -> list[str]:
+    """The installed ``foreman`` binary, else this checkout's module."""
+    found = shutil.which("foreman")
+    if found:
+        return [found]
+    return [sys.executable, "-m", "foreman"]
+
+
+def run_live_foreman(args: list[str], *,
+                     timeout: float = 120) -> subprocess.CompletedProcess:
+    """A read verb against the live installation. Never sets FOREMAN_STATE."""
+    env = dict(os.environ)
+    cmd = _live_bin()
+    if cmd[:2] == [sys.executable, "-m"]:
+        env["PYTHONPATH"] = str(REPO / "src") + (
+            os.pathsep + env["PYTHONPATH"] if env.get("PYTHONPATH") else "")
+    return subprocess.run(
+        [*cmd, *args], cwd=str(REPO), env=env,
         capture_output=True, text=True, timeout=timeout)
 
 
@@ -1762,6 +1784,7 @@ def load_clause_file(path: Path):
     module.Failure = Failure
     module.Skip = Skip
     module.run_foreman = run_foreman
+    module.run_live_foreman = run_live_foreman
     module.assert_world = assert_world
     module.isolate_queued_fronts = isolate_queued_fronts
     sys.modules[name] = module
@@ -1936,6 +1959,52 @@ def _run_loaded_clauses(files: list[Path], break_clause: object,
     return _exit_status(failed)
 
 
+def _run_live_clauses(files: list[Path], args: argparse.Namespace) -> int:
+    """Read-only finish-line checks against the live installation."""
+    print("live: read-only", flush=True)
+    if args.break_clause:
+        return _die("--live is read-only; --break writes")
+    front = (args.live_front or "v5").strip() or "v5"
+    shown = run_live_foreman(["front", "show", front])
+    if shown.returncode != 0:
+        err = (shown.stderr or shown.stdout or "").strip()
+        print(f"unknown front {front}", flush=True)
+        if err:
+            print(err, file=sys.stderr)
+        return 1
+    failed = False
+    ran = 0
+    for path in files:
+        try:
+            module = load_clause_file(path)
+            cid, _title = module.CLAUSE
+        except Failure as exc:
+            print(f"foreman-proof: {exc}", file=sys.stderr)
+            failed = True
+            continue
+        run_live = getattr(module, "run_live", None)
+        if not callable(run_live):
+            continue
+        ran += 1
+        try:
+            msg = run_live(front)
+            report(cid, "PASS", str(msg))
+        except Skip as exc:
+            report(cid, "SKIP", str(exc))
+        except Failure as exc:
+            report(cid, "FAIL", str(exc))
+            failed = True
+        except subprocess.TimeoutExpired as exc:
+            report(cid, "FAIL", f"timed out: {exc}")
+            failed = True
+        except Exception as exc:  # noqa: BLE001 - one line of evidence
+            report(cid, "FAIL", f"{type(exc).__name__}: {exc}")
+            failed = True
+    if ran == 0:
+        return _die("live: read-only; no finish-line clause to run")
+    return 1 if failed else 0
+
+
 def _main_v5(args: argparse.Namespace) -> int:
     clauses_dir = args.clauses.resolve() if args.clauses is not None else None
     if clauses_dir is not None and not clauses_dir.is_dir():
@@ -1947,6 +2016,8 @@ def _main_v5(args: argparse.Namespace) -> int:
             f"unknown milestone {args.milestone}: no clause files in {source_name}")
     if args.list_only:
         return list_v5_clauses(files)
+    if args.live:
+        return _run_live_clauses(files, args)
     return _run_loaded_clauses(files, args.break_clause, make_world_root(args.root))
 
 
@@ -1971,14 +2042,26 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--root", type=Path, default=None,
         help="world root (default: <repo>/build/proof/<utc timestamp>-<pid>)")
+    parser.add_argument(
+        "--live", action="store_true",
+        help="check finish-line clauses against the live installation "
+             "(read-only; never sets FOREMAN_STATE)")
+    parser.add_argument(
+        "--front", dest="live_front", default="v5",
+        help="live front to read with --live (default v5)")
     args = parser.parse_args(argv)
 
-    # Never inherit the caller's world. The harness sets its own.
-    for name in (SESSION_ENV, STATE_ENV, CONFIG_ENV):
-        os.environ.pop(name, None)
+    # Isolated-world runs never inherit the caller's world. --live reads
+    # the installation through the caller's environment and must not
+    # clear FOREMAN_STATE.
+    if not args.live:
+        for name in (SESSION_ENV, STATE_ENV, CONFIG_ENV):
+            os.environ.pop(name, None)
 
     if args.front == "v5":
         return _main_v5(args)
+    if args.live:
+        return _die("--live applies to front v5")
     if args.front != FRONT:
         return _die(
             f"unknown front {args.front!r}; only {FRONT} and v5 are implemented")

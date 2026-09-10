@@ -247,6 +247,25 @@ BREAK = ("front landing pushes the work branch onto main-not-main, not main",
          apply, restore)
 
 
+def run_live(front: str) -> str:
+    jobs = run_live_foreman(["job", "list", front])
+    if jobs.returncode != 0:
+        raise Failure(
+            f"job list {front} failed: {(jobs.stderr or jobs.stdout)[-800:]}")
+    status = run_live_foreman(["status"])
+    if status.returncode != 0:
+        raise Failure(f"status failed: {(status.stderr or status.stdout)[-800:]}")
+    combined = jobs.stdout + "\n" + status.stdout
+    if "landed" not in combined and "landings:" not in status.stdout:
+        raise Failure(
+            f"no script landing on {front}:\n{combined[-1500:]}")
+    if "landings: none" in status.stdout and "landed" not in jobs.stdout:
+        raise Failure(f"status landings none on {front}")
+    return (
+        f"ran foreman job list {front}; status; landings ran through script items"
+    )
+
+
 def run(world) -> str:
     assert_world()
     _make_room()

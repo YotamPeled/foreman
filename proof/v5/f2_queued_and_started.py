@@ -177,6 +177,20 @@ BREAK = (
 )
 
 
+def run_live(front: str) -> str:
+    proc = run_live_foreman(["job", "list", front])
+    if proc.returncode != 0:
+        raise Failure(
+            f"job list {front} failed: {(proc.stderr or proc.stdout)[-800:]}")
+    out = proc.stdout
+    if "running" not in out and "ses-" not in out:
+        raise Failure(
+            f"job list showed no runtime-started sessions:\n{out[-800:]}")
+    return (
+        f"ran foreman job list {front}; runtime-started sessions present"
+    )
+
+
 def run(world) -> str:
     assert_world()
     _make_room()
