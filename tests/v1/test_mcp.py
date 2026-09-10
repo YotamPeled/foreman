@@ -165,9 +165,10 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     # policy job; plus job land from the landing script; plus front land
     # from the front-landing job.
     # policy job; plus job land from the landing script; plus job retry
-    # from the review-states job.
+    # from the review-states job; plus start from the foreman-start job
+    # (an owner verb: every session role is refused it).
     # Counted, not derived, so a verb added without intent fails here.
-    assert len(names) == 76
+    assert len(names) == 77
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):
