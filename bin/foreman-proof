@@ -2074,6 +2074,17 @@ def _run_live_clauses(files: list[Path], args: argparse.Namespace) -> int:
     if args.break_clause:
         return _die("--live is read-only; --break writes")
     front = (args.live_front or "v5").strip() or "v5"
+    # A verb creates the state directory it is pointed at, so a live read
+    # of one that is not there (unset: the installation's default) would
+    # write. Relative paths are refused: the verbs run from the repository.
+    for name, default in ((STATE_ENV, Path.home() / ".local/state/foreman"),
+                          (CONFIG_ENV, Path.home() / ".config/foreman")):
+        raw = os.environ.get(name)
+        where = Path(raw).expanduser() if raw else default
+        if not where.is_absolute() or not where.is_dir():
+            print(f"unknown front {front}: no live installation at "
+                  f"{name}={where}", flush=True)
+            return 1
     shown = run_live_foreman(["front", "show", front])
     if shown.returncode != 0:
         err = (shown.stderr or shown.stdout or "").strip()
@@ -2177,12 +2188,14 @@ def main(argv: list[str] | None = None) -> int:
     # Isolated-world runs never inherit the caller's world. --live reads
     # the installation through the caller's environment and must not
     # clear FOREMAN_STATE. --evidence keeps the caller's session so the
-    # evidence line is by that session.
+    # evidence line is by that session. Without --evidence no run carries
+    # the caller's session: under --live an unknown one makes even a read
+    # verb write an unregistered-writer anomaly.
     if not args.live:
         for name in (STATE_ENV, CONFIG_ENV):
             os.environ.pop(name, None)
-        if not args.evidence:
-            os.environ.pop(SESSION_ENV, None)
+    if not args.evidence:
+        os.environ.pop(SESSION_ENV, None)
 
     if args.front == "v5":
         return _main_v5(args)

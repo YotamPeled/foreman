@@ -58,6 +58,44 @@ def test_live_unknown_front_refuses_without_writing(tmp_path):
     assert {path.name for path in state.iterdir()} == {"untouched"}
 
 
+def _live_nosuch(state: str, config: str, cwd: Path):
+    env = _env()
+    env["FOREMAN_STATE"] = state
+    env["FOREMAN_CONFIG"] = config
+    return subprocess.run(
+        [sys.executable, str(PROOF), "v5", "--live", "--front", "nosuch"],
+        cwd=str(cwd), env=env, capture_output=True, text=True, timeout=60)
+
+
+def test_live_absent_state_directory_refuses_without_creating_it(tmp_path):
+    # Breaks if --live runs a verb against a state directory that is not
+    # there: the verb creates it and writes an anomaly into it.
+    absent = tmp_path / "absent"
+    proc = _live_nosuch(str(absent), str(tmp_path), tmp_path)
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "unknown front nosuch" in proc.stdout
+    assert not absent.exists()
+    relative = _live_nosuch("nonsense", "nonsense", tmp_path)
+    assert relative.returncode != 0
+    assert "unknown front nosuch" in relative.stdout
+    assert not (tmp_path / "nonsense").exists()
+    assert not (REPO / "nonsense").exists()
+
+
+def test_live_unknown_session_writes_nothing(tmp_path):
+    # Breaks if --live passes the caller's unknown FOREMAN_SESSION to its
+    # read verbs: the runtime records it as an unregistered writer.
+    state = tmp_path / "state"
+    config = tmp_path / "config"
+    state.mkdir()
+    config.mkdir()
+    proc = _live_nosuch(str(state), str(config), tmp_path)
+    assert proc.returncode != 0, proc.stdout + proc.stderr
+    assert "unknown front nosuch" in proc.stdout
+    assert sorted(p.name for p in state.iterdir()) == []
+    assert sorted(p.name for p in config.iterdir()) == []
+
+
 def test_list_prints_the_four_finish_line_ids():
     proc = subprocess.run(
         [sys.executable, str(PROOF), "v5", "--list"],
