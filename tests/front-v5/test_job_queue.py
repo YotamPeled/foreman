@@ -12,8 +12,17 @@ from pathlib import Path
 
 import pytest
 
-from foreman import capacity, cli, entities, mcp as mcp_module, paths, store
+from foreman import capacity, cli, entities, ids, mcp as mcp_module, paths, store
 from foreman.caller import SESSION_ENV
+
+SPEC = (
+    "WHAT: label ten apps.\n"
+    "INPUTS: manifest.json.\n"
+    "OUTPUTS: labels/ten.json.\n"
+    "OUT OF SCOPE: everything else.\n"
+    "Run the check with: pytest tests/v0 -q\n"
+    "Do not touch src/foreman/store.py.\n"
+)
 
 NOW = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
 SUP = "ses-sup0001"
@@ -465,3 +474,89 @@ def test_job_list_order_after_front(env, monkeypatch, capsys):
         f"{c}  builder  grok  waits: ready",
         f"{a}  builder  grok  waits: ready",
     ]
+
+
+def make_repo(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+    subprocess.run(["git", "init", "-q", "-b", "main", str(path)], check=True)
+    subprocess.run(["git", "-C", str(path), "-c",
+                    "user.email=test@example.invalid", "-c",
+                    "user.name=foreman-test", "commit", "-q", "--allow-empty",
+                    "-m", "seed"], check=True)
+    return path
+
+
+def write_spec(root: Path) -> str:
+    spec = root / "spec.md"
+    spec.write_text(SPEC, encoding="utf-8")
+    return str(spec)
+
+
+def write_old_front(name: str) -> None:
+    paths.front_dir(name).mkdir(parents=True, exist_ok=True)
+    store.append_ledger(
+        paths.front_record_path(name),
+        entities.Front(
+            id=ids.mint("front"), name=name, state="active",
+            want="Old shape.", done_when="It finished.", land_on="main",
+            allocation={"grok": 1},
+        ).to_dict(),
+    )
+
+
+def launch_worker(monkeypatch, env: Path, session: str | None) -> int:
+    repo = make_repo(env / f"repo-{session or 'owner'}")
+    spec = write_spec(env)
+    wt = env / f"wt-{session or 'owner'}"
+    return run(monkeypatch, [
+        "launch", "grok", "grok", spec, "--repo", str(repo),
+        "--worktree", str(wt), "--dry-run",
+    ], session)
+
+
+def test_supervisor_launch_on_a_queued_front_is_refused(
+        env, monkeypatch, capsys):
+    """A supervisor whose tree has a queued node may not launch by hand."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, job = add_chain(monkeypatch, capsys, job_id="job-a")
+    assert run(monkeypatch, ["job", "queue", "v5shape", job], SUP) == 0
+    capsys.readouterr()
+    assert launch_worker(monkeypatch, env, SUP) == 1
+    _, err = capsys.readouterr()
+    assert "front v5shape has a queue; use job queue" in err
+
+
+def test_foreman_launch_and_old_shape_front_are_not_refused(
+        env, monkeypatch, capsys):
+    """The foreman role and an old-shape front still launch as today."""
+    add_front(env, monkeypatch, capsys)
+    write_old_front("oldshape")
+    seed_roster(
+        session_entry(SUP, "supervisor", "v5shape"),
+        session_entry(OTHER_SUP, "supervisor", "oldshape"),
+        session_entry("ses-for0001", "foreman", None),
+    )
+    _mil, _tsk, job = add_chain(monkeypatch, capsys, job_id="job-a")
+    assert run(monkeypatch, ["job", "queue", "v5shape", job], SUP) == 0
+    capsys.readouterr()
+    assert launch_worker(monkeypatch, env, "ses-for0001") == 0, \
+        capsys.readouterr().err
+    capsys.readouterr()
+    rc = launch_worker(monkeypatch, env, OTHER_SUP)
+    out, err = capsys.readouterr()
+    assert rc == 0, err
+    assert "job queue" not in err
+
+
+def test_supervisor_launch_with_a_tree_but_no_queued_node_is_allowed(
+        env, monkeypatch, capsys):
+    """A v5 tree that has never queued still lets its supervisor launch."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    add_chain(monkeypatch, capsys, job_id="job-a")
+    capsys.readouterr()
+    rc = launch_worker(monkeypatch, env, SUP)
+    out, err = capsys.readouterr()
+    assert rc == 0, err
+    assert "job queue" not in err

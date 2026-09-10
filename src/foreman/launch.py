@@ -77,7 +77,10 @@ import tomllib
 import uuid
 from pathlib import Path
 
-from . import caller, capacity, cli, fronts, hooks, ids, paths, procs, store
+from . import (
+    caller, capacity, cli, fronts, hooks, ids, node as node_mod, paths,
+    procs, store,
+)
 from .caller import FOREMAN, MERGE_DESK, SUPERVISOR
 from .cli import subcommand
 from . import entities
@@ -784,6 +787,13 @@ def cmd_launch(args: argparse.Namespace) -> int:
     me, identity_violations = caller.resolve("launch")
     caller.check_role(me, "launch", FOREMAN, SUPERVISOR,
                       violations=identity_violations)
+    # Decision 8: a supervisor whose front has a queue may not launch
+    # by hand. The tree is the queue; ``job queue`` is the door.
+    if me is not None and me.role == SUPERVISOR:
+        mine = me.session.get("front")
+        if isinstance(mine, str) and mine and node_mod.tree_ever_queued(mine):
+            identity_violations.append(
+                f"front {mine} has a queue; use job queue")
     # The second argument shape, dispatched before the pool is resolved:
     # a supervisor names its front where a worker names its pool. This
     # line is also where the capacity checks stop: they are all below it,

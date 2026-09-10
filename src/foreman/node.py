@@ -41,6 +41,22 @@ def _read_nodes(front: str) -> tuple[list[dict], dict[str, dict]]:
                     if isinstance(record.get("id"), str)}
 
 
+def tree_ever_queued(front: str) -> bool:
+    """True when this front's tree has any node that was ever queued.
+
+    The raw ledger, not the fold: a cancelled job still counts, so a
+    front that has used the queue cannot go back to hand launches.
+    """
+    try:
+        lines = store.read_ledger(paths.front_tree_path(front))
+    except OSError:
+        return False
+    return any(
+        isinstance(line, dict)
+        and (line.get("state") == "queued" or line.get("queued_at"))
+        for line in lines)
+
+
 def _repo_names(record: dict) -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
