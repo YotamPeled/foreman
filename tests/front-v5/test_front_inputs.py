@@ -300,7 +300,7 @@ def test_existing_briefs_keep_their_front_line(env):
             record = store.fold_by_id(
                 store.read_ledger(paths.front_record_path(name)))[0]
             got = {key: value for key, value in record.items()
-                   if key not in ("id", "at", "by")}
+                   if key not in ("id", "at", "by", "build")}
             assert set(got) == OLD_FRONT_KEYS, name
             assert got["name"] == name
             assert got["want"] == (data.get("want") or "").strip()
