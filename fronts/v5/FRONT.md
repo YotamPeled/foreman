@@ -171,6 +171,13 @@ clause CONFIRMED by running on the live installation, with the proof recorded as
     after `foreman-proof`, the install clone and the dev checkout are still work trees at the head they
     started on; `foreman doctor` checks the install clone is a work tree at its recorded head and offers
     the one-command repair; and no job's spec may name the install clone as a working directory.
+38. A queued job names a ROLE, never a pool. The runtime picks the pool from the front's team when the
+    job starts, so a pool going out reroutes the job to the team's replacement for that role instead of
+    stalling it (Grok out on billing 2026-09-10 left three jobs refused in the queue while Muse sat
+    idle). A job that no pool can serve waits with that as its printed reason, and the front says so.
+39. `foreman job edit` can change a queued job's worker: --role, --pool, --effort, alongside the existing
+    --what, --verify, --must-not-touch, --after and --sheet-add. It is refused once the job has started
+    (cancel and re-queue instead), and every edit is recorded on the node with who and why.
 
 ## Team
 
