@@ -1,9 +1,9 @@
-"""Review death is a recorded state; retries keep both ledger lines.
+"""Review death, retries, rounds and redesign.
 
-Tests that would stay green without ``died``, ``died_because`` or
-``job retry`` are not in this file. Worker spawn is substituted at
-``spawn_and_wait``; the collector's pool adapter is a scripted fake.
-Nothing here reaches systemd or the live state directory.
+Tests that would stay green without the work are not in this file.
+Worker spawn is substituted at ``spawn_and_wait``; the collector's pool
+adapter is a scripted fake. Nothing here reaches systemd or the live
+state directory.
 """
 
 from __future__ import annotations
@@ -14,10 +14,12 @@ from pathlib import Path
 import pytest
 
 from foreman import cli, fronts, paths, store
+from foreman import launch as launch_module
 from foreman.caller import SESSION_ENV
 from foreman.collector import tick
 from foreman.entities import Session
 from foreman.pools import LaunchContext, PoolAdapter
+from foreman.pools import _common as pool_common
 from foreman.progress import _write_node_revise
 
 SPEC_VERIFY = "python -m pytest tests -q"
@@ -25,7 +27,19 @@ SPEC_VERIFY = "python -m pytest tests -q"
 NOW = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
 SUP = "ses-sup0001"
 WRK = "ses-rev0001"
+WRK2 = "ses-rev0002"
+WRK3 = "ses-rev0003"
 JOB = "job-rev0001"
+JOB2 = "job-rev0002"
+JOB3 = "job-rev0003"
+
+VERDICT_CORRECTNESS = (
+    '{"passed": false, "summary": "wrong", "class": "correctness",'
+    ' "findings": [{"title": "bug", "detail": "x", "class": "correctness"}]}'
+)
+VERDICT_CLEAN = (
+    '{"passed": true, "summary": "ok", "class": "clean", "findings": []}'
+)
 
 V5_BRIEF = '''\
 name = "{name}"
@@ -100,6 +114,29 @@ def env(tmp_path, monkeypatch):
                     "user.name=foreman-test", "commit", "-q", "--allow-empty",
                     "-m", "init"], check=True)
     return tmp_path
+
+
+@pytest.fixture()
+def launch_spawn(env, monkeypatch):
+    """Capture ``cmd_launch`` args and refuse a real systemd unit."""
+    calls: list = []
+
+    def fake_spawn(argv, *, pid_path, session_id, popen):
+        pid = 2_000_000 + len(calls)
+        Path(pid_path).write_text(f"{pid}\n", encoding="utf-8")
+        calls.append({"kind": "spawn", "argv": list(argv),
+                      "session": session_id})
+        return pid
+
+    real = launch_module.cmd_launch
+
+    def wrapped(args):
+        calls.append({"kind": "launch", "args": args})
+        return real(args)
+
+    monkeypatch.setattr(pool_common, "spawn_and_wait", fake_spawn)
+    monkeypatch.setattr(launch_module, "cmd_launch", wrapped)
+    return calls
 
 
 @pytest.fixture()
@@ -275,39 +312,39 @@ def job_lines(front, job_id):
             if line.get("id") == job_id]
 
 
-def seed_review_job(front, job_id, node_id, **fields):
+def seed_review_job(front, job_id, node_id, session=WRK, **fields):
     line = {
         "id": job_id, "task": "tsk-1", "kind": "review", "role": "astra",
-        "state": "running", "session": WRK,
+        "state": "running", "session": session,
         "started_at": iso(NOW - timedelta(minutes=5)),
     }
     line.update(fields)
     store.append_ledger(paths.front_jobs_path(front), line)
     node = folded_tree(front)[node_id]
     _write_node_revise(front, node, SUP, "started",
-                       state="running", job=job_id, session=WRK, waits="")
+                       state="running", job=job_id, session=session, waits="")
     return line
 
 
 def seed_dead_review(env, children, front, job_id, *,
                      finish=True, finish_rc=0, refusal=None,
-                     verdict=None):
+                     verdict=None, session=WRK):
     """A dead worker session whose tick will mark the review job."""
     proc = sleeper(children)
-    FakeAdapter.script[WRK] = {
+    FakeAdapter.script[session] = {
         "transcript_mtime": NOW.timestamp(),
         "cpu_s": 1.0,
         "finish_present": finish,
         "finish_rc": finish_rc,
     }
-    FakeAdapter.refusals[WRK] = refusal
+    FakeAdapter.refusals[session] = refusal
     if verdict is not None:
-        path = paths.session_verdict_path(WRK)
+        path = paths.session_verdict_path(session)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(verdict, encoding="utf-8")
     seed_roster(
         session_entry(SUP, "supervisor", front),
-        session_entry(WRK, "astra", front, pool="fake",
+        session_entry(session, "astra", front, pool="fake",
                       model="fake-test-model", job=job_id,
                       pid=proc.pid, pgid=proc.pid,
                       pid_starttime=_starttime(proc.pid)),
@@ -315,6 +352,15 @@ def seed_dead_review(env, children, front, job_id, *,
     proc.kill()
     proc.wait()
     return proc
+
+
+def return_review(env, children, front, job_id, node_id, verdict,
+                  session, moment):
+    """Tick a running review to returned with ``verdict``."""
+    seed_review_job(front, job_id, node_id, session=session)
+    seed_dead_review(env, children, front, job_id, refusal=None,
+                     verdict=verdict, session=session)
+    tick(now=moment)
 
 
 def _starttime(pid):
@@ -456,3 +502,86 @@ def test_retry_refuses_a_returned_job(
     _out, err = capsys.readouterr()
     assert "only a died review is retried" in err
     assert store.read_ledger(paths.front_jobs_path("v5shape")) == before
+
+
+def launch_args(calls):
+    return [item["args"] for item in calls if item.get("kind") == "launch"]
+
+
+def test_two_correctness_rounds_set_redesign_and_tick_starts_nothing(
+        env, fake_pool, children, monkeypatch, capsys, launch_spawn):
+    """Two verdicts of class correctness set the node to redesign; the
+    tick starts nothing under it. job list prints redesign (twice:)."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(monkeypatch, capsys)
+    sibling = add_ok(monkeypatch, capsys, parent="tsk-1", kind="job",
+                     title="the next unit", role="builder", node_id="job-b")
+    capsys.readouterr()
+    return_review(env, children, "v5shape", JOB, node_id,
+                  VERDICT_CORRECTNESS, WRK, NOW)
+    job = folded_job("v5shape", JOB)
+    assert job["state"] == "returned"
+    assert job["review_class"] == "correctness"
+    return_review(env, children, "v5shape", JOB2, node_id,
+                  VERDICT_CORRECTNESS, WRK2, NOW + timedelta(seconds=2))
+    node = folded_tree()[node_id]
+    assert node["state"] == "redesign"
+    assert node["review_rounds"] == [
+        {"job": JOB, "class": "correctness"},
+        {"job": JOB2, "class": "correctness"},
+    ]
+    assert run(monkeypatch, ["job", "list", "v5shape"], SUP) == 0
+    listed, _err = capsys.readouterr()
+    assert "redesign (twice: correctness)" in listed
+    assert run(monkeypatch, ["job", "queue", "v5shape", sibling], SUP) == 0
+    capsys.readouterr()
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW + timedelta(seconds=4))
+    tree = folded_tree()
+    assert tree[node_id]["state"] == "redesign"
+    assert tree[sibling]["state"] == "running"
+    started = [item.branch for item in launch_args(launch_spawn)]
+    assert started == [f"job/v5shape-{sibling}"]
+
+
+def test_clean_round_between_correctness_does_not_redesign(
+        env, fake_pool, children, monkeypatch, capsys):
+    """A clean round between two correctness rounds is not twice the
+    same class: the node is not redesign."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(monkeypatch, capsys)
+    capsys.readouterr()
+    return_review(env, children, "v5shape", JOB, node_id,
+                  VERDICT_CORRECTNESS, WRK, NOW)
+    return_review(env, children, "v5shape", JOB2, node_id,
+                  VERDICT_CLEAN, WRK2, NOW + timedelta(seconds=2))
+    return_review(env, children, "v5shape", JOB3, node_id,
+                  VERDICT_CORRECTNESS, WRK3, NOW + timedelta(seconds=4))
+    node = folded_tree()[node_id]
+    assert node["state"] != "redesign"
+    assert [item["class"] for item in node.get("review_rounds") or []] == [
+        "correctness", "clean", "correctness"]
+
+
+def test_node_revise_queued_clears_redesign(
+        env, fake_pool, children, monkeypatch, capsys):
+    """The supervisor clears redesign with node revise --state queued."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(monkeypatch, capsys)
+    capsys.readouterr()
+    return_review(env, children, "v5shape", JOB, node_id,
+                  VERDICT_CORRECTNESS, WRK, NOW)
+    return_review(env, children, "v5shape", JOB2, node_id,
+                  VERDICT_CORRECTNESS, WRK2, NOW + timedelta(seconds=2))
+    assert folded_tree()[node_id]["state"] == "redesign"
+    assert run(monkeypatch, ["node", "revise", "v5shape", node_id,
+                             "--state", "queued",
+                             "--reason", "redesigned the approach"],
+               SUP) == 0
+    capsys.readouterr()
+    node = folded_tree()[node_id]
+    assert node["state"] == "queued"
+    assert node.get("review_rounds") in (None, [])

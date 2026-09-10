@@ -31,7 +31,7 @@ CHILDLESS_NODE_KINDS = ("job", "derived")
 #: Folded tree-node states. Empty is unstarted; ``node revise --state``
 #: refuses any word not in this list.
 NODE_STATES = ("", "queued", "running", "returned", "verified",
-               "landed", "failed", "cancelled")
+               "landed", "failed", "cancelled", "redesign")
 
 
 class Entity:
@@ -195,6 +195,8 @@ class Job(Entity):
     #: The died review this job retries. Empty unless ``job retry``
     #: created it; nothing else writes this field.
     retry_of: str = ""
+    #: Finding class of a returned review, or ``clean``. Empty otherwise.
+    review_class: str = ""
 
 
 @dataclass(frozen=True)
@@ -494,6 +496,8 @@ class Node(Entity):
     dropped: list = field(default_factory=list)
     #: The died review a retry was queued for. Empty unless ``job retry``.
     retry_of: str = ""
+    #: ``{job, class}`` rounds folded from this node's review jobs.
+    review_rounds: list = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -535,6 +539,8 @@ class Node(Entity):
             data.pop("dropped", None)
         if not data.get("retry_of"):
             data.pop("retry_of", None)
+        if not data.get("review_rounds"):
+            data.pop("review_rounds", None)
         return data
 
 

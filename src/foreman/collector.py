@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import json
 import os
 import shutil
 import subprocess
@@ -582,6 +583,72 @@ def _review_died_because(adapter, record: dict, sid: str) -> str | None:
     except OSError:
         return "no verdict"
     return None
+
+
+def _verdict_class(sid: str) -> str:
+    """The review's finding class, or ``clean``.
+
+    Prefers the verdict's own ``class``, then the first finding's, then
+    ``clean`` when the review passed or named no findings.
+    """
+    try:
+        text = paths.session_verdict_path(sid).read_text(encoding="utf-8")
+        data = json.loads(text)
+    except (OSError, ValueError, TypeError):
+        return "clean"
+    if not isinstance(data, dict):
+        return "clean"
+    word = data.get("class")
+    if isinstance(word, str) and word.strip():
+        return word.strip()
+    findings = data.get("findings")
+    if isinstance(findings, list):
+        for item in findings:
+            if not isinstance(item, dict):
+                continue
+            cls = item.get("class")
+            if isinstance(cls, str) and cls.strip():
+                return cls.strip()
+    return "clean"
+
+
+def _fold_review_round(front: str | None, job_id: str | None,
+                       cls: str) -> None:
+    """Append ``{job, class}`` to the node's rounds; redesign on a pair."""
+    if not front or not job_id:
+        return
+    from . import progress as progress_mod
+
+    node = progress_mod._node_for_job(front, job_id)
+    if node is None:
+        return
+    rounds = [item for item in (node.get("review_rounds") or [])
+              if isinstance(item, dict)]
+    rounds.append({"job": job_id, "class": cls})
+    changes: dict[str, object] = {"review_rounds": rounds}
+    if len(rounds) >= 2:
+        prev, last = rounds[-2], rounds[-1]
+        if (prev.get("class") == last.get("class")
+                and last.get("class") not in ("", "clean", None)):
+            changes["state"] = "redesign"
+    progress_mod._write_node_revise(
+        front, node, COLLECTOR_SUBJECT, "review round", **changes)
+
+
+def _mark_review_returned(front: str | None, job_id: str | None,
+                          stamp: str | None, sid: str,
+                          exit_code: int | None) -> None:
+    """Mark a job returned; a review also records its class and rounds."""
+    extra: dict | None = None
+    cls = None
+    latest = _job_line(front, job_id)
+    if latest is not None and latest.get("kind") == "review":
+        cls = _verdict_class(sid)
+        extra = {"review_class": cls}
+    _mark_job(front, job_id, "returned", stamp, extra=extra,
+              exit_code=exit_code)
+    if cls is not None:
+        _fold_review_round(front, job_id, cls)
 
 
 def _mark_job(front: str | None, job_id: str | None, to_state: str,
@@ -1431,9 +1498,9 @@ def _tick_inner(moment: datetime, now_iso: str,
                           exit_code=_exit_code_of(observed, finish))
                 _release_slots(sid, now_iso, "failed")
             elif finish and _finish_rc_clean(observed):
-                _mark_job(record.get("front"), record.get("job"),
-                          "returned", now_iso,
-                          exit_code=_exit_code_of(observed, finish))
+                _mark_review_returned(
+                    record.get("front"), record.get("job"),
+                    now_iso, sid, _exit_code_of(observed, finish))
                 _release_slots(sid, now_iso, "returned")
             elif finish:
                 # A finish marker with a non-zero code is a crash that
@@ -1515,9 +1582,9 @@ def _tick_inner(moment: datetime, now_iso: str,
                                   exit_code=_exit_code_of(observed, finish))
                         _release_slots(sid, now_iso, "died")
                     elif _finish_rc_clean(observed):
-                        _mark_job(record.get("front"), record.get("job"),
-                                  "returned", now_iso,
-                                  exit_code=_exit_code_of(observed, finish))
+                        _mark_review_returned(
+                            record.get("front"), record.get("job"),
+                            now_iso, sid, _exit_code_of(observed, finish))
                         _release_slots(sid, now_iso, "returned")
                     else:
                         _mark_job(record.get("front"), record.get("job"),

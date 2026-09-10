@@ -309,7 +309,7 @@ def node_revise_main(
     if state is not None and state_text not in NODE_STATES:
         violations.append(
             "field '--state' must be queued, running, returned, "
-            "verified, landed, failed, cancelled or empty")
+            "verified, landed, failed, cancelled, redesign or empty")
     replace_text = None if sheet_replace is None else str(sheet_replace)
     reason_sheet = None if sheet_reason is None else str(sheet_reason).strip()
     if replace_text is not None and str(replace_text).strip():
@@ -373,6 +373,11 @@ def node_revise_main(
         updated["mechanical"] = True
     if state_text is not None:
         updated["state"] = state_text
+        if (state_text == "queued"
+                and str(existing.get("state") or "") == "redesign"):
+            # A redesign is cleared by the supervisor; old rounds do not
+            # re-trigger. New reviews start a fresh budget.
+            updated["review_rounds"] = []
     if replace_text is not None:
         updated["sheet_replace"] = replace_text
     if reason_sheet is not None:
@@ -896,7 +901,7 @@ def add_node_arguments(sub: argparse.ArgumentParser) -> None:
                         help="mark the node mechanical")
     revise.add_argument("--state", default=None,
                         help="queued, running, returned, verified, "
-                             "landed, failed, cancelled or empty")
+                             "landed, failed, cancelled, redesign or empty")
     revise.add_argument("--sheet-replace", dest="sheet_replace",
                         default=None,
                         help="replace the role's default sheet "
