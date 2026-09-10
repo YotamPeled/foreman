@@ -851,20 +851,116 @@ def _adapter_model(adapter, role: str) -> str:
     return adapter.model
 
 
-def _queued_brief(node: dict, *, repo: str, branch: str) -> str:
-    """The worker spec for a queued tree node: the three fields, plus
-    the repository and the branch the worktree is cut on.
+FACT_ID_RE = re.compile(r"fct-[A-Za-z0-9]+")
 
-    The role sheet is a later task; nothing else is interpolated here.
-    """
+
+def named_fact_ids(*texts: str) -> list[str]:
+    """``fct-...`` ids in first-appearance order across ``texts``."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        for match in FACT_ID_RE.finditer(text or ""):
+            fid = match.group(0)
+            if fid not in seen:
+                seen.add(fid)
+                found.append(fid)
+    return found
+
+
+def _format_fact_refs(refs: object) -> list[str]:
+    if not isinstance(refs, list):
+        return []
+    lines: list[str] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        name = str(ref.get("ref") or "").strip()
+        sha = str(ref.get("sha") or "").strip()
+        if name or sha:
+            lines.append(f"  refs: {name} = {sha}")
+    return lines
+
+
+def format_map_facts(front: str, node: dict) -> str:
+    """The Map facts block: each named fact with its basis and refs."""
+    ids = named_fact_ids(
+        str(node.get("what") or ""), str(node.get("reason") or ""))
+    if not ids:
+        return "no map facts named"
+    from . import map as map_mod
+
+    _folded, by_id = map_mod._read_facts(front)
+    lines: list[str] = []
+    for fid in ids:
+        fact = by_id.get(fid)
+        if fact is None:
+            lines.append(f"- {fid}: (not on the map)")
+            continue
+        basis = str(fact.get("basis") or "").strip()
+        text = str(fact.get("text") or "").strip()
+        lines.append(f"- {fid} [{basis}] {text}")
+        lines.extend(_format_fact_refs(fact.get("refs")))
+    return "\n".join(lines)
+
+
+def _this_job_from_node(node: dict) -> str:
+    """Title, what, must-not-touch and verify as the This job body."""
+    title = str(node.get("title") or "").strip()
     what = str(node.get("what") or "").strip()
     must = str(node.get("must_not_touch") or "").strip()
     verify = str(node.get("verify") or "").strip()
-    parts = [piece for piece in (what, f"Must not touch: {must}" if must
-                                 else "", verify) if piece]
-    parts.append(f"repository: {repo}")
-    parts.append(f"branch: {branch}")
-    return "\n\n".join(parts) + "\n"
+    parts = [piece for piece in (
+        title, what,
+        f"Must not touch: {must}" if must else "",
+        verify,
+    ) if piece]
+    return "\n\n".join(parts)
+
+
+def render_node_page(front: str, node: dict, *, repo: str, branch: str,
+                     session_id: str,
+                     worktree: str = "",
+                     target: str = "",
+                     scratch: str = "",
+                     log: str = "",
+                     verdict: str = "",
+                     timeout: str = "",
+                     kind: str = "implement",
+                     job: str = "(none)",
+                     task: str | None = None,
+                     scope: str | None = None,
+                     units_label: str | None = None,
+                     rulings: str | None = None) -> str:
+    """Render ``job.md`` from a queued tree node.
+
+    ``This job`` is the node's title, what, must-not-touch and verify.
+    A Map facts section lists each ``fct-...`` id the node's what or
+    reason names, with its basis and refs, or the line ``no map facts
+    named``. The environment block carries the repository and the
+    branch. The role sheet stands in for the role template's free text.
+    """
+    record = node if isinstance(node, dict) else {}
+    role = str(record.get("role") or "").strip()
+    sheet = role_sheet(role, record)
+    if rulings is None:
+        rulings = format_rulings(read_rulings(front))
+    env = environment_block(
+        worktree or "(none)", branch, target or "(none)",
+        scratch or "(none)", log or "(none)",
+        verdict or "(none)", timeout or "(none)")
+    env = f"- repository: {repo}\n{env}"
+    body = _this_job_from_node(record)
+    facts = format_map_facts(front, record)
+    this_job = f"{body}\n\n## Map facts\n\n{facts}" if body else (
+        f"## Map facts\n\n{facts}")
+    task_label = task if task is not None else str(
+        record.get("parent") or "(none)")
+    scope_text = scope or lookup_scope(front, task_label) or (
+        "(no task scope recorded)")
+    return build_job_file(
+        job, kind, task_label, front, env, rulings, scope_text,
+        this_job, units_label, role_text=sheet)
+
 
 
 def _repo_entry(record: dict | None, node: dict) -> dict | None:
@@ -951,8 +1047,9 @@ def start_queued(front: str, node_id: str, *,
                  by: str) -> tuple[str | None, str]:
     """Turn a queued tree node into a running job through ``cmd_launch``.
 
-    Writes the worker brief from the node, calls the same launch path a
-    hand launch uses, records ``session`` and ``job`` on the node with
+    Renders the worker page from the node (``render_node_page``) in
+    place of a hand-written brief, calls the same launch path a hand
+    launch uses, records ``session`` and ``job`` on the node with
     ``state = "running"``, and returns the job id. ``(None, reason)``
     when the node is not queued or the launcher refuses.
     """
@@ -990,9 +1087,16 @@ def start_queued(front: str, node_id: str, *,
     branch = f"job/{front_name}-{nid}"
     base = _queued_base_branch(record, existing)
     spec_path = _queue_spec_path(front_name, nid)
-    write_no_symlink(
-        spec_path, _queued_brief(existing, repo=repo_name, branch=branch))
     job_id = ids.mint("job")
+    try:
+        spec_text = render_node_page(
+            front_name, existing,
+            repo=repo_name, branch=branch, session_id="queued",
+            job=job_id, timeout=adapter.timeout_default,
+            target=base or "", kind="implement")
+    except Refused as exc:
+        return None, str(exc)
+    write_no_symlink(spec_path, spec_text)
     argv = [
         role, pool, spec_path,
         "--front", front_name,
@@ -1209,7 +1313,19 @@ def cmd_launch(args: argparse.Namespace) -> int:
         except OSError as exc:
             problems.append(f"cannot read spec {args.spec!r}: {exc.strerror or exc}")
     if spec_text is not None:
-        problems.extend(spec_problems(spec_text))
+        extra = spec_problems(spec_text)
+        # A queued node's page is generated, not a hand-written spec;
+        # the one-page limit is for the supervisor's brief. The verify
+        # command still has to be present.
+        if extra and args.spec is not None:
+            queue_dir = (paths.state_dir() / "queue").resolve()
+            try:
+                from_queue = Path(args.spec).resolve().parent == queue_dir
+            except OSError:
+                from_queue = False
+            if from_queue:
+                extra = [item for item in extra if "one page" not in item]
+        problems.extend(extra)
 
     if problems:
         return refuse(*problems)
