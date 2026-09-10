@@ -8,10 +8,14 @@ that would stay green without the work are not in this file.
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
+from datetime import datetime, timezone
 
 import pytest
 
-from foreman import paths
+from foreman import capacity, paths, status, store
+from foreman.collector import CollectorConfig, tick
 from foreman.entities import Session
 from foreman.pools import claude as claude_pool
 from foreman.pools import codex as codex_pool
@@ -231,3 +235,104 @@ def test_codex_turn_failed_is_a_refusal(env):
     assert found["kind"] == "quota"
     assert found["record_type"] == "turn.failed"
     assert found["line_no"] == 1
+
+
+NOW = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
+RESET_SHOWN = "2026-09-14 00:00Z"
+
+
+def _dead_pid() -> int:
+    proc = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"])
+    pid = proc.pid
+    proc.kill()
+    proc.wait()
+    return pid
+
+
+def _tick_dead_worker(pool: str, sid: str, job: str, text: str) -> None:
+    spec = POOLS[pool]
+    log = paths.session_log_path(sid)
+    log.parent.mkdir(parents=True, exist_ok=True)
+    log.write_text(text, encoding="utf-8")
+    pid = _dead_pid()
+    store.write_snapshot(paths.roster_path(), {"sessions": {
+        sid: Session(
+            id=sid, role=spec["role"], pool=pool, model=spec["model"],
+            front="comp", job=job, pid=pid, pgid=pid,
+            worktree="", log=str(log), timeout="20m",
+            started_at=NOW.isoformat(), state="running",
+        ).to_dict()}})
+    store.append_ledger(paths.front_jobs_path("comp"), {
+        "id": job, "task": "tas-1", "kind": "implement",
+        "role": spec["role"], "state": "running", "session": sid,
+        "started_at": NOW.isoformat()})
+    tick(now=NOW, config=CollectorConfig(vendor_markers=("no-such-vendor",)))
+
+
+@pytest.mark.parametrize("pool", list(POOLS))
+def test_tick_does_not_mark_a_pool_out_from_a_tool_call(env, pool):
+    """A tick over a dead worker whose only 429 sits in a tool_call
+    write payload must leave pools.jsonl empty."""
+    text = jsonl({"type": "update", "text": "working"},
+                 POOLS[pool]["tool_call"])
+    _tick_dead_worker(pool, f"ses-{pool}-ticktool", f"job-{pool}-tt", text)
+    assert store.read_ledger(paths.pools_path()) == []
+
+
+@pytest.mark.parametrize("pool", list(POOLS))
+def test_tick_marks_the_pool_from_a_vendor_error_event(env, pool):
+    """The same 429 inside a vendor error record marks the pool, and
+    the mark names the record type and line so a person can check it."""
+    spec = POOLS[pool]
+    text = jsonl(
+        {"type": "update", "text": "working"},
+        spec["tool_call"],
+        spec["error"],
+    )
+    sid = f"ses-{pool}-tickerr"
+    job = f"job-{pool}-te"
+    _tick_dead_worker(pool, sid, job, text)
+    lines = store.read_ledger(paths.pools_path())
+    assert len(lines) == 1, pool
+    record = lines[0]
+    assert record["id"] == pool
+    assert record["pool"] == pool
+    assert record["out_until"] == RESET
+    assert record["because"] == "quota"
+    assert record["job"] == job
+    assert record["session"] == sid
+    assert record["record_type"] == spec["error_type"]
+    assert record["line_no"] == 3
+
+
+def test_status_prints_the_record_type_and_line(env):
+    """status and capacity both print ``out until ... (quota, error
+    line N)`` when the mark names its source. An older record without
+    those fields still prints ``(quota)``."""
+    store.append_ledger(paths.pools_path(), {
+        "id": "grok", "pool": "grok", "out_until": RESET,
+        "because": "quota", "record_type": "error", "line_no": 3,
+    })
+    sourced = f"  grok: out until {RESET_SHOWN} (quota, error line 3)"
+    lines = capacity.capacity_lines({}, now=NOW)
+    assert sourced in lines
+    screen = status.render(now=NOW)
+    assert sourced in screen
+    problems = capacity.launch_problems("grok", "grok", "alpha", now=NOW)
+    assert problems == [
+        "role 'grok' on front 'alpha': pool 'grok' is out until "
+        f"{RESET_SHOWN} (quota, error line 3)",
+    ]
+    assert capacity.allocation_out("grok", now=NOW) == (
+        f"out until {RESET_SHOWN} (quota, error line 3)"
+    )
+
+    store.append_ledger(paths.pools_path(), {
+        "id": "muse", "pool": "muse", "out_until": RESET,
+        "because": "quota",
+    })
+    plain = f"  muse: out until {RESET_SHOWN} (quota)"
+    after = capacity.capacity_lines({}, now=NOW)
+    assert plain in after
+    assert f"  muse: out until {RESET_SHOWN} (quota, " not in "\n".join(after)

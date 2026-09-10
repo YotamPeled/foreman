@@ -304,6 +304,25 @@ def format_out_until(moment: datetime) -> str:
     return moment.astimezone(timezone.utc).strftime("%Y-%m-%d %H:%MZ")
 
 
+def format_out_reason(record: dict) -> str:
+    """``quota`` or ``quota, error line 3`` from a folded pool record.
+
+    ``record_type`` and ``line_no`` name the vendor event the mark was
+    read from, so a person can check it. A record that does not carry
+    them (an older line, a test double) prints the because alone.
+    """
+    because = record.get("because")
+    if not isinstance(because, str) or not because:
+        because = "quota"
+    rtype = record.get("record_type")
+    line_no = record.get("line_no")
+    if (isinstance(rtype, str) and rtype
+            and isinstance(line_no, int) and not isinstance(line_no, bool)
+            and line_no > 0):
+        return f"{because}, {rtype} line {line_no}"
+    return because
+
+
 def folded_pools() -> list[dict]:
     """Every pool-state record, folded last-wins by pool name."""
     try:
@@ -358,9 +377,8 @@ def allocation_out(role: str, now: datetime | None = None) -> str | None:
     if record is None:
         return None
     until = _parse_iso(record.get("out_until"))
-    because = record.get("because") or "quota"
     when = format_out_until(until) if until is not None else ""
-    return f"out until {when} ({because})"
+    return f"out until {when} ({format_out_reason(record)})"
 
 
 def launch_problems(role: str, pool: str, front: str | None,
@@ -412,10 +430,9 @@ def launch_problems(role: str, pool: str, front: str | None,
     record = pool_out(pool, now)
     if record is not None:
         until = _parse_iso(record.get("out_until"))
-        because = record.get("because") or "quota"
         when = format_out_until(until) if until is not None else ""
         problems.append(f"{_who(role, front)}: pool {pool!r} is out "
-                        f"until {when} ({because})")
+                        f"until {when} ({format_out_reason(record)})")
     return problems
 
 
@@ -586,9 +603,9 @@ def capacity_lines(observed: dict | None,
         record = out_now.get(pool)
         if record is not None:
             until = _parse_iso(record.get("out_until"))
-            because = record.get("because") or "quota"
             when = format_out_until(until) if until is not None else ""
-            lines.append(f"  {pool}: out until {when} ({because})")
+            lines.append(f"  {pool}: out until {when} "
+                         f"({format_out_reason(record)})")
             continue
         total = settings.cap(pool)
         held = held_pool.get(pool, 0)

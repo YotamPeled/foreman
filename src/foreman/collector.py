@@ -456,8 +456,9 @@ def _stopped_by(record: dict) -> str | None:
 
 def _note_pool_refusal(adapter, record: dict, sid: str) -> None:
     """If this dead worker's transcript is a quota refusal, append one
-    pools.jsonl record before the job is marked. A second tick over the
-    same job writes nothing."""
+    pools.jsonl record before the job is marked, naming ``record_type``
+    and ``line_no`` of the event it read. A second tick over the same
+    job writes nothing."""
     if adapter is None:
         return
     job = record.get("job")
@@ -492,7 +493,7 @@ def _note_pool_refusal(adapter, record: dict, sid: str) -> None:
     because = kind if isinstance(kind, str) and kind else "quota"
     detail = refusal.get("detail")
     detail = " ".join(detail.split()) if isinstance(detail, str) else ""
-    store.append_ledger(paths.pools_path(), {
+    line: dict = {
         "id": pool,
         "pool": pool,
         "out_until": reset,
@@ -500,7 +501,15 @@ def _note_pool_refusal(adapter, record: dict, sid: str) -> None:
         "detail": detail,
         "job": job,
         "session": sid,
-    }, session_id=sid)
+    }
+    rtype = refusal.get("record_type")
+    if isinstance(rtype, str) and rtype:
+        line["record_type"] = rtype
+    line_no = refusal.get("line_no")
+    if isinstance(line_no, int) and not isinstance(line_no, bool) \
+            and line_no > 0:
+        line["line_no"] = line_no
+    store.append_ledger(paths.pools_path(), line, session_id=sid)
 
 
 def _exit_code_of(observed: dict | None, finish: bool) -> int | None:
