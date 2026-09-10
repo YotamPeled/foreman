@@ -1,4 +1,4 @@
-"""`foreman front add|list|show|prefer|allocate|reserve|release|close`: a brief becomes a front on the ledger.
+"""`foreman front add|list|show|queue|prefer|allocate|reserve|release|close`: a brief becomes a front on the ledger.
 
 ``front add <dir>`` reads ``<dir>/brief.toml`` with :mod:`tomllib`, refuses
 with every violation named at once (docs/DESIGN.md section 4.3), and otherwise
@@ -367,6 +367,95 @@ def reserved_fronts() -> set[str]:
         if isinstance(front, str) and front:
             names.add(front)
     return names
+
+
+def team_fits(record: dict) -> str | None:
+    """None when the builders phase fits; otherwise why it does not.
+
+    Fits when every pool has ``cap - reserved_by_others >= count`` for
+    the builders phase. The refusal names the first pool that does not:
+    ``pool grok: cap 6, reserved 4, wants 3``. A pool with no cap always
+    fits. Shared with the collector's queue tick.
+    """
+    name = record.get("name")
+    name = name if isinstance(name, str) else ""
+    wanted = _wanted_reservations(record, ("builders",))
+    open_recs = open_reservations()
+    settings = config.load()
+    for pool, _role, count, _phase in wanted:
+        cap = settings.cap(pool)
+        if cap is None:
+            continue
+        reserved, _others = _others_on_pool(open_recs, pool, name)
+        if cap - reserved < count:
+            return (f"pool {pool}: cap {cap}, reserved {reserved}, "
+                    f"wants {count}")
+    return None
+
+
+def _front_names() -> list[str]:
+    try:
+        return [entry.name for entry in paths.fronts_dir().iterdir()
+                if entry.is_dir()]
+    except OSError:
+        return []
+
+
+def _requested_at(record: dict) -> str:
+    """When this front was asked for: ``requested_at``, else the first
+    ledger line's ``at`` (later revisions stamp a new ``at``)."""
+    value = record.get("requested_at")
+    if isinstance(value, str) and value:
+        return value
+    name = record.get("name")
+    if isinstance(name, str) and name:
+        try:
+            lines = store.read_ledger(paths.front_record_path(name))
+        except OSError:
+            lines = []
+        for line in lines:
+            if not isinstance(line, dict):
+                continue
+            at = line.get("at")
+            if isinstance(at, str) and at:
+                return at
+    at = record.get("at")
+    return at if isinstance(at, str) else ""
+
+
+def _queue_key(record: dict) -> tuple:
+    prefer = record.get("prefer", 0)
+    if isinstance(prefer, bool) or not isinstance(prefer, int):
+        prefer = 0
+    return (prefer, _requested_at(record), record.get("name") or "")
+
+
+def queued_fronts() -> list[dict]:
+    """Queued front records in order: ``prefer`` ascending, then
+    ``requested_at``."""
+    rows: list[dict] = []
+    for name in _front_names():
+        record = read_front_record(name)
+        if record is None or record.get("state") != "queued":
+            continue
+        rows.append(record)
+    rows.sort(key=_queue_key)
+    return rows
+
+
+def queue_wait_reason(record: dict, queued: list[dict]) -> str:
+    """Why this queued front waits, as ``front queue`` prints it.
+
+    The top front is ``team fits`` or the pool numbers; every front
+    below it is ``behind <top>``.
+    """
+    if not queued:
+        return "team fits"
+    top = queued[0]
+    top_name = top.get("name") or ""
+    if record.get("name") != top_name:
+        return f"behind {top_name}"
+    return team_fits(record) or "team fits"
 
 
 def _phase_team_roles(phase: str) -> tuple[str, ...]:
@@ -1182,6 +1271,20 @@ def front_list_main() -> int:
     return 0
 
 
+def front_queue_main() -> int:
+    """Print queued fronts in order, each with why it waits."""
+    me, violations = caller.resolve("front queue")
+    caller.check_role(me, "front queue", caller.FOREMAN,
+                      violations=violations)
+    if violations:
+        return Refusal(violations).report()
+    queued = queued_fronts()
+    for record in queued:
+        name = record.get("name") or ""
+        print(f"{name}  {queue_wait_reason(record, queued)}")
+    return 0
+
+
 def _revised(name: str, violations: list[str]) -> dict | None:
     if not (isinstance(name, str) and name.strip()):
         violations.append("field 'name' is required")
@@ -1840,6 +1943,9 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
                      help="a front that already ran and is done: the record "
                           "only, no tasks")
     verbs.add_parser("list", help="Print one line per front.")
+    verbs.add_parser(
+        "queue",
+        help="Print queued fronts in order, each with why it waits.")
     show = verbs.add_parser("show", help="Print a front's folded record.")
     show.add_argument("name", help="front name")
     show.add_argument("--json", dest="as_json", action="store_true",
@@ -1900,7 +2006,7 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
                       help="repository name (default: the first)")
 
 
-@cli.subcommand("front", help="Add, list, show, policy, land, prefer, allocate, "
+@cli.subcommand("front", help="Add, list, show, queue, policy, land, prefer, allocate, "
                      "reserve, release, close, take, import or mark a "
                      "front done.")
 def _front_entry(args: argparse.Namespace) -> int:
@@ -1909,6 +2015,8 @@ def _front_entry(args: argparse.Namespace) -> int:
                               fixture=args.fixture, closed=args.closed)
     if args.front_verb == "list":
         return front_list_main()
+    if args.front_verb == "queue":
+        return front_queue_main()
     if args.front_verb == "show":
         return front_show_main(args.name, as_json=args.as_json)
     if args.front_verb == "prefer":
