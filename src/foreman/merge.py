@@ -26,7 +26,6 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
-import tempfile
 import time
 import tomllib
 
@@ -406,92 +405,92 @@ def merge_land_main(ref: str | None) -> int:
     # could land nothing at all, and said so as "branch does not exist".
     # Detached, it also never moves the checkout somebody else is working
     # in while it lands.
-    with tempfile.TemporaryDirectory(prefix="foreman-merge-") as tmp:
-        area = os.path.join(tmp, "landing")
+    area = str(paths.scratch_worktree_dir("land", mid))
+    try:
         added = _git(repo, "worktree", "add", "--detach", area, branch)
         if added.returncode != 0:
             tail = (added.stderr.strip() or added.stdout.strip()).strip()
             return _refuse([f"cannot open a landing worktree for "
                             f"'{branch}': {tail}".strip()])
-        try:
-            # The sha the rebase will sit on, recorded before it runs so
-            # the target push can lease against exactly that value.
-            base_proc = _git(area, "rev-parse", target)
-            if base_proc.returncode != 0:
-                return _refuse(
-                    [f"field 'target' does not exist ({target!r})"])
-            base = base_proc.stdout.strip()
-            rebase = _git(area, "rebase", target)
-            if rebase.returncode != 0:
-                _git(area, "rebase", "--abort")
-                tail = (rebase.stderr.strip() or rebase.stdout.strip()).strip()
-                return _refuse([
-                    f"rebase of '{branch}' onto '{target}' conflicts; "
-                    f"the rebase was aborted: {tail}".strip()])
-            started = time.perf_counter()
-            proc = subprocess.run(check, shell=True, cwd=area,
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT, text=True)
-            elapsed = time.perf_counter() - started
-            output = proc.stdout or ""
-            log_path = paths.merge_check_log_path(who, mid)
-            log_path.parent.mkdir(parents=True, exist_ok=True)
-            log_path.write_text(output, encoding="utf-8")
-            check_fields = {
-                "check_command": check,
-                "check_exit": proc.returncode,
-                "check_seconds": elapsed,
-                "check_output_ref": str(log_path),
-            }
-            if proc.returncode != 0:
-                tail = output.strip()[-2000:]
-                store.append_ledger(
-                    paths.merges_path(),
-                    dict(record, **check_fields),
-                    session_id=who,
-                )
-                detail = f": {tail}" if tail else ""
-                return _refuse([
-                    f"check '{check}' failed on '{branch}' "
-                    f"(exit {proc.returncode}){detail} "
-                    f"(output {log_path})"])
-            head = _git(area, "rev-parse", "HEAD").stdout.strip()
-            # Advance the target first, leased to `base`. The rebase put
-            # `head` directly on top of `base`, so this is a fast-forward
-            # exactly when the remote target is still `base`, and the
-            # lease refuses it otherwise. Nothing else is pushed if it
-            # refuses — no half-landed branch, no merge commit.
-            target_push = _git(
-                area, "push",
-                f"--force-with-lease=refs/heads/{target}:{base}",
-                "origin", f"HEAD:refs/heads/{target}")
-            if target_push.returncode != 0:
-                remote = _git(area, "ls-remote", "origin",
-                              f"refs/heads/{target}").stdout.split()
-                found = remote[0] if remote else ""
-                tail = (target_push.stderr.strip()
-                        or target_push.stdout.strip()).strip()
-                reason = (
-                    f"push of '{target}' failed: expected {base}, "
-                    f"found {found}: {tail}".strip())
-                if found and found != base:
-                    return _target_moved_next(record, who, reason)
-                return _refuse([reason])
-            # A rebase rewrites the branch, so the push that follows one is
-            # always a force. With-lease, so a branch somebody moved since
-            # the request is refused rather than overwritten.
-            push = _git(area, "push", "--force-with-lease", "origin",
-                        f"HEAD:refs/heads/{branch}")
-            if push.returncode != 0:
-                tail = (push.stderr.strip() or push.stdout.strip()).strip()
-                return _refuse([f"push of '{branch}' failed: {tail}".strip()])
-            # And the local branch follows the rebase where it can. Where
-            # a worker still has it checked out, git refuses and the remote
-            # is the record: the worker's copy is stale either way once it
-            # has been rebased, and the landing is what was pushed.
-            _git(repo, "branch", "--force", branch, head)
-        finally:
-            _git(repo, "worktree", "remove", "--force", area)
+        # The sha the rebase will sit on, recorded before it runs so
+        # the target push can lease against exactly that value.
+        base_proc = _git(area, "rev-parse", target)
+        if base_proc.returncode != 0:
+            return _refuse(
+                [f"field 'target' does not exist ({target!r})"])
+        base = base_proc.stdout.strip()
+        rebase = _git(area, "rebase", target)
+        if rebase.returncode != 0:
+            _git(area, "rebase", "--abort")
+            tail = (rebase.stderr.strip() or rebase.stdout.strip()).strip()
+            return _refuse([
+                f"rebase of '{branch}' onto '{target}' conflicts; "
+                f"the rebase was aborted: {tail}".strip()])
+        started = time.perf_counter()
+        proc = subprocess.run(check, shell=True, cwd=area,
+                              stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, text=True)
+        elapsed = time.perf_counter() - started
+        output = proc.stdout or ""
+        log_path = paths.merge_check_log_path(who, mid)
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        log_path.write_text(output, encoding="utf-8")
+        check_fields = {
+            "check_command": check,
+            "check_exit": proc.returncode,
+            "check_seconds": elapsed,
+            "check_output_ref": str(log_path),
+        }
+        if proc.returncode != 0:
+            tail = output.strip()[-2000:]
+            store.append_ledger(
+                paths.merges_path(),
+                dict(record, **check_fields),
+                session_id=who,
+            )
+            detail = f": {tail}" if tail else ""
+            return _refuse([
+                f"check '{check}' failed on '{branch}' "
+                f"(exit {proc.returncode}){detail} "
+                f"(output {log_path})"])
+        head = _git(area, "rev-parse", "HEAD").stdout.strip()
+        # Advance the target first, leased to `base`. The rebase put
+        # `head` directly on top of `base`, so this is a fast-forward
+        # exactly when the remote target is still `base`, and the
+        # lease refuses it otherwise. Nothing else is pushed if it
+        # refuses — no half-landed branch, no merge commit.
+        target_push = _git(
+            area, "push",
+            f"--force-with-lease=refs/heads/{target}:{base}",
+            "origin", f"HEAD:refs/heads/{target}")
+        if target_push.returncode != 0:
+            remote = _git(area, "ls-remote", "origin",
+                          f"refs/heads/{target}").stdout.split()
+            found = remote[0] if remote else ""
+            tail = (target_push.stderr.strip()
+                    or target_push.stdout.strip()).strip()
+            reason = (
+                f"push of '{target}' failed: expected {base}, "
+                f"found {found}: {tail}".strip())
+            if found and found != base:
+                return _target_moved_next(record, who, reason)
+            return _refuse([reason])
+        # A rebase rewrites the branch, so the push that follows one is
+        # always a force. With-lease, so a branch somebody moved since
+        # the request is refused rather than overwritten.
+        push = _git(area, "push", "--force-with-lease", "origin",
+                    f"HEAD:refs/heads/{branch}")
+        if push.returncode != 0:
+            tail = (push.stderr.strip() or push.stdout.strip()).strip()
+            return _refuse([f"push of '{branch}' failed: {tail}".strip()])
+        # And the local branch follows the rebase where it can. Where
+        # a worker still has it checked out, git refuses and the remote
+        # is the record: the worker's copy is stale either way once it
+        # has been rebased, and the landing is what was pushed.
+        _git(repo, "branch", "--force", branch, head)
+    finally:
+        _git(repo, "worktree", "remove", "--force", area)
+        paths.remove_scratch(area)
     # The tasks land one verb at a time, through the same gate the desk
     # itself passed: a task that stopped being built since the request
     # refuses here and the merge stays taken, so a retry resumes it.

@@ -27,7 +27,6 @@ import argparse
 import os
 import shutil
 import subprocess
-import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -435,25 +434,25 @@ def _execute_verify_run(record: dict, repo: str, head: str,
     child_env = os.environ.copy()
     for name in (caller.SESSION_ENV, paths.STATE_ENV, paths.CONFIG_ENV):
         child_env.pop(name, None)
-    with tempfile.TemporaryDirectory(prefix="foreman-verify-") as tmp:
-        area = os.path.join(tmp, "verify")
+    area = str(paths.scratch_worktree_dir("verify", key))
+    try:
         added = _git_at(repo, "worktree", "add", "--detach", area, head)
         if added.returncode != 0:
             tail = (added.stderr.strip() or added.stdout.strip()).strip()
             _refuse([f"cannot open a verify worktree for '{key}': "
                      f"{tail}".strip()])
             return None
-        try:
-            started = time.monotonic()
-            proc = subprocess.run(
-                command, shell=True, cwd=area,
-                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                text=True, env=child_env)
-            seconds = int(round(time.monotonic() - started))
-            output_body = proc.stdout or ""
-            exit_code = proc.returncode if proc.returncode is not None else 1
-        finally:
-            _git_at(repo, "worktree", "remove", "--force", area)
+        started = time.monotonic()
+        proc = subprocess.run(
+            command, shell=True, cwd=area,
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            text=True, env=child_env)
+        seconds = int(round(time.monotonic() - started))
+        output_body = proc.stdout or ""
+        exit_code = proc.returncode if proc.returncode is not None else 1
+    finally:
+        _git_at(repo, "worktree", "remove", "--force", area)
+        paths.remove_scratch(area)
     dest = dest_dir / f"{_next_copy_n(dest_dir)}-run.log"
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(output_body, encoding="utf-8")
