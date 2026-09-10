@@ -143,6 +143,13 @@ clause CONFIRMED by running on the live installation, with the proof recorded as
     is a count, not a state" for checks run under contention; the door names the rejected field; node
     bodies are unbounded; a node kind for derived artifacts; role boundaries enforced by tool permission,
     not prose; a launch whose task title matches nothing is refused.
+33. Every node names its break: the one-line change to the delivered code that must make its verify go
+    red. Before a node counts as built the runtime, in the fresh worktree, runs the verify on the head
+    (green), applies the break, runs it again (must be red), and restores; the outcome is recorded on the
+    node beside the red-then-green of decision 22. A surviving break is not a failure by itself: the
+    record goes to the supervisor, who classifies it under the mutation ruling (gap, ineffective, or
+    vacuous test) before the node proceeds. A node with no break named is refused at the door. This is
+    the last serial step of verification moved off the supervisor.
 
 ## Team
 
