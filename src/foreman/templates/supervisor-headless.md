@@ -65,6 +65,8 @@ if you are running, the front is yours.
 
 {{done_when}}
 
+{{inputs}}
+
 ## The tasks on this front
 
 Each task carries its line, the verification command you re-run yourself, and

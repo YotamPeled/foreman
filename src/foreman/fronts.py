@@ -297,6 +297,94 @@ def read_front_record(name: str) -> dict | None:
     return folded[-1] if folded else None
 
 
+#: What the supervisor prompt's ``inputs`` field renders for a pre-v5 front.
+OLD_SHAPE_INPUTS = (
+    "(this front was started from an old-shape brief; see its tasks below)"
+)
+
+_NONE = "(none)"
+
+
+def _shown(value: object) -> str:
+    text = "" if value is None else str(value).strip()
+    return text or _NONE
+
+
+def front_inputs_block(record: dict | None) -> str:
+    """The folded front's v5 inputs as text, in prompt order.
+
+    Goal, finish line, numbered decisions, one team line per entry, then
+    one repository block. An old-shape front (or no record) is the
+    parenthetical that points at the tasks block instead.
+    """
+    if record is None or record.get("shape") != "v5":
+        return OLD_SHAPE_INPUTS
+    lines = [
+        "## Goal",
+        "",
+        _shown(record.get("goal")),
+        "",
+        "## Finish line",
+        "",
+        _shown(record.get("finish_line")),
+        "",
+        "## Decisions",
+        "",
+    ]
+    decisions = record.get("decisions")
+    if not isinstance(decisions, list) or not decisions:
+        lines.append(_NONE)
+    else:
+        for index, item in enumerate(decisions, 1):
+            lines.append(f"{index}. {item}")
+    lines += ["", "## Team", ""]
+    team = record.get("team")
+    wrote_team = False
+    if isinstance(team, list):
+        for entry in team:
+            if not isinstance(entry, dict):
+                continue
+            lines.append(
+                f"- role {entry.get('role')}, agent {entry.get('agent')}, "
+                f"pool {entry.get('pool')}, model {entry.get('model')}, "
+                f"effort {entry.get('effort')}, count {entry.get('count')}"
+            )
+            wrote_team = True
+    if not wrote_team:
+        lines.append(_NONE)
+    lines += ["", "## Repositories", ""]
+    repos = record.get("repositories")
+    blocks: list[str] = []
+    if isinstance(repos, list):
+        for repo in repos:
+            if not isinstance(repo, dict):
+                continue
+            name = str(repo.get("name") or "").strip() or "(unnamed)"
+            trailers = repo.get("trailers")
+            if isinstance(trailers, list) and trailers:
+                trailer_text = ", ".join(str(item) for item in trailers)
+            else:
+                trailer_text = _NONE
+            pr_body = repo.get("pr_body")
+            if not (isinstance(pr_body, str) and pr_body.strip()):
+                pr_body = _NONE
+            blocks.append("\n".join([
+                f"### {name}",
+                f"- url: {_shown(repo.get('url'))}",
+                f"- base: {_shown(repo.get('base'))} at "
+                f"{_shown(repo.get('base_sha'))}",
+                f"- work: {_shown(repo.get('work'))}",
+                f"- target: {_shown(repo.get('target'))}",
+                "- policy:",
+                f"  - check: {_shown(repo.get('check'))}",
+                f"  - land: {_shown(repo.get('land'))}",
+                f"  - trailers: {trailer_text}",
+                f"  - pr-body: {pr_body}",
+            ]))
+    lines.append("\n\n".join(blocks) if blocks else _NONE)
+    return "\n".join(lines)
+
+
 def _existing_fronts() -> set[str]:
     """Names already on the ledger: a front directory holding a front line."""
     try:

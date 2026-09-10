@@ -1796,8 +1796,12 @@ def front_tasks_block(front: str) -> str:
 
     A supervisor plans jobs out of the scope and re-runs the verification
     itself, so a prompt carrying titles and states alone carries none of
-    the work. Both travel with the task, verbatim from the brief.
+    the work. Both travel with the task, verbatim from the brief. A v5
+    front has no brief tasks: its work is the tree, named as such.
     """
+    record = fronts.read_front_record(front)
+    if record is not None and record.get("shape") == "v5":
+        return "(a v5 front has no brief tasks; its work is the tree)"
     records = store.fold_by_id(
         store.read_ledger(paths.front_tasks_path(front)))
     if not records:
@@ -2027,6 +2031,7 @@ def render_supervisor_prompt(*, front: str, record: dict, session_id: str,
         "want": (record.get("want") or "(the brief records no want)").strip(),
         "done_when": (record.get("done_when")
                       or "(the brief records no done-when)").strip(),
+        "inputs": fronts.front_inputs_block(record),
         "tasks": front_tasks_block(front),
         "monitors": front_monitors_block(record),
         "allocation": allocation_block(record),
