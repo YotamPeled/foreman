@@ -32,6 +32,7 @@ KIND_PREFIXES = {
     "measurement": "msm",
     "map": "map",
     "milestone": "mil",
+    "node": "nod",
     "checkpoint": "chk",
     "inbox": "inb",
     "turn": "trn",

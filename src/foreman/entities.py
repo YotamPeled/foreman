@@ -25,6 +25,9 @@ RULING_SCOPES = ("swarm", "front")
 RULING_SOURCES = ("owner", "foreman", "supervisor")
 EVIDENCE_STATUSES = ("CONFIRMED", "PLAUSIBLE")
 INBOX_KINDS = ("money", "irreversible", "scope", "error")
+NODE_KINDS = ("milestone", "task", "job", "derived")
+NODE_SCOPES = ("source-test", "fixture", "live", "production-load")
+CHILDLESS_NODE_KINDS = ("job", "derived")
 
 
 class Entity:
@@ -371,6 +374,42 @@ class Milestone(Entity):
     force: bool = False
     at: str | None = None
     by: str | None = None
+
+
+@dataclass(frozen=True)
+class Node(Entity):
+    """One line on a front's tree ledger (``fronts/<name>/tree.jsonl``).
+
+    ``parent`` is the front name for a milestone node, else a node id.
+    ``kind`` is milestone, task, job or derived. A revised line carries
+    ``op = "revise"``. ``break_`` is the one-line change that must make
+    verify go red.
+    """
+
+    _aliases: ClassVar[dict[str, str]] = {"break_": "break"}
+
+    id: str | None = None
+    front: str = ""
+    parent: str = ""
+    kind: str = ""
+    title: str = ""
+    repo: str = ""
+    what: str = ""
+    verify: str = ""
+    must_not_touch: str = ""
+    reason: str = ""
+    break_: str = ""
+    property: str = ""
+    scope: str = "source-test"
+    role: str = ""
+    after: list = field(default_factory=list)
+    source: str = ""
+    mechanical: bool = False
+    op: str = ""
+    at: str | None = None
+    by: str | None = None
+    state: str = ""
+    reason_revised: str = ""
 
 
 @dataclass(frozen=True)
