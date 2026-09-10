@@ -161,7 +161,7 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     # wait from the ledger-waiter job, the collector's verdict; plus
     # front show from the v5 inputs job.
     # Counted, not derived, so a verb added without intent fails here.
-    assert len(names) == 53
+    assert len(names) == 54
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):
