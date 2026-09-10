@@ -1441,6 +1441,13 @@ def make_world_root(explicit: Path | None) -> Path:
     return root
 
 
+def _break_is(break_clause: object, cid: object) -> bool:
+    """True when --break names this clause. Integers still match trial-frictions."""
+    if break_clause in (None, "", 0, "0"):
+        return False
+    return str(break_clause) == str(cid)
+
+
 def _run_loaded_clauses(files: list[Path], break_clause: object,
                         root: Path) -> int:
     global _REAL_GROK
@@ -1458,7 +1465,7 @@ def _run_loaded_clauses(files: list[Path], break_clause: object,
                 failed = True
                 continue
             try:
-                if str(break_clause) == str(cid) and break_clause not in (0, "0", None, ""):
+                if _break_is(break_clause, cid):
                     raise Failure(f"deliberately broken (clause {cid})")
                 msg = module.run(world)
                 report(cid, "PASS", msg)
@@ -1494,8 +1501,8 @@ def main(argv: list[str] | None = None) -> int:
         description="Run a front's proof clauses on an isolated world.")
     parser.add_argument("front", help="front name (trial-frictions or v5)")
     parser.add_argument(
-        "--break", dest="break_clause", type=int, default=0,
-        help="deliberately fail this clause (supervisor evidence that FAIL works)")
+        "--break", dest="break_clause", default=None,
+        help="deliberately fail this clause id (integer still works for trial-frictions)")
     parser.add_argument(
         "--milestone", type=int, default=None, metavar="N",
         help="run only the v5 clause files of milestone N")
@@ -1529,8 +1536,8 @@ def main(argv: list[str] | None = None) -> int:
         for n, fn in CLAUSES:
             try:
                 if n == 12:
-                    msg = fn(world, break_it=(args.break_clause == 12))
-                elif args.break_clause == n:
+                    msg = fn(world, break_it=_break_is(args.break_clause, 12))
+                elif _break_is(args.break_clause, n):
                     raise Failure(f"deliberately broken (clause {n})")
                 else:
                     msg = fn(world)
