@@ -93,10 +93,62 @@ clause CONFIRMED by running on the live installation, with the proof recorded as
     or the live state directory; the installed CLI and collector are upgraded only by the foreman at a
     safe point; per-push CI stays under eight minutes.
 
+### Decisions added 2026-09-10 after the survey of every past foreman, supervisor and desk (20 answers, ledger/survey-2026-09-10/)
+
+22. A node's verify is proven able to fail before the node is accepted: the runtime runs it on the base
+    (must be red) and on the head (must be green); a verify that was never observed red, or that does not
+    resolve and run, is refused. The door refuses an EMPTY verify and never judges its vocabulary. A node
+    states the property under test (what a wrong answer looks like), its verify may be revised with a
+    reason, and its evidence scope is typed (source test / production load / fixture / live).
+23. A target move invalidates recorded evidence: a green run, a review verdict, a measurement is bound to
+    head plus base; the automatic rebase re-runs the check and marks prior verdicts stale. After a
+    landing, the supervisor's branch is the landing's line and it re-cuts from there.
+24. Map facts carry where and when they were seen and the commit; a derived fact inherits the weakest
+    label of its inputs; a fact copied from something owned elsewhere gets a re-derivation leaf. Machine
+    facts belong in the map: tunnels, port-forwards, credential paths, filesystem quotas, fixture
+    containers, tested execution capabilities.
+25. Shared mutable resources (fixture databases, locks, temporary filesystems) are reserved with a count
+    like model slots; the runtime refuses to start a job past the count. Worktrees and worker scratch live
+    on disk under the project, never on /tmp.
+26. Silence is not a pass: a check that looked in the wrong place, a reviewer that died on quota or an
+    access flag, a negative result without a positive control are distinct recorded states, never green.
+    Both attempts of a retried review are kept.
+27. The build that serves a verb or a verify is pinned (absolute interpreter in the MCP config and in
+    per-repository policy) and recorded on every write; a role page is generated from the verbs the
+    running build actually has.
+28. The owner's word arrives only through the runtime: an inbox answer or a ruling on the ledger. A halt,
+    approval or deletion relayed by a peer is a prompt to read the ledger, never an instruction.
+29. The landing script refuses an empty range before running the check, re-runs the check AFTER the
+    update on the tree that will land, records commits dropped by rebase, and a repository's policy may
+    name a landing script (build, pin, dry run, rollout, assert) in place of a plain push or PR.
+30. Muse joins the team from 2026-09-14: three at high, for mechanical leaves only (one-page nodes whose
+    verify is a number, a diff or a golden file), each unit idempotent so a death costs one unit; never
+    the sole author of a node's only test; never on auth-shaped text; until the reset the runtime shows
+    the pool out and Grok takes those leaves.
+31. The foreman assigns each front's working team. The owner's team line is the default and the ceiling.
+    The foreman derives the working team from the map and tree by the survey's calibration rules:
+    builders = min(independently verifiable leaves, the supervisor's verification rate, shared-resource
+    slots); model by the shape of each node's verify (number/diff -> cheap, behaviour/security -> strong
+    plus an executing reviewer); reviewers only for behaviour and security nodes; repositories add landing
+    lanes, not builders; leaves resting on assumed facts run alone and first. The derivation is recorded
+    on the front and adjusted on the signals (verify backlog, a conflict resolved by judgement, two
+    workers on one file, flakes, the same failure class twice, jobs returning under fifteen minutes). The
+    owner is asked only when the derivation needs more than the quota.
+32. Smaller amendments in scope: the collector owns the queue tick (or the design names the process);
+    milestones carry their own verify; the rebase item precedes the landing item; reservations are
+    phased (builders first, reviewers when a head exists); a pool out for days lets the foreman override
+    "backup only after failure"; a first checkpoint is seeded at mint; refusals are appealable with a
+    reason; a node may depend on another front's output; review rounds have a budget and after two rounds
+    finding the same class the node returns to the supervisor for redesign; a flake register, and "green
+    is a count, not a state" for checks run under contention; the door names the rejected field; node
+    bodies are unbounded; a node kind for derived artifacts; role boundaries enforced by tool permission,
+    not prose; a launch whose task title matches nothing is refused.
+
 ## Team
 
 supervisor      fable-5.1:high:1
 builder         grok-4.6:high:2
+builder         muse:high:3          (mechanical leaves only; pool out until 2026-09-14)
 backup-builder  opus-5:high:1        (only after a failed builder run)
 reviewer        astra-6:low:1        (on the supervisor's call)
 Muse is out until 2026-09-14 and takes nothing.
