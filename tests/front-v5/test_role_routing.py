@@ -145,3 +145,24 @@ def test_a_v5_node_naming_a_pool_role_is_refused(front, capsys):
 def test_a_v5_node_naming_a_team_role_is_admitted(front):
     assert run(["node", "add", "routes", "--parent", "mil-1", *NODE_ARGS,
                 "--role", "builder"]) == 0
+
+
+MUSE_ONLY_BRIEF = V5_BRIEF.replace('  "grok-4.6:high:2:builder",\n', '').replace(
+    'name = "routes"', 'name = "museonly"').replace('wroutes', 'wmuseonly')
+
+
+@BUILT_BY_8_1A
+def test_a_muse_builder_takes_behaviour_nodes_where_muse_replaces_grok(front):
+    # Owner ruling rul-j734hyt (2026-09-10): Grok is out for good and Muse
+    # replaces it everywhere, so a team whose only builder is Muse builds
+    # behaviour nodes too.
+    bare = front / "remote.git"
+    brief = front / "brief-museonly"
+    brief.mkdir()
+    (brief / "brief.toml").write_text(MUSE_ONLY_BRIEF.format(url=bare),
+                                      encoding="utf-8")
+    assert fronts.front_add_main(str(brief)) == 0
+    record = fronts.read_front_record("museonly")
+    node = dict(job_1(), front="museonly")
+    assert launch._team_pool(record, node) == "muse"
+    assert progress.muse_mechanical_refusal(record, node) is None
