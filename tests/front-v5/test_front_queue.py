@@ -247,6 +247,19 @@ def test_a_second_front_whose_team_fits_never_starts_first(
     assert fronts.read_front_record("beta")["state"] == "queued"
 
 
+def test_a_second_front_that_fits_waits_while_the_top_does_not(
+        env, supervisor_spawn):
+    """The top front wants more than the cap and never fits; the second
+    fits on its own. One tick starts nothing: strict order."""
+    write_v5("alpha", builders=4)
+    write_v5("beta", builders=1)
+    tick(now=NOW)
+    assert supervisor_spawn == []
+    assert fronts.read_front_record("alpha")["state"] == "queued"
+    assert fronts.read_front_record("beta")["state"] == "queued"
+    assert open_for("beta") == []
+
+
 def test_a_refused_launch_releases_and_leaves_the_front_queued(
         env, monkeypatch, capsys):
     """A launch that returns non-zero releases the reservation, stays
