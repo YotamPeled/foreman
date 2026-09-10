@@ -194,6 +194,25 @@ def test_no_room_files_no_ask_and_the_queue_says_so(env, capsys):
     ]
 
 
+def test_an_unanswered_ask_applies_nothing(env, capsys, supervisor_spawn):
+    """While the ask stands unanswered, later ticks append no caps
+    line and leave the cap and the queue where they were: the
+    recommendation is a recommendation, not the owner's word."""
+    hold("held", builders=2)
+    capsys.readouterr()
+    write_v5("alpha", builders=2)
+    tick(now=NOW)
+    asks = open_asks()
+    assert len(asks) == 1 and asks[0].recommendation == "raise to 4"
+    tick(now=NOW + timedelta(seconds=2))
+    tick(now=NOW + timedelta(seconds=4))
+    assert caps_lines() == []
+    assert capacity.effective_cap("fake") == 3
+    assert fronts.read_front_record("alpha")["state"] == "queued"
+    assert supervisor_spawn == []
+    assert len(open_asks()) == 1
+
+
 def test_raise_to_4_appends_caps_and_the_next_tick_starts(
         env, capsys, supervisor_spawn):
     """Answering ``raise to 4`` appends the caps line; the next tick
