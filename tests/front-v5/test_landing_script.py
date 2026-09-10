@@ -18,6 +18,7 @@ import pytest
 
 from foreman import cli, fronts, landing, paths, store
 from foreman.caller import SESSION_ENV
+from foreman.collector import tick
 from foreman.entities import Session
 
 SPEC_VERIFY = "true"
@@ -488,4 +489,90 @@ def test_second_front_waits_for_the_repository_lock(
     assert finished.is_set()
     assert outcome and outcome[0].ok, (
         outcome[0].fail_reason if outcome else "no result")
+    assert scratch_left() == []
+
+
+def test_one_tick_lands_the_script_item(env, monkeypatch, capsys):
+    """A queued landing item is run by the tick: origin moves, job list
+    prints landed <sha>, the built node is landed."""
+    _src, bare, _sha = add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(monkeypatch, capsys, job_id="job-a")
+    clone = open_clone(env, bare)
+    checkout_work(clone)
+    branch = f"job/v5shape-{node_id}"
+    add_job_commit(clone, branch)
+    item_id = queue_landing(monkeypatch, capsys, node_id, clone)
+    before_work = origin_work_sha(bare)
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    after_work = origin_work_sha(bare)
+    assert after_work != before_work
+    item = folded_tree()[item_id]
+    assert item["state"] == "landed"
+    assert item["command"] == "true"
+    assert item["exit"] == 0
+    assert item["seconds"] is not None and item["seconds"] >= 0
+    assert item["output_file"]
+    assert Path(item["output_file"]).is_file()
+    assert str(paths.state_dir()) in item["output_file"]
+    assert item["head"] == after_work
+    built = folded_tree()[node_id]
+    assert built["state"] == "landed"
+    assert built["landed_sha"] == after_work
+    assert scratch_left() == []
+    assert run(monkeypatch, ["job", "list", "v5shape"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert f"{item_id}  script    landed {after_work}" in out.splitlines()
+
+
+def test_job_list_prints_failed_reason(env, monkeypatch, capsys):
+    """A red check is recorded failed and job list prints failed: <reason>."""
+    _src, bare, _sha = add_front(env, monkeypatch, capsys, check="false")
+    seed_supervisor("v5shape")
+    _mil, _tsk, node_id = add_chain(monkeypatch, capsys, job_id="job-a")
+    clone = open_clone(env, bare)
+    checkout_work(clone)
+    add_job_commit(clone, f"job/v5shape-{node_id}")
+    item_id = queue_landing(monkeypatch, capsys, node_id, clone)
+    before_work = origin_work_sha(bare)
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    assert origin_work_sha(bare) == before_work
+    item = folded_tree()[item_id]
+    assert item["state"] == "failed"
+    assert folded_tree()[node_id]["state"] != "landed"
+    assert run(monkeypatch, ["job", "list", "v5shape"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert f"{item_id}  script    failed: {item['fail_reason']}" in out.splitlines()
+
+
+def test_tick_one_script_per_repository(env, monkeypatch, capsys):
+    """A second landing item on the same repository waits lock this tick."""
+    _src, bare, _sha = add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    _mil, tsk, first = add_chain(monkeypatch, capsys, job_id="job-a")
+    second = add_ok(monkeypatch, capsys, parent=tsk, kind="job",
+                    title="the next unit", role="builder", node_id="job-b")
+    clone = open_clone(env, bare)
+    checkout_work(clone)
+    add_job_commit(clone, f"job/v5shape-{first}", filename="a.txt")
+    add_job_commit(clone, f"job/v5shape-{second}", filename="b.txt")
+    first_item = queue_landing(monkeypatch, capsys, first, clone)
+    mark_verified("v5shape", second, job_id="job-ver002", worktree=clone,
+                  branch=f"job/v5shape-{second}")
+    capsys.readouterr()
+    assert run(monkeypatch, ["job", "land", "v5shape", second], SUP) == 0
+    second_item = capsys.readouterr().out.strip()
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    tree = folded_tree()
+    assert tree[first_item]["state"] == "landed"
+    assert tree[second_item]["state"] == "queued"
+    assert tree[second_item]["waits"] == "lock"
+    tick(now=NOW + timedelta(seconds=2))
+    tree = folded_tree()
+    assert tree[second_item]["state"] == "landed"
     assert scratch_left() == []

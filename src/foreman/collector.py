@@ -976,12 +976,14 @@ def _queued_front_names() -> list[str]:
 def _queue_tick(cstate: dict, now_iso: str) -> None:
     """Start the oldest startable queued job per front, rewrite waits.
 
-    After observation and the anomaly passes. One start per front: the
-    first node whose wait is empty (``ready``) goes through
-    ``start_queued``. Every other queued node gets a revise line only
-    when its reason changed.
+    After observation and the anomaly passes. One model job per front
+    goes through ``start_queued``. A ``script`` node with ``lands``
+    whose wait is empty goes through ``landing.run`` (no slot); one
+    script per repository per tick. Every other queued node gets a
+    revise line only when its reason changed.
     """
     from . import fronts as fronts_mod
+    from . import landing as landing_mod
     from . import launch as launch_module
     from . import node as node_mod
     from . import progress as progress_mod
@@ -989,6 +991,7 @@ def _queue_tick(cstate: dict, now_iso: str) -> None:
     starts = cstate.get("queue_starts")
     if not isinstance(starts, list):
         starts = cstate["queue_starts"] = []
+    started_repos: set[str] = set()
     for name in _queued_front_names():
         record = fronts_mod.read_front_record(name)
         if record is None:
@@ -1008,7 +1011,32 @@ def _queue_tick(cstate: dict, now_iso: str) -> None:
                 continue
             waits = progress_mod.compute_node_waits(
                 name, node, by_id, record)
-            if not started and waits in ("", "ready"):
+            lands = str(node.get("lands") or "").strip()
+            role = str(node.get("role") or "").strip()
+            if role == "script" and lands and waits in ("", "ready"):
+                built = by_id.get(lands) or node
+                job = landing_mod._verified_job(name, built)
+                repo = landing_mod._landing_repo(name, record, built, job)
+                repo_key = os.path.realpath(repo) if repo else repo
+                if repo_key in started_repos:
+                    waits = "lock"
+                else:
+                    try:
+                        result = landing_mod.run(
+                            name, node, by=COLLECTOR_SUBJECT)
+                    except Exception as exc:  # noqa: BLE001
+                        waits = f"{type(exc).__name__}: {exc}"
+                    else:
+                        started_repos.add(repo_key)
+                        starts.append({
+                            "front": name, "node": nid,
+                            "job": "", "at": now_iso,
+                            "head": result.head, "ok": result.ok,
+                        })
+                        folded, by_id = node_mod._read_nodes(name)
+                        continue
+            if (not started and waits in ("", "ready")
+                    and role != "script"):
                 try:
                     job_id, err = launch_module.start_queued(
                         name, nid, by=COLLECTOR_SUBJECT)

@@ -1213,18 +1213,36 @@ def compute_node_waits(front: str, node: dict, by_id: dict[str, dict],
     the slot check. A node that names none is unchanged.
     Otherwise the front's reserved (or allocated) count for the node's
     job role, compared with what is held, is ``no slot`` when full.
+    A landing item (``lands = X``) treats X as ready once X's job is
+    verified, so it can be the thing that lands X. A ``backup-builder``
+    waits until a job of this node has failed. A ``script`` node with
+    ``lands`` skips the slot check and is ``ready`` for the tick; any
+    other script waits ``script runner``. Otherwise the front's reserved
+    (or allocated) count for the node's job role, compared with what is
+    held, is ``no slot`` when full.
     """
+    lands_id = str(node.get("lands") or "").strip()
     for dep in node.get("after") or []:
         dep_id = str(dep).strip()
         if not dep_id:
             continue
         other = by_id.get(dep_id)
+        if lands_id and dep_id == lands_id:
+            if other is None:
+                return f"dependency {dep_id}"
+            if str(other.get("state") or "") in ("verified", "landed"):
+                continue
+            if _node_has_verified_job(front, other):
+                continue
+            return f"dependency {dep_id}"
         if other is None or str(other.get("state") or "") != "landed":
             return f"dependency {dep_id}"
     role = str(node.get("role") or "").strip()
     if role == "backup-builder" and not _node_has_failed_job(front, node):
         return "backup builder: no failed run"
     if role == "script":
+        if lands_id:
+            return "ready"
         return "script runner"
     claimed = resources_mod.node_resources(node)
     if claimed:
@@ -1572,18 +1590,29 @@ def job_list_main(front: str) -> int:
         return _refuse(violations)
     assert record is not None
     folded, _by_id = node_mod._read_nodes(front_name)
-    queued = [node for node in folded
+    listed = [node for node in folded
               if node.get("kind") == "job"
-              and str(node.get("state") or "") in ("queued", "running")]
+              and (str(node.get("state") or "") in ("queued", "running")
+                   or (str(node.get("state") or "") in ("landed", "failed")
+                       and (node.get("lands") or node.get("role") == "script")))]
     lines = []
-    for node in _queue_order(queued):
+    for node in _queue_order(listed):
         nid = node.get("id")
         team_role = node.get("role") or ""
         job_role = _job_role_of_node(record, node)
-        if str(node.get("state") or "") == "running":
+        state = str(node.get("state") or "")
+        if state == "running":
             job_id = node.get("job") or ""
             lines.append(
                 f"{nid}  {team_role}  {job_role}  running {job_id}")
+        elif state == "landed":
+            sha = node.get("landed_sha") or node.get("head") or ""
+            lines.append(
+                f"{nid}  {team_role}  {job_role}  landed {sha}")
+        elif state == "failed":
+            reason = node.get("fail_reason") or ""
+            lines.append(
+                f"{nid}  {team_role}  {job_role}  failed: {reason}")
         else:
             waits = node.get("waits") or ""
             lines.append(
