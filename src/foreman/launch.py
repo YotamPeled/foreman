@@ -1517,6 +1517,7 @@ def import_verb_modules() -> None:
     from . import headless as _headless  # noqa: F401
     from . import hooks as _hooks  # noqa: F401
     from . import mcp as _mcp  # noqa: F401
+    from . import map as _map  # noqa: F401
     from . import measure as _measure  # noqa: F401
     from . import merge as _merge  # noqa: F401
     from . import migrate as _migrate  # noqa: F401

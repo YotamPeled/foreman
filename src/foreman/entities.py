@@ -323,6 +323,29 @@ class Measurement(Entity):
 
 
 @dataclass(frozen=True)
+class MapFact(Entity):
+    """One fact on a front's map ledger (``fronts/<name>/map.jsonl``).
+
+    ``basis`` is ``seen`` or ``assumed``. ``refs`` is a list of
+    ``{ref, sha}``; ``derived_from`` is fact ids this one was built from.
+    """
+
+    id: str | None = None
+    front: str = ""
+    repo: str = ""
+    section: str = ""
+    text: str = ""
+    basis: str = ""
+    refs: list = field(default_factory=list)
+    seen_at: str | None = None
+    seen_where: str = ""
+    commit: str = ""
+    derived_from: list = field(default_factory=list)
+    at: str | None = None
+    by: str | None = None
+
+
+@dataclass(frozen=True)
 class Checkpoint(Entity):
     session: str | None = None
     doing: str = ""

@@ -127,6 +127,10 @@ def front_measurements_path(name: str) -> Path:
     return front_dir(name) / "measurements.jsonl"
 
 
+def front_map_path(name: str) -> Path:
+    return front_dir(name) / "map.jsonl"
+
+
 def sessions_dir() -> Path:
     return state_dir() / "sessions"
 

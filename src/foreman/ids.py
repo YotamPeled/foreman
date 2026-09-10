@@ -30,6 +30,7 @@ KIND_PREFIXES = {
     "evidence": "evi",
     "finding": "fnd",
     "measurement": "msm",
+    "map": "map",
     "checkpoint": "chk",
     "inbox": "inb",
     "turn": "trn",
