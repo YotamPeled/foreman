@@ -132,6 +132,10 @@ def front_map_path(name: str) -> Path:
     return front_dir(name) / "map.jsonl"
 
 
+def front_tree_path(name: str) -> Path:
+    return front_dir(name) / "tree.jsonl"
+
+
 def sessions_dir() -> Path:
     return state_dir() / "sessions"
 

@@ -18,6 +18,9 @@ def test_state_and_config_follow_environment(tmp_path, monkeypatch):
     assert paths.front_map_path("corpus") == (
         tmp_path / "s" / "fronts" / "corpus" / "map.jsonl"
     )
+    assert paths.front_tree_path("corpus") == (
+        tmp_path / "s" / "fronts" / "corpus" / "tree.jsonl"
+    )
     assert paths.checkpoint_path("ses-1") == (
         tmp_path / "s" / "sessions" / "ses-1" / "checkpoint.json"
     )

@@ -18,6 +18,7 @@ from foreman.entities import (
     Job,
     MapFact,
     Measurement,
+    Node,
     Merge,
     Pool,
     Ruling,
@@ -176,6 +177,30 @@ INSTANCES = [
         at="2026-09-10T23:00:00+00:00",
         by="ses-sup0001",
     ),
+    Node(
+        id="nod-abc1234",
+        front="v5",
+        parent="v5",
+        kind="milestone",
+        title="the tree door",
+        repo="foreman",
+        what="node add is the one write door",
+        verify="python -m pytest tests -q",
+        must_not_touch="the old task ledger",
+        reason="decision 6",
+        break_="admit a node whose parent is a job",
+        property="a job parent is accepted",
+        scope="source-test",
+        role="builder",
+        after=[],
+        source="",
+        mechanical=False,
+        op="",
+        at="2026-09-10T00:40:00+00:00",
+        by="ses-sup0001",
+        state="",
+        reason_revised="",
+    ),
     Checkpoint(
         session="ses-abc1234",
         doing="splitting task",
@@ -236,6 +261,8 @@ def test_wire_names_for_keywords():
     assert Finding.from_dict({"on": "t", "class": "c"}).class_ == "c"
     assert Finding.from_dict({"on": "t", "class": "c"}).id is None
     assert InboxItem.from_dict({"from": "f"}).from_ == "f"
+    assert Node(break_="drop the door").to_dict()["break"] == "drop the door"
+    assert Node.from_dict({"break": "drop the door"}).break_ == "drop the door"
 
 
 def test_from_dict_ignores_unknown_keys():

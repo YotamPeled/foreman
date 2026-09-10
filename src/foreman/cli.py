@@ -52,6 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     from . import launch as _launch  # noqa: F401
     from . import mcp as _mcp  # noqa: F401
     from . import map as _map  # noqa: F401
+    from . import node as _node  # noqa: F401
     from . import panel_feed as _panel_feed  # noqa: F401
     from . import measure as _measure  # noqa: F401
     from . import merge as _merge  # noqa: F401
