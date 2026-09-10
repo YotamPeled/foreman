@@ -1,4 +1,4 @@
-"""`foreman front add|list|show|prefer|allocate|close`: a brief becomes a front on the ledger.
+"""`foreman front add|list|show|prefer|allocate|reserve|release|close`: a brief becomes a front on the ledger.
 
 ``front add <dir>`` reads ``<dir>/brief.toml`` with :mod:`tomllib`, refuses
 with every violation named at once (docs/DESIGN.md section 4.3), and otherwise
@@ -7,7 +7,10 @@ to ``fronts/<name>/tasks.jsonl``, then copies the brief (and ``plan.md`` when
 the directory has one) beside the config so the front no longer depends on the
 directory it came from. ``front prefer``, ``front allocate`` and ``front close`` never edit: they
 append a revised copy of the front line and readers fold last-wins, exactly
-like every other ledger in the state directory.
+like every other ledger in the state directory. ``front reserve`` and
+``front release`` write ``reservations.jsonl`` the same way: an open line
+holds the front's team against the pool cap until a revised copy carries
+``released_at``.
 """
 
 from __future__ import annotations
@@ -15,6 +18,7 @@ from __future__ import annotations
 import argparse
 import dataclasses
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -295,6 +299,196 @@ def read_front_record(name: str) -> dict | None:
     except OSError:
         return None
     return folded[-1] if folded else None
+
+
+#: Team roles that occupy the builders reservation phase.
+_BUILDER_TEAM_ROLES = ("builder", "backup-builder")
+#: Team roles that occupy the reviewers reservation phase.
+_REVIEWER_TEAM_ROLES = ("reviewer",)
+#: ``front reserve --phase`` values other than ``all``.
+RESERVE_PHASES = ("builders", "reviewers")
+
+
+def folded_reservations() -> list[dict]:
+    """Every reservation, folded last-wins, in first-appearance order."""
+    try:
+        records = store.read_ledger(paths.reservations_path())
+    except OSError:
+        return []
+    return store.fold_by_id(records)
+
+
+def open_reservations() -> list[dict]:
+    """Reservations that still hold a pool: no ``released_at`` on the fold."""
+    return [record for record in folded_reservations()
+            if record.get("released_at") is None]
+
+
+def front_has_open_reservation(front: str) -> bool:
+    return any(record.get("front") == front for record in open_reservations())
+
+
+def reserved_by_pool(*, except_front: str | None = None) -> dict[str, int]:
+    """Open reservation counts by pool, optionally skipping one front."""
+    held: dict[str, int] = {}
+    for record in open_reservations():
+        if except_front is not None and record.get("front") == except_front:
+            continue
+        pool = record.get("pool")
+        count = record.get("count")
+        if not (isinstance(pool, str) and pool):
+            continue
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            continue
+        held[pool] = held.get(pool, 0) + count
+    return held
+
+
+def reserved_by_front_role() -> dict[tuple[str, str], int]:
+    """Open reservation counts keyed by (front, job role)."""
+    held: dict[tuple[str, str], int] = {}
+    for record in open_reservations():
+        front, role = record.get("front"), record.get("role")
+        count = record.get("count")
+        if not (isinstance(front, str) and front
+                and isinstance(role, str) and role):
+            continue
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            continue
+        held[(front, role)] = held.get((front, role), 0) + count
+    return held
+
+
+def reserved_fronts() -> set[str]:
+    """Front names that currently hold at least one open reservation."""
+    names: set[str] = set()
+    for record in open_reservations():
+        front = record.get("front")
+        if isinstance(front, str) and front:
+            names.add(front)
+    return names
+
+
+def _phase_team_roles(phase: str) -> tuple[str, ...]:
+    if phase == "builders":
+        return _BUILDER_TEAM_ROLES
+    return _REVIEWER_TEAM_ROLES
+
+
+def _count_int(value: object) -> int | None:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        return None
+    return value
+
+
+def _wanted_reservations(record: dict,
+                         phases: tuple[str, ...]) -> list[tuple[str, str, int, str]]:
+    """(pool, job-role, count, phase) this front would reserve.
+
+    v5 fronts walk ``team``: builder and backup-builder are the builders
+    phase, reviewer the reviewers phase, supervisor nothing. Entries of
+    the same pool and phase sum. An old-shape front reserves its
+    ``allocation`` as the builders phase, keyed by the allocation's job
+    role.
+    """
+    wanted: dict[tuple[str, str], list] = {}
+    if record.get("shape") == "v5":
+        team = record.get("team")
+        team = team if isinstance(team, list) else []
+        for phase in phases:
+            roles = _phase_team_roles(phase)
+            for entry in team:
+                if not isinstance(entry, dict):
+                    continue
+                if entry.get("role") not in roles:
+                    continue
+                pool = entry.get("pool")
+                count = _count_int(entry.get("count"))
+                if not (isinstance(pool, str) and pool) or count is None:
+                    continue
+                job_role = _job_role_for_pool(pool) or pool
+                key = (pool, phase)
+                if key in wanted:
+                    wanted[key][1] += count
+                else:
+                    wanted[key] = [job_role, count]
+    elif "builders" in phases:
+        allocation = record.get("allocation")
+        allocation = allocation if isinstance(allocation, dict) else {}
+        for role, raw in allocation.items():
+            count = _count_int(raw)
+            if not (isinstance(role, str) and role) or count is None:
+                continue
+            pool = config.load().pool_for_role(role) or role
+            key = (pool, "builders")
+            if key in wanted:
+                wanted[key][1] += count
+            else:
+                wanted[key] = [role, count]
+    return [(pool, job_role, count, phase)
+            for (pool, phase), (job_role, count) in wanted.items()]
+
+
+def _others_on_pool(open_recs: list[dict], pool: str,
+                    except_front: str) -> tuple[int, list[str]]:
+    """(count, front names) of open reservations on ``pool`` not this front."""
+    total = 0
+    names: list[str] = []
+    seen: set[str] = set()
+    for record in open_recs:
+        if record.get("pool") != pool:
+            continue
+        front = record.get("front")
+        if not isinstance(front, str) or not front or front == except_front:
+            continue
+        count = record.get("count")
+        n = count if isinstance(count, int) and not isinstance(count, bool) else 0
+        if n < 0:
+            n = 0
+        total += n
+        if front not in seen:
+            seen.add(front)
+            names.append(front)
+    return total, names
+
+
+def _append_reservation_holding_the_lock(record: dict,
+                                         session_id: str | None) -> dict:
+    """Append one reservation line while the store's write lock is held."""
+    entry = dict(record)
+    if not entry.get("at"):
+        entry["at"] = store.utcnow_iso()
+    if session_id is not None and not entry.get("by"):
+        entry["by"] = session_id
+    if "build" not in entry:
+        entry["build"] = store.current_build()
+    ledger = Path(paths.reservations_path())
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    with open(ledger, "a", encoding="utf-8") as handle:
+        handle.write(json.dumps(entry) + "\n")
+        handle.flush()
+        os.fsync(handle.fileno())
+    return entry
+
+
+def release_front(name: str, by: str | None) -> int:
+    """Append ``released_at`` on every open reservation for ``name``.
+
+    Returns how many lines were released. A front with none is a no-op.
+    """
+    when = store.utcnow_iso()
+    released = 0
+    for record in folded_reservations():
+        if record.get("front") != name:
+            continue
+        if record.get("released_at") is not None:
+            continue
+        store.append_ledger(
+            paths.reservations_path(),
+            dict(record, released_at=when),
+            session_id=by)
+        released += 1
+    return released
 
 
 #: What the supervisor prompt's ``inputs`` field renders for a pre-v5 front.
@@ -1120,6 +1314,95 @@ def front_allocate_main(name: str, role: str, count: str | int) -> int:
     return 0
 
 
+def _reserve_phases(phase: str) -> tuple[str, ...]:
+    if phase == "all":
+        return RESERVE_PHASES
+    return (phase,)
+
+
+def front_reserve_main(name: str, phase: str = "builders") -> int:
+    """Hold this front's team against the pool cap until it is released.
+
+    For each team entry of ``phase`` (builder and backup-builder are
+    builders; reviewer is reviewers; supervisor nothing) append a
+    reservation unless one is already open for that front, pool and
+    phase. Refused, naming the numbers, when for any pool
+    ``cap - (open reservations of other fronts) < count``. An old-shape
+    front reserves its allocation as the builders phase.
+    """
+    me, violations = caller.resolve("front reserve")
+    caller.check_role(me, "front reserve", caller.FOREMAN,
+                      violations=violations)
+    if phase not in RESERVE_PHASES and phase != "all":
+        violations.append(
+            f"field '--phase' must be builders, reviewers or all "
+            f"(got '{phase}')")
+    record = _revised(name, violations)
+    if violations:
+        return Refusal(violations).report()
+    assert record is not None
+    key = name.strip()
+    phases = _reserve_phases(phase)
+    wanted = _wanted_reservations(record, phases)
+    who = caller.by_line(me)
+    created: list[dict] = []
+    with store._write_lock():
+        open_recs = open_reservations()
+        open_keys = {(rec.get("front"), rec.get("pool"), rec.get("phase"))
+                     for rec in open_recs}
+        to_create = [item for item in wanted
+                     if (key, item[0], item[3]) not in open_keys]
+        new_by_pool: dict[str, int] = {}
+        for pool, _role, count, _phase in to_create:
+            new_by_pool[pool] = new_by_pool.get(pool, 0) + count
+        for pool, count in new_by_pool.items():
+            cap = config.load().cap(pool)
+            if cap is None:
+                continue
+            reserved, others = _others_on_pool(open_recs, pool, key)
+            if cap - reserved < count:
+                by = f" by {', '.join(others)}" if others else ""
+                violations.append(
+                    f"pool {pool}: cap {cap}, reserved {reserved}{by}, "
+                    f"wants {count}")
+        if violations:
+            return Refusal(violations).report()
+        for pool, role, count, item_phase in to_create:
+            created.append(_append_reservation_holding_the_lock(
+                entities.Reservation(
+                    id=ids.mint("reservation"),
+                    front=key, pool=pool, role=role, count=count,
+                    phase=item_phase, released_at=None,
+                ).to_dict(),
+                who))
+    if created:
+        for rec in created:
+            print(f"{key}: reserved {rec['pool']} {rec['count']} "
+                  f"({rec['phase']})")
+    elif wanted:
+        print(f"{key}: reserved (already held)")
+    else:
+        print(f"{key}: reserved 0")
+    _reload_collector()
+    return 0
+
+
+def front_release_main(name: str) -> int:
+    """Give back every open reservation this front still holds."""
+    me, violations = caller.resolve("front release")
+    caller.check_role(me, "front release", caller.FOREMAN,
+                      violations=violations)
+    record = _revised(name, violations)
+    if violations:
+        return Refusal(violations).report()
+    assert record is not None
+    key = name.strip()
+    n = release_front(key, caller.by_line(me))
+    print(f"{key}: released {n}")
+    _reload_collector()
+    return 0
+
+
 def front_close_main(name: str, merged: str | None = None) -> int:
     """Mark a front done, landing its built tasks where told.
 
@@ -1158,6 +1441,7 @@ def front_close_main(name: str, merged: str | None = None) -> int:
         updated["monitors"] = record["monitors"]
     store.append_ledger(paths.front_record_path(key), updated,
                         session_id=caller.by_line(me))
+    release_front(key, caller.by_line(me))
     print(f"{key} closed")
     return 0
 
@@ -1221,6 +1505,7 @@ def front_done_main(name: str) -> int:
         updated["monitors"] = record["monitors"]
     store.append_ledger(paths.front_record_path(key), updated,
                         session_id=caller.by_line(me))
+    release_front(key, caller.by_line(me))
     print(f"{key} done")
     return 0
 
@@ -1385,6 +1670,16 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     allocate.add_argument("name", help="front name")
     allocate.add_argument("role", help="worker role")
     allocate.add_argument("count", help="new ceiling (non-negative integer)")
+    reserve = verbs.add_parser(
+        "reserve", help="Hold a front's team against the pool cap.")
+    reserve.add_argument("name", help="front name")
+    reserve.add_argument(
+        "--phase", default="builders",
+        choices=("builders", "reviewers", "all"),
+        help="builders, reviewers or all (default builders)")
+    release = verbs.add_parser(
+        "release", help="Give back a front's open reservations.")
+    release.add_argument("name", help="front name")
     close = verbs.add_parser("close", help="Mark a front done.")
     close.add_argument("name", help="front name")
     close.add_argument("--merged", default=None,
@@ -1399,8 +1694,8 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     done.add_argument("name", help="front name")
 
 
-@cli.subcommand("front", help="Add, list, show, prefer, allocate, close, take "
-                     "or mark a front done.")
+@cli.subcommand("front", help="Add, list, show, prefer, allocate, reserve, "
+                     "release, close, take or mark a front done.")
 def _front_entry(args: argparse.Namespace) -> int:
     if args.front_verb == "add":
         return front_add_main(args.directory, dry_run=args.dry_run,
@@ -1413,6 +1708,10 @@ def _front_entry(args: argparse.Namespace) -> int:
         return front_prefer_main(args.name, args.prefer)
     if args.front_verb == "allocate":
         return front_allocate_main(args.name, args.role, args.count)
+    if args.front_verb == "reserve":
+        return front_reserve_main(args.name, phase=args.phase)
+    if args.front_verb == "release":
+        return front_release_main(args.name)
     if args.front_verb == "close":
         return front_close_main(args.name, merged=args.merged)
     if args.front_verb == "take":

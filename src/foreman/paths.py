@@ -48,6 +48,15 @@ def slots_path() -> Path:
     return state_dir() / "slots.jsonl"
 
 
+def reservations_path() -> Path:
+    """Append-only front reservations, folded last-wins by id.
+
+    A front's team is held against the pool cap until the line carries
+    ``released_at``. Readers fold; nothing rewrites a line already written.
+    """
+    return state_dir() / "reservations.jsonl"
+
+
 def pools_path() -> Path:
     """Append-only pool state, folded last-wins by pool name.
 

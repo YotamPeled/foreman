@@ -26,6 +26,7 @@ KIND_PREFIXES = {
     "pool": "pol",
     "allocation": "alc",
     "slot": "slt",
+    "reservation": "rsv",
     "ruling": "rul",
     "evidence": "evi",
     "finding": "fnd",

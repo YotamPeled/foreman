@@ -281,6 +281,28 @@ class SlotGrant(Entity):
 
 
 @dataclass(frozen=True)
+class Reservation(Entity):
+    """A front's exclusive hold on a pool until it ends or is released.
+
+    Folded last-wins by id. An open line has no ``released_at``; release
+    appends a revised copy carrying one, the way a slot grant does.
+    ``role`` is the job role the pool serves (``opus`` on ``claude``),
+    not the team role (``builder``). ``phase`` is ``builders`` or
+    ``reviewers``.
+    """
+
+    id: str | None = None
+    front: str = ""
+    pool: str = ""
+    role: str = ""
+    count: int = 0
+    phase: str = ""
+    at: str | None = None
+    by: str | None = None
+    released_at: str | None = None
+
+
+@dataclass(frozen=True)
 class Ruling(Entity):
     id: str | None = None
     scope: str = ""
