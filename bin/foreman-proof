@@ -816,6 +816,64 @@ except Exception:
 '''
 
 
+def isolate_queued_fronts() -> None:
+    """Take leftover queued fronts off the start queue and drop their holds.
+
+    74f52fe starts the top queued front on every collector tick and
+    reserves its team. ``build_world`` leaves alpha and beta queued
+    (old-shape, muse=4 on the fake pool), so a later clause's tick
+    holds the cap against a front that clause never started. Milestone
+    5 clauses already retire those leftovers; 3.1/3.5/4.2/4.4/4.5 did
+    not.
+    """
+    state = Path(os.environ[STATE_ENV])
+    root = state / "fronts"
+    if root.is_dir():
+        for directory in root.iterdir():
+            if not directory.is_dir():
+                continue
+            path = directory / "front.jsonl"
+            if not path.is_file():
+                continue
+            rows: list[dict] = []
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    row = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(row, dict):
+                    rows.append(row)
+            if not rows:
+                continue
+            last = dict(rows[-1])
+            if last.get("state") == "queued":
+                last["state"] = "done"
+                with path.open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(last) + "\n")
+    path = state / "reservations.jsonl"
+    if not path.is_file():
+        return
+    folded: dict[str, dict] = {}
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        key = row.get("id") if isinstance(row, dict) else None
+        if isinstance(key, str) and key:
+            folded[key] = row
+    extra = [dict(rec, released_at="2026-09-10T12:00:00+00:00")
+             for rec in folded.values() if not rec.get("released_at")]
+    if extra:
+        with path.open("a", encoding="utf-8") as handle:
+            for rec in extra:
+                handle.write(json.dumps(rec) + "\n")
+
+
 def build_world(root: Path) -> dict:
     global _TEMP, _STATE, _CONFIG, _BIN
     _TEMP = root
@@ -1690,6 +1748,7 @@ def load_clause_file(path: Path):
     module.Skip = Skip
     module.run_foreman = run_foreman
     module.assert_world = assert_world
+    module.isolate_queued_fronts = isolate_queued_fronts
     sys.modules[name] = module
     spec.loader.exec_module(module)
     clause = getattr(module, "CLAUSE", None)

@@ -382,6 +382,7 @@ def _flake_landing(world, n: int) -> tuple[str, str, str]:
 
 def run(world) -> str:
     assert_world()
+    isolate_queued_fronts()
     n = world.get("_45_n", 0) + 1
     world["_45_n"] = n
     bound_front, node, moved = _bound_and_stale(world, n)

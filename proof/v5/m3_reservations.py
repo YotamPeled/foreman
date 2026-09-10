@@ -132,8 +132,26 @@ def _free_fake_held() -> None:
         run_foreman(["kill", sid, "--reason", "proof 3.1 needs held 0"])
 
 
+def _two_leaves(name: str) -> None:
+    """Two job leaves so working_team is 2 builders, not the no-tree 1."""
+    path = Path(os.environ["FOREMAN_STATE"]) / "fronts" / name / "tree.jsonl"
+    mil = f"mil-{name}"
+    rows = [
+        {"id": mil, "front": name, "parent": name,
+         "kind": "milestone", "title": "next", "state": ""},
+        {"id": f"job-{name}-1", "front": name, "parent": mil,
+         "kind": "job", "title": "leaf one", "state": ""},
+        {"id": f"job-{name}-2", "front": name, "parent": mil,
+         "kind": "job", "title": "leaf two", "state": ""},
+    ]
+    with path.open("a", encoding="utf-8") as handle:
+        for row in rows:
+            handle.write(json.dumps(row) + "\n")
+
+
 def run(world) -> str:
     assert_world()
+    isolate_queued_fronts()
     _free_fake_held()
     capped = run_foreman(["cap", "fake", "3"])
     if capped.returncode != 0:
@@ -145,6 +163,11 @@ def run(world) -> str:
     front_b = f"B{n}"
     _add_front(world, front_a, str(bare))
     _add_front(world, front_b, str(bare))
+    for name in (front_a, front_b):
+        _two_leaves(name)
+        teamed = run_foreman(["front", "team", name])
+        if teamed.returncode != 0:
+            raise Failure(f"front team {name} failed: {teamed.stderr[-800:]}")
     reserved = run_foreman(["front", "reserve", front_a, "--phase", "builders"])
     if reserved.returncode != 0:
         raise Failure(f"front reserve {front_a} failed: {reserved.stderr[-800:]}")

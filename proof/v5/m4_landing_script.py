@@ -247,6 +247,7 @@ BREAK = ("_run_locked pushes even when the check exits non-zero",
 
 def run(world) -> str:
     assert_world()
+    isolate_queued_fronts()
     n = world.get("_42_n", 0) + 1
     world["_42_n"] = n
 

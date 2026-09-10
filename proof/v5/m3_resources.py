@@ -175,6 +175,7 @@ BREAK = (
 
 def run(world) -> str:
     assert_world()
+    isolate_queued_fronts()
     _ensure_fixture_db()
     bare, src = _bare(world)
     n = world.get("_35_n", 0) + 1

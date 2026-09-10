@@ -233,6 +233,7 @@ BREAK = ("a failed landing wakes the supervisor with 'job returned'",
 
 def run(world) -> str:
     assert_world()
+    isolate_queued_fronts()
     n = world.get("_44_n", 0) + 1
     world["_44_n"] = n
     env = make_world(world, f"m4find{n}")
