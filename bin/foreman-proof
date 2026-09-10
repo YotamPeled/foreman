@@ -635,6 +635,180 @@ def write_spec(path: Path, *, exit_code: int, artifact: str,
     return path
 
 
+# Sitecustomize loaded into every CLI child (and this process) via PYTHONPATH.
+# Clause 3.3 wraps cmd_launch. Clauses 5.1 and 5.2 wrap the systemd door,
+# the window launcher, and the headless supervisor spawn so the isolated
+# world never reaches a real unit or vendor binary.
+SITECUSTOMIZE = r'''
+import json
+import os
+from pathlib import Path
+
+
+def _wrap_launch():
+    log = os.environ.get("FOREMAN_PROOF_LAUNCH_LOG")
+    if not log:
+        return
+    from foreman import launch as launch_mod
+
+    real = launch_mod.cmd_launch
+
+    def wrapped(args):
+        bits = []
+        role = getattr(args, "role", None)
+        pool = getattr(args, "pool", None)
+        spec = getattr(args, "spec", None)
+        if role:
+            bits.append(str(role))
+        if pool:
+            bits.append(str(pool))
+        if spec:
+            bits.append(str(spec))
+        for name, value in vars(args).items():
+            if name in ("role", "pool", "spec"):
+                continue
+            flag = "--" + name.replace("_", "-")
+            if value is True:
+                bits.append(flag)
+            elif value is False or value is None:
+                continue
+            elif isinstance(value, (list, tuple)):
+                for item in value:
+                    bits.extend([flag, str(item)])
+            else:
+                bits.extend([flag, str(value)])
+        path = Path(log)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(" ".join(bits) + "\n")
+        return real(args)
+
+    launch_mod.cmd_launch = wrapped
+
+
+def _wrap_systemctl():
+    # Clause 5.1: captured systemd door. Records every call and answers
+    # is-active from a state file; never reaches the machine's user manager.
+    log = os.environ.get("FOREMAN_PROOF_SYSTEMCTL_LOG")
+    state_path = os.environ.get("FOREMAN_PROOF_SYSTEMCTL_STATE")
+    if not log or not state_path:
+        return
+    from foreman import collector
+
+    def wrapped(*args):
+        path = Path(log)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(" ".join(str(a) for a in args) + "\n")
+        try:
+            state = json.loads(Path(state_path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError, ValueError):
+            state = {}
+        if not isinstance(state, dict):
+            state = {}
+        if args and args[0] == "is-active":
+            return (0 if state.get("active") else 3), ""
+        if args and args[0] in ("enable", "start"):
+            state["active"] = True
+            Path(state_path).write_text(json.dumps(state) + "\n",
+                                        encoding="utf-8")
+        return 0, ""
+
+    collector.systemctl = wrapped
+
+
+def _wrap_spawn_and_wait():
+    # Clause 5.1: captured window launcher. Refuses a missing executable
+    # or a missing run script the way production would, writes the world's
+    # live pid, starts nothing.
+    log = os.environ.get("FOREMAN_PROOF_SPAWN_WAIT_LOG")
+    if not log:
+        return
+    from foreman.pools import _common
+
+    def wrapped(argv, *, pid_path, session_id, popen):
+        launcher = next(a for a in argv
+                        if not str(a).startswith(("env", "AGENT_WS")))
+        if not os.access(launcher, os.X_OK):
+            raise FileNotFoundError(launcher)
+        script = Path(argv[-1])
+        if len(argv) < 2 or argv[-2] != "bash" or not script.is_file():
+            raise AssertionError(
+                "no run script to hand the window: %s" % (argv,))
+        text = script.read_text(encoding="utf-8")
+        path = Path(log)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write("===SPAWN===\n")
+            handle.write(" ".join(str(a) for a in argv) + "\n")
+            handle.write(text)
+            if not text.endswith("\n"):
+                handle.write("\n")
+        raw = os.environ.get("FOREMAN_PROOF_SPAWN_PID") or "0"
+        pid = int(raw)
+        Path(pid_path).parent.mkdir(parents=True, exist_ok=True)
+        Path(pid_path).write_text("%s\n" % pid, encoding="utf-8")
+        return pid
+
+    _common.spawn_and_wait = wrapped
+
+
+def _wrap_supervisor():
+    # Clause 5.2: captured supervisor spawn. Rosters a headless session
+    # and records the model and effort; never runs a first turn.
+    log = os.environ.get("FOREMAN_PROOF_SUPERVISOR_LOG")
+    if not log:
+        return
+    from foreman import fronts, ids, launch as launch_mod, paths, store
+    from foreman.entities import Session
+
+    def wrapped(args, *, front, record, repo, branch):
+        sid = ids.mint("session")
+        model = getattr(args, "model", None) or ""
+        effort = getattr(args, "effort", None) or ""
+
+        def add(roster):
+            if not isinstance(roster, dict):
+                roster = {"sessions": {}}
+            sessions = roster.setdefault("sessions", {})
+            sessions[sid] = Session(
+                id=sid, role="supervisor", pool="opus",
+                model=model, front=front, state="running",
+                headless=True,
+            ).to_dict()
+            return roster
+
+        store.update_snapshot(paths.roster_path(), add,
+                              default={"sessions": {}})
+        fronts.set_front_supervisor(front, sid, by="collector")
+        print("session: %s" % sid)
+        path = Path(log)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "front": front, "session": sid, "model": model,
+                "effort": effort, "repo": str(repo or ""),
+                "branch": str(branch or ""),
+            }) + "\n")
+        return 0
+
+    launch_mod.launch_supervisor_headless = wrapped
+
+
+def _install():
+    _wrap_launch()
+    _wrap_systemctl()
+    _wrap_spawn_and_wait()
+    _wrap_supervisor()
+
+
+try:
+    _install()
+except Exception:
+    pass
+'''
+
+
 def build_world(root: Path) -> dict:
     global _TEMP, _STATE, _CONFIG, _BIN
     _TEMP = root
@@ -663,57 +837,38 @@ def build_world(root: Path) -> dict:
     spawn_log.write_text("", encoding="utf-8")
     os.environ["FOREMAN_PROOF_LAUNCH_LOG"] = str(launch_log)
     os.environ["FOREMAN_PROOF_SPAWN_LOG"] = str(spawn_log)
+
+    # Clause 5.1: captured systemd door and window launcher. A long-lived
+    # pid lets live_foreman see the spawned foreman after `start` returns.
+    systemctl_log = _BIN / "systemctl-calls.log"
+    systemctl_state = _BIN / "systemctl-state.json"
+    spawn_wait_log = _BIN / "spawn-and-wait.log"
+    systemctl_log.write_text("", encoding="utf-8")
+    systemctl_state.write_text('{"active": false}\n', encoding="utf-8")
+    spawn_wait_log.write_text("", encoding="utf-8")
+    os.environ["FOREMAN_PROOF_SYSTEMCTL_LOG"] = str(systemctl_log)
+    os.environ["FOREMAN_PROOF_SYSTEMCTL_STATE"] = str(systemctl_state)
+    os.environ["FOREMAN_PROOF_SPAWN_WAIT_LOG"] = str(spawn_wait_log)
+    sleeper = subprocess.Popen(
+        ["sleep", "3600"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        start_new_session=True)
+    _HOLDS.append(sleeper)
+    os.environ["FOREMAN_PROOF_SPAWN_PID"] = str(sleeper.pid)
+    launcher = _BIN / "window-launcher"
+    launcher.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    launcher.chmod(0o755)
+    os.environ["FOREMAN_WINDOW_LAUNCHER"] = str(launcher)
+    os.environ["HOME"] = str(root / "home")
+
+    # Clause 5.2: captured supervisor spawn log.
+    supervisor_log = _BIN / "supervisor-spawn.log"
+    supervisor_log.write_text("", encoding="utf-8")
+    os.environ["FOREMAN_PROOF_SUPERVISOR_LOG"] = str(supervisor_log)
+
     pypath = root / "pypath"
     pypath.mkdir()
-    (pypath / "sitecustomize.py").write_text(
-        "import os\n"
-        "from pathlib import Path\n"
-        "\n"
-        "_LOG = os.environ.get('FOREMAN_PROOF_LAUNCH_LOG')\n"
-        "\n"
-        "def _install():\n"
-        "    if not _LOG:\n"
-        "        return\n"
-        "    from foreman import launch as launch_mod\n"
-        "    real = launch_mod.cmd_launch\n"
-        "\n"
-        "    def wrapped(args):\n"
-        "        bits = []\n"
-        "        role = getattr(args, 'role', None)\n"
-        "        pool = getattr(args, 'pool', None)\n"
-        "        spec = getattr(args, 'spec', None)\n"
-        "        if role:\n"
-        "            bits.append(str(role))\n"
-        "        if pool:\n"
-        "            bits.append(str(pool))\n"
-        "        if spec:\n"
-        "            bits.append(str(spec))\n"
-        "        for name, value in vars(args).items():\n"
-        "            if name in ('role', 'pool', 'spec'):\n"
-        "                continue\n"
-        "            flag = '--' + name.replace('_', '-')\n"
-        "            if value is True:\n"
-        "                bits.append(flag)\n"
-        "            elif value is False or value is None:\n"
-        "                continue\n"
-        "            elif isinstance(value, (list, tuple)):\n"
-        "                for item in value:\n"
-        "                    bits.extend([flag, str(item)])\n"
-        "            else:\n"
-        "                bits.extend([flag, str(value)])\n"
-        "        path = Path(_LOG)\n"
-        "        path.parent.mkdir(parents=True, exist_ok=True)\n"
-        "        with path.open('a', encoding='utf-8') as handle:\n"
-        "            handle.write(' '.join(bits) + '\\n')\n"
-        "        return real(args)\n"
-        "\n"
-        "    launch_mod.cmd_launch = wrapped\n"
-        "\n"
-        "try:\n"
-        "    _install()\n"
-        "except Exception:\n"
-        "    pass\n",
-        encoding="utf-8")
+    (pypath / "sitecustomize.py").write_text(SITECUSTOMIZE, encoding="utf-8")
     existing = os.environ.get("PYTHONPATH", "")
     os.environ["PYTHONPATH"] = str(pypath) + (
         os.pathsep + existing if existing else "")
@@ -747,6 +902,11 @@ def build_world(root: Path) -> dict:
         "argv_log": _BIN / "vendor-argv.log",
         "launch_log": launch_log,
         "spawn_log": spawn_log,
+        "systemctl_log": systemctl_log,
+        "systemctl_state": systemctl_state,
+        "spawn_wait_log": spawn_wait_log,
+        "supervisor_log": supervisor_log,
+        "window_launcher": launcher,
         "bin": _BIN,
     }
 
