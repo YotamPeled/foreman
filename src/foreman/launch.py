@@ -844,6 +844,25 @@ def cmd_launch(args: argparse.Namespace) -> int:
         except Refused as exc:
             problems.append(str(exc))
 
+    # A review of --branch resolves the same way: fetch, prefer
+    # origin/<branch>, say which. A missing local branch with no origin
+    # keeps the existing refusal, collected here with the rest.
+    review_start: str | None = None
+    review_note: str | None = None
+    if args.kind == "review" and args.branch and os.path.isdir(repo):
+        try:
+            start, sha, note = resolve_base(repo, args.branch)
+        except Refused as exc:
+            problems.append(str(exc))
+        else:
+            if sha:
+                review_start = start
+                review_note = note
+            else:
+                problems.append(
+                    f"branch {args.branch!r} does not exist in {repo}; "
+                    f"a review reads an existing branch")
+
     spec_text: str | None = None
     if args.spec is not None and os.path.isabs(args.spec):
         try:
@@ -888,12 +907,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
     created_branch = True
     try:
         if args.kind == "review" and args.branch:
-            if not local_branch_exists(repo, args.branch):
-                return refuse(
-                    f"branch {args.branch!r} does not exist in {repo}; "
-                    f"a review reads an existing branch")
             run_git(repo, "worktree", "add", "--detach", worktree,
-                    args.branch)
+                    review_start or args.branch)
             created_branch = False
         else:
             run_git(repo, "worktree", "add", "-b", branch, worktree,
@@ -1096,6 +1111,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
 
     if base_note:
         print(base_note)
+    if review_note and review_note != base_note:
+        print(review_note)
     print(f"session: {session_id}")
     print(f"worktree: {worktree}")
     print(f"log: {log_path}")

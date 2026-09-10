@@ -113,6 +113,26 @@ def clone_behind_origin(root: Path) -> tuple[Path, Path, str, str]:
     return repo, origin, local_sha, origin_sha
 
 
+def feature_behind_origin(root: Path) -> tuple[Path, Path, str, str]:
+    """Local ``feature`` is one commit behind origin's ``feature``."""
+    repo, origin = make_repo_with_origin(root)
+    git(repo, "checkout", "-qb", "feature")
+    (repo / "feature.txt").write_text("feature\n", encoding="utf-8")
+    git(repo, "add", "feature.txt")
+    git(repo, "commit", "-qm", "feature")
+    git(repo, "push", "-q", "origin", "HEAD:refs/heads/feature")
+    (repo / "on-origin.txt").write_text("origin feature\n", encoding="utf-8")
+    git(repo, "add", "on-origin.txt")
+    git(repo, "commit", "-qm", "on origin feature")
+    origin_sha = git(repo, "rev-parse", "HEAD")
+    git(repo, "push", "-q", "origin", "HEAD:refs/heads/feature")
+    git(repo, "reset", "-q", "--hard", "HEAD~1")
+    local_sha = git(repo, "rev-parse", "HEAD")
+    git(repo, "checkout", "-q", "main")
+    assert local_sha != origin_sha
+    return repo, origin, local_sha, origin_sha
+
+
 def write_spec(root: Path) -> str:
     spec = root / "spec.md"
     spec.write_text(SPEC_OK, encoding="utf-8")
@@ -234,6 +254,72 @@ def test_ahead_of_origin_still_cuts_from_origin(env, fake_pool, capsys):
     assert (f"base main: local {local_sha[:7]} is ahead of "
             f"origin {origin_sha[:7]}; using origin") in out.splitlines()
     assert git(worktree, "rev-parse", "HEAD~0") == origin_sha
+
+
+def test_review_cuts_detached_from_origin_when_local_is_behind(
+        env, fake_pool, capsys):
+    repo, _origin, local_sha, origin_sha = feature_behind_origin(env / "world")
+    spec = write_spec(env)
+    worktree = env / "wt-review"
+    rc = launch(["astra", "fake", spec, "--repo", str(repo),
+                 "--worktree", str(worktree), "--kind", "review",
+                 "--branch", "feature", "--front", "corpus",
+                 "--job", "job-rev", "--units", "0"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert behind_line("feature", local_sha, origin_sha) in out.splitlines()
+    assert git(worktree, "rev-parse", "HEAD~0") == origin_sha
+    assert git(worktree, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+    assert git(repo, "rev-parse", "feature") == local_sha
+    jobs = store.read_ledger(paths.front_jobs_path("corpus"))
+    assert jobs[-1]["id"] == "job-rev"
+    assert jobs[-1]["branch"] == "feature"
+
+
+def test_review_dry_run_prints_behind_line_and_writes_nothing(
+        env, fake_pool, capsys):
+    repo, _origin, local_sha, origin_sha = feature_behind_origin(env / "world")
+    spec = write_spec(env)
+    worktree = env / "wt-review-dry"
+    rc = launch(["astra", "fake", spec, "--repo", str(repo),
+                 "--worktree", str(worktree), "--kind", "review",
+                 "--branch", "feature", "--dry-run"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert behind_line("feature", local_sha, origin_sha) in out.splitlines()
+    assert not worktree.exists()
+    assert git(repo, "rev-parse", "feature") == local_sha
+    assert not paths.roster_path().exists()
+
+
+def test_review_no_remote_cuts_from_local_and_prints_the_line(
+        env, fake_pool, capsys):
+    repo, _origin, local_sha, _origin_sha = feature_behind_origin(env / "world")
+    git(repo, "remote", "remove", "origin")
+    spec = write_spec(env)
+    worktree = env / "wt-review-noremote"
+    rc = launch(["astra", "fake", spec, "--repo", str(repo),
+                 "--worktree", str(worktree), "--kind", "review",
+                 "--branch", "feature"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert (f"base feature: no remote; local {local_sha[:7]}"
+            in out.splitlines())
+    assert git(worktree, "rev-parse", "HEAD~0") == local_sha
+    assert git(worktree, "rev-parse", "--abbrev-ref", "HEAD") == "HEAD"
+
+
+def test_review_branch_origin_lacks_is_refused(env, fake_pool, capsys):
+    repo, _origin, _local_sha, _origin_sha = clone_behind_origin(env / "world")
+    spec = write_spec(env)
+    worktree = env / "wt-review-nope"
+    rc = launch(["astra", "fake", spec, "--repo", str(repo),
+                 "--worktree", str(worktree), "--kind", "review",
+                 "--branch", "nope"])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "nope" in err
+    assert not worktree.exists()
 
 
 def test_diverged_from_origin_still_cuts_from_origin(
