@@ -40,16 +40,17 @@ PANEL_BRIEF = ROOT / "briefs" / "panel"
 #: disagreeing with the table.
 SUPERVISOR_TOOLS = frozenset({
     "ask", "attach", "checkpoint", "doctor", "evidence", "finding",
-    "front_done", "front_take", "job_fail", "job_repoint", "job_verify",
-    "kill", "launch",
-    "map_add", "measure", "merge_request", "pool_list", "register", "relaunch", "rule",
+    "front_done", "front_take", "job_fail", "job_repoint", "job_verify", "kill", "launch",
+    "map_add", "map_show", "measure", "merge_request", "pool_list", "register",
+    "relaunch", "rule",
     "status", "task_add", "task_built", "task_landed", "task_reset", "turn",
     "version", "wait", "wake",
 })
 #: The foreman role's own row: answers and rules, never front or job verbs.
 FOREMAN_TOOLS = frozenset({
     "answer", "attach", "checkpoint", "doctor", "front_allocate", "inbox",
-    "kill", "launch", "pool_list", "register", "relaunch", "rule", "status",
+    "kill", "launch", "map_show", "pool_list", "register", "relaunch", "rule",
+    "status",
     "tell", "turn", "version", "wait", "wake",
 })
 #: A worker holds no verb, so only the gateless one survives.
@@ -160,7 +161,7 @@ def test_owner_without_a_session_lists_everything_but_the_transport(
     # plus turn from the collector-carries job, the tick's hands; plus
     # wait from the ledger-waiter job, the collector's verdict.
     # Counted, not derived, so a verb added without intent fails here.
-    assert len(names) == 49
+    assert len(names) == 50
 
 
 def test_unknown_session_lists_only_the_open_verbs(env, monkeypatch):

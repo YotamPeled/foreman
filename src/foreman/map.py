@@ -2,16 +2,17 @@
 
 ``map add`` appends one fact to ``fronts/<name>/map.jsonl``. Only the
 front's own supervisor (or the owner at a terminal) may write. ``map
-show`` folds the ledger back; that lands in a later commit on this
-module.
+show`` folds the ledger, grouped by repo then section in first-appearance
+order; the foreman, the front's supervisor and the owner may read it.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 
 from . import caller, cli, entities, fronts, ids, paths, store
-from .caller import Refusal
+from .caller import FOREMAN, SUPERVISOR, Refusal
 
 
 def _refuse(violations: list[str]) -> int:
@@ -143,6 +144,84 @@ def map_add_main(front: str, repo: str | None, section: str | None,
     return 0
 
 
+def _sha7(sha: object) -> str:
+    return str(sha or "")[:7]
+
+
+def _format_fact(fact: dict) -> str:
+    basis = fact.get("basis") or ""
+    text = fact.get("text") or ""
+    line = f"- [{basis}] {text}"
+    refs = fact.get("refs") if isinstance(fact.get("refs"), list) else []
+    bits: list[str] = []
+    for ref in refs:
+        if not isinstance(ref, dict):
+            continue
+        bits.append(f"(ref {ref.get('ref') or ''} = {_sha7(ref.get('sha'))})")
+    if bits:
+        line = f"{line} {' '.join(bits)}"
+    return line
+
+
+def _grouped(facts: list[dict]
+             ) -> list[tuple[str, list[tuple[str, list[dict]]]]]:
+    repo_order: list[str] = []
+    sections_for: dict[str, list[str]] = {}
+    facts_for: dict[tuple[str, str], list[dict]] = {}
+    for fact in facts:
+        repo = str(fact.get("repo") or "")
+        section = str(fact.get("section") or "")
+        if repo not in sections_for:
+            repo_order.append(repo)
+            sections_for[repo] = []
+        if section not in sections_for[repo]:
+            sections_for[repo].append(section)
+        facts_for.setdefault((repo, section), []).append(fact)
+    return [
+        (repo, [(section, facts_for[(repo, section)])
+                for section in sections_for[repo]])
+        for repo in repo_order
+    ]
+
+
+def map_show_main(front: str, repo: str | None = None,
+                  as_json: bool = False) -> int:
+    verb = "map show"
+    me, violations = caller.resolve(verb)
+    front_name = (front or "").strip()
+    if not front_name:
+        violations.append("field 'front' is required")
+    record = fronts.read_front_record(front_name) if front_name else None
+    if front_name and record is None:
+        violations.append(f"unknown front '{front_name}'")
+    if me is not None and me.role == SUPERVISOR:
+        caller.check_front_supervisor(me, front_name or None, verb,
+                                      violations=violations)
+    else:
+        caller.check_role(me, verb, FOREMAN, violations=violations)
+    repo_name = (repo or "").strip()
+    if violations:
+        return _refuse(violations)
+    facts, _by_id = _read_facts(front_name)
+    if repo_name:
+        facts = [fact for fact in facts if fact.get("repo") == repo_name]
+    if as_json:
+        print(json.dumps(facts))
+        return 0
+    if not facts:
+        print("(no map yet)")
+        return 0
+    chunks: list[str] = []
+    for repo_title, sections in _grouped(facts):
+        lines = [repo_title]
+        for section, group in sections:
+            lines.append(section)
+            lines.extend(_format_fact(fact) for fact in group)
+        chunks.append("\n".join(lines))
+    print("\n\n".join(chunks))
+    return 0
+
+
 def add_map_arguments(sub: argparse.ArgumentParser) -> None:
     verbs = sub.add_subparsers(dest="map_verb", required=True)
     add = verbs.add_parser("add", help="Append a fact to the front's map.")
@@ -166,6 +245,12 @@ def add_map_arguments(sub: argparse.ArgumentParser) -> None:
     add.add_argument("--from", dest="derived_from", action="append",
                      default=None,
                      help="fact id this one is derived from (repeatable)")
+    show = verbs.add_parser("show", help="Print the front's folded map.")
+    show.add_argument("front", help="front whose map to print")
+    show.add_argument("--repo", default=None,
+                      help="restrict to this repository")
+    show.add_argument("--json", dest="as_json", action="store_true",
+                      help="print the folded list as JSON")
 
 
 @cli.subcommand("map", help="Write or read the front's map.")
@@ -175,6 +260,9 @@ def _map_entry(args: argparse.Namespace) -> int:
                             seen=args.seen, assumed=args.assumed,
                             where=args.where, commit=args.commit,
                             derived_from=args.derived_from)
+    if args.map_verb == "show":
+        return map_show_main(args.front, repo=args.repo,
+                             as_json=args.as_json)
     raise AssertionError(f"unknown map verb {args.map_verb!r}")
 
 

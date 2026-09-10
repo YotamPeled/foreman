@@ -6,6 +6,7 @@ v5-shape front whose repository is named ``foreman``.
 
 from __future__ import annotations
 
+import json
 import subprocess
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -310,3 +311,121 @@ def test_map_add_neither_basis_and_empty_fields_are_refused(
     assert "seen" in err
     assert "assumed" in err
     assert store.read_ledger(paths.front_map_path("v5shape")) == []
+
+
+def test_map_show_prints_under_repo_and_section(env, monkeypatch, capsys):
+    """map show prints the added fact under its repo and section, tagged."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    assert run(monkeypatch, add_argv(), SUP) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["map", "show", "v5shape"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert "foreman" in out
+    assert "Storage" in out
+    assert "- [seen] store.py is the one writer" in out
+
+
+def test_map_show_empty_prints_no_map_yet(env, monkeypatch, capsys):
+    """A front with no facts prints (no map yet)."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    assert run(monkeypatch, ["map", "show", "v5shape"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.strip() == "(no map yet)"
+
+
+def test_map_show_json_prints_the_folded_list(env, monkeypatch, capsys):
+    """--json prints the folded list, not the text rendering."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    assert run(monkeypatch, add_argv(), SUP) == 0
+    fid = capsys.readouterr().out.strip()
+    assert run(monkeypatch, ["map", "show", "v5shape", "--json"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    folded = json.loads(out)
+    assert isinstance(folded, list)
+    assert len(folded) == 1
+    assert folded[0]["id"] == fid
+    assert folded[0]["text"] == "store.py is the one writer"
+    assert folded[0]["basis"] == "seen"
+
+
+def test_map_show_groups_by_first_appearance_and_prints_refs(
+        env, monkeypatch, capsys):
+    """Repos then sections keep first-appearance order; refs render sha7."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    assert run(monkeypatch, add_argv(section="Storage", fact="first"), SUP) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, add_argv(section="Tests", fact="second",
+                                     assumed=True, seen=False), SUP) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, add_argv(section="Storage", fact="third"), SUP) == 0
+    capsys.readouterr()
+    store.append_ledger(paths.front_map_path("v5shape"), {
+        "id": "map-ref0001", "front": "v5shape", "repo": "other",
+        "section": "Notes", "text": "a resolved ref", "basis": "seen",
+        "refs": [{"ref": "origin/main",
+                  "sha": "2058289403fe5cfaaee52db50ba1da79337826dd"}],
+        "seen_at": iso(NOW), "seen_where": "git ls-remote",
+        "commit": "2058289403fe5cfaaee52db50ba1da79337826dd",
+        "derived_from": [],
+    }, session_id=SUP)
+    assert run(monkeypatch, ["map", "show", "v5shape"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.index("foreman") < out.index("other")
+    assert out.index("Storage") < out.index("Tests")
+    assert out.index("first") < out.index("third")
+    assert "- [seen] first" in out
+    assert "- [assumed] second" in out
+    assert "- [seen] third" in out
+    assert "- [seen] a resolved ref (ref origin/main = 2058289)" in out
+    assert run(monkeypatch, ["map", "show", "v5shape", "--repo", "foreman"],
+               SUP) == 0
+    filtered, _ = capsys.readouterr()
+    assert "foreman" in filtered
+    assert "other" not in filtered
+    assert "a resolved ref" not in filtered
+
+
+def test_map_show_readable_by_foreman_and_owner_not_worker(
+        env, monkeypatch, capsys):
+    """Foreman and owner may read; a worker and another supervisor may not."""
+    add_front(env, monkeypatch, capsys)
+    seed_roster(
+        session_entry(SUP, "supervisor", "v5shape"),
+        session_entry("ses-for0001", "foreman", None),
+        session_entry(WORKER, "muse", "v5shape"),
+        session_entry(OTHER_SUP, "supervisor", "elsewhere"),
+    )
+    assert run(monkeypatch, add_argv(), SUP) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["map", "show", "v5shape"], "ses-for0001") == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert "- [seen] store.py is the one writer" in out
+    assert run(monkeypatch, ["map", "show", "v5shape"], None) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert "- [seen] store.py is the one writer" in out
+    assert run(monkeypatch, ["map", "show", "v5shape"], WORKER) == 1
+    _, err = capsys.readouterr()
+    assert "muse" in err
+    assert run(monkeypatch, ["map", "show", "v5shape"], OTHER_SUP) == 1
+    _, err = capsys.readouterr()
+    assert "elsewhere" in err
+    assert "v5shape" in err
+
+
+def test_map_show_unknown_front_is_refused(env, monkeypatch, capsys):
+    """Unknown front is refused; an empty existing front is not unknown."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    assert run(monkeypatch, ["map", "show", "missing"], SUP) == 1
+    _, err = capsys.readouterr()
+    assert "missing" in err
