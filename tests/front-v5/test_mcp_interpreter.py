@@ -19,11 +19,13 @@ from pathlib import Path
 
 import pytest
 
+from foreman import cli
 from foreman import mcp as mcp_module
 from foreman import launch as launch_module
 from foreman.caller import SESSION_ENV
 
 ROOT = Path(__file__).resolve().parents[2]
+PANEL_BRIEF = ROOT / "briefs" / "panel"
 
 
 @pytest.fixture()
@@ -72,6 +74,13 @@ def fake_foreman(bindir: Path, *, succeed: bool) -> Path:
 def written_server(session_id: str) -> dict:
     path = mcp_module.write_mcp_config(session_id)
     return json.loads(path.read_text(encoding="utf-8"))["mcpServers"]["foreman"]
+
+
+def line(out: str, prefix: str) -> str:
+    for row in out.splitlines():
+        if row.startswith(prefix):
+            return row.split(prefix, 1)[1].strip()
+    raise AssertionError(f"no {prefix!r} line in output:\n{out}")
 
 
 def test_fallback_to_installed_foreman_when_interpreter_cannot_import(
@@ -141,3 +150,37 @@ def test_real_interpreter_config_starts_a_server_that_lists_tools(env):
     tools = replies[1]["result"]["tools"]
     assert isinstance(tools, list)
     assert any(tool["name"] == "version" for tool in tools)
+
+
+def make_repo(path: Path) -> Path:
+    path.mkdir(parents=True, exist_ok=True)
+
+    def run(*args: str) -> None:
+        subprocess.run(["git", *args], cwd=path, check=True,
+                       stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                       text=True)
+    run("init", "-q", "-b", "main")
+    run("config", "user.email", "test@example.invalid")
+    run("config", "user.name", "test")
+    (path / "seed.txt").write_text("seed\n", encoding="utf-8")
+    run("add", "seed.txt")
+    run("commit", "-qm", "seed")
+    return path
+
+
+def test_summon_prints_which_interpreter_was_probed(env, capsys):
+    """The roster's owner sees which command the probe accepted.
+
+    Fails on a summon that writes the config silently, so a dead
+    interpreter is only discovered when Claude fails to start the server.
+    """
+    repo = make_repo(env / "repo")
+    assert cli.main(["front", "add", str(PANEL_BRIEF)]) == 0
+    capsys.readouterr()
+    assert cli.main(["launch", "supervisor", "panel", "--workspace", "6",
+                     "--repo", str(repo), "--dry-run"]) == 0
+    out = capsys.readouterr().out
+    path = mcp_module.mcp_config_path(line(out, "session: "))
+    command = json.loads(path.read_text(encoding="utf-8"))[
+        "mcpServers"]["foreman"]["command"]
+    assert f"mcp: {command} (probed)" in out.splitlines()

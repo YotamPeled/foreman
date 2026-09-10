@@ -2009,6 +2009,18 @@ def print_world() -> None:
                   f"the default one)")
 
 
+def _print_probed_mcp(mcp_config: Path) -> None:
+    """The config path, then which interpreter the probe accepted."""
+    print(f"mcp config: {mcp_config}")
+    try:
+        payload = json.loads(mcp_config.read_text(encoding="utf-8"))
+        command = payload["mcpServers"]["foreman"]["command"]
+    except (OSError, json.JSONDecodeError, KeyError, TypeError):
+        return
+    if isinstance(command, str) and command:
+        print(f"mcp: {command} (probed)")
+
+
 def _print_supervisor(session_id: str, vendor_id: str, role_prompt: Path,
                       workspace: str | None, pid: int | None,
                       argv: list[str], inner: str,
@@ -2019,7 +2031,7 @@ def _print_supervisor(session_id: str, vendor_id: str, role_prompt: Path,
     print(f"vendor session: {vendor_id}")
     print(f"role prompt: {role_prompt}")
     if mcp_config is not None:
-        print(f"mcp config: {mcp_config}")
+        _print_probed_mcp(mcp_config)
     if front:
         print(f"front prompt: {front_prompt_path(front)}")
     if branch:
@@ -2045,7 +2057,7 @@ def _print_headless(session_id: str, vendor_id: str | None,
     print(f"vendor session: {vendor_id or '(none yet — recorded off the first turn stream)'}")
     print(f"role prompt: {role_prompt}")
     if mcp_config is not None:
-        print(f"mcp config: {mcp_config}")
+        _print_probed_mcp(mcp_config)
     if front:
         print(f"front prompt: {front_prompt_path(front)}")
     if branch:
