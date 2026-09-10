@@ -266,6 +266,76 @@ def _landing_repo(front: str, front_record: dict | None, built: dict,
     return launch_mod._queued_repo_path(front_record, built)
 
 
+def _landing_names(front: str, item: dict) -> tuple[str, str]:
+    """Branch and onto-name a failed landing title quotes."""
+    kind = str(item.get("kind") or "").strip()
+    if kind == "front-landing":
+        return (str(item.get("lands") or "").strip(),
+                str(item.get("target") or "").strip())
+    if kind == "rebase":
+        return (str(item.get("lands") or "").strip(),
+                str(item.get("onto") or "").strip())
+    lands_id = str(item.get("lands") or "").strip()
+    branch = ""
+    if lands_id:
+        job = _verified_job(front, {"id": lands_id})
+        if job is not None and isinstance(job.get("branch"), str):
+            branch = (job.get("branch") or "").strip()
+        if not branch:
+            branch = f"job/{front}-{lands_id}"
+    target = ""
+    repo = str(item.get("repo") or "").strip()
+    if repo:
+        try:
+            target = policy_for(front, repo).work
+        except Refusal:
+            target = ""
+    return branch, target
+
+
+def _fail_detail(result: LandingResult) -> str:
+    dropped = ", ".join(result.dropped) if result.dropped else ""
+    exit_s = "" if result.exit is None else str(result.exit)
+    seconds_s = "" if result.seconds is None else str(result.seconds)
+    return "\n".join([
+        f"command: {result.command}",
+        f"exit: {exit_s}",
+        f"seconds: {seconds_s}",
+        f"dropped: {dropped}",
+        result.fail_reason,
+    ])
+
+
+def _file_landing_finding(front: str, item: dict, by: str,
+                          result: LandingResult) -> str:
+    """Append one landing finding on ``front``. Returns the finding id."""
+    from . import entities, ids, paths, store
+    from . import progress as progress_mod
+
+    branch, target = _landing_names(front, item)
+    first = ""
+    for line in (result.fail_reason or "").splitlines():
+        first = line.strip()
+        if first:
+            break
+    title = f"landing of {branch} onto {target} failed: {first}"
+    fid = ids.mint("finding")
+    copied = ""
+    src = (result.output_file or "").strip()
+    if src and Path(src).is_file():
+        dest = paths.front_findings_dir(front) / f"{fid}-{Path(src).name}"
+        copied = progress_mod._store_output_file(src, dest)
+    store.append_ledger(
+        paths.front_findings_path(front),
+        entities.Finding(
+            id=fid, on=front, class_="landing", title=title,
+            detail=_fail_detail(result), evidence_ref=copied,
+        ).to_dict(),
+        session_id=by,
+    )
+    return fid
+
+
 def _record_item(front: str, item: dict, by: str, result: LandingResult) -> None:
     from . import progress as progress_mod
 
@@ -274,9 +344,11 @@ def _record_item(front: str, item: dict, by: str, result: LandingResult) -> None
         changes["state"] = "landed"
         changes["landed_sha"] = result.head
         changes["fail_reason"] = ""
+        changes["finding"] = ""
     else:
         changes["state"] = "failed"
         changes["fail_reason"] = result.fail_reason
+        changes["finding"] = _file_landing_finding(front, item, by, result)
     if result.command:
         changes["command"] = result.command
     if result.exit is not None:

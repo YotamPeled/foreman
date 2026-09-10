@@ -498,6 +498,8 @@ class Node(Entity):
     retry_of: str = ""
     #: ``{job, class}`` rounds folded from this node's review jobs.
     review_rounds: list = field(default_factory=list)
+    #: Finding id filed when this landing item failed. Empty otherwise.
+    finding: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -541,6 +543,8 @@ class Node(Entity):
             data.pop("retry_of", None)
         if not data.get("review_rounds"):
             data.pop("review_rounds", None)
+        if not data.get("finding"):
+            data.pop("finding", None)
         return data
 
 

@@ -133,6 +133,11 @@ def front_findings_path(name: str) -> Path:
     return front_dir(name) / "findings.jsonl"
 
 
+def front_findings_dir(name: str) -> Path:
+    """Copied evidence files for findings on this front."""
+    return front_dir(name) / "findings"
+
+
 def front_measurements_path(name: str) -> Path:
     return front_dir(name) / "measurements.jsonl"
 
