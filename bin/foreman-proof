@@ -391,6 +391,61 @@ def write_fake_binaries(bin_dir: Path) -> None:
         "exit 0\n",
         encoding="utf-8")
     grok.chmod(0o755)
+    # Clause 3.3: fake launcher. Records argv and runs the worker script
+    # without systemd-run, so a collector tick never reaches a real unit
+    # or a real vendor binary.
+    spawn_py = bin_dir / "fake-systemd-run.py"
+    spawn_py.write_text(
+        "import os, subprocess, sys\n"
+        "from pathlib import Path\n"
+        "log = os.environ.get('FOREMAN_PROOF_SPAWN_LOG')\n"
+        "if log:\n"
+        "    path = Path(log)\n"
+        "    path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "    with path.open('a', encoding='utf-8') as handle:\n"
+        "        handle.write('===SPAWN===\\n')\n"
+        "        handle.write(' '.join(sys.argv[1:]) + '\\n')\n"
+        "cwd = None\n"
+        "argv = sys.argv[1:]\n"
+        "out = []\n"
+        "i = 0\n"
+        "while i < len(argv):\n"
+        "    a = argv[i]\n"
+        "    if a.startswith('--working-directory='):\n"
+        "        cwd = a.split('=', 1)[1]; i += 1; continue\n"
+        "    if a == '--working-directory' and i + 1 < len(argv):\n"
+        "        cwd = argv[i + 1]; i += 2; continue\n"
+        "    if a in ('--user', '--collect', '--wait', '--no-block'):\n"
+        "        i += 1; continue\n"
+        "    if a.startswith('--unit=') or a.startswith('--property=') "
+        "or a.startswith('--service-type='):\n"
+        "        i += 1; continue\n"
+        "    if a in ('--unit', '--property', '--service-type') "
+        "and i + 1 < len(argv):\n"
+        "        i += 2; continue\n"
+        "    if a.startswith('--'):\n"
+        "        i += 1; continue\n"
+        "    out = argv[i:]; break\n"
+        "if out:\n"
+        "    subprocess.Popen(out, cwd=cwd, stdin=subprocess.DEVNULL,\n"
+        "                     stdout=subprocess.DEVNULL,\n"
+        "                     stderr=subprocess.DEVNULL,\n"
+        "                     start_new_session=True, close_fds=True)\n",
+        encoding="utf-8")
+    systemd_run = bin_dir / "systemd-run"
+    systemd_run.write_text(
+        "#!/bin/sh\n"
+        f"exec {json.dumps(sys.executable)} {json.dumps(str(spawn_py))}"
+        " \"$@\"\n",
+        encoding="utf-8")
+    systemd_run.chmod(0o755)
+    systemctl = bin_dir / "systemctl"
+    systemctl.write_text(
+        "#!/bin/sh\n"
+        "# Clause 3.3: systemd is inert in the isolated world.\n"
+        "exit 0\n",
+        encoding="utf-8")
+    systemctl.chmod(0o755)
     # The world's foreman: a rename here is the harness clause's BREAK.
     foreman = bin_dir / "foreman"
     foreman.write_text(
@@ -546,6 +601,7 @@ def write_config(repo_a: Path, repo_b: Path, worker: Path) -> None:
         "name = \"fake\"\n"
         "model = \"fake-test-model\"\n"
         "timeout_default = \"5m\"\n"
+        "effort_default = \"high\"\n"
         "interactive = false\n"
         "roles = [\"muse\"]\n"
         "\n"
@@ -599,6 +655,69 @@ def build_world(root: Path) -> dict:
     write_fake_binaries(_BIN)
     install_claude_dispatcher(_BIN / "claude")
 
+    # Clause 3.3: record cmd_launch argv (including --headless) so the
+    # fake launcher log names the flag start_queued passed.
+    launch_log = _BIN / "launch-argv.log"
+    spawn_log = _BIN / "spawn-argv.log"
+    launch_log.write_text("", encoding="utf-8")
+    spawn_log.write_text("", encoding="utf-8")
+    os.environ["FOREMAN_PROOF_LAUNCH_LOG"] = str(launch_log)
+    os.environ["FOREMAN_PROOF_SPAWN_LOG"] = str(spawn_log)
+    pypath = root / "pypath"
+    pypath.mkdir()
+    (pypath / "sitecustomize.py").write_text(
+        "import os\n"
+        "from pathlib import Path\n"
+        "\n"
+        "_LOG = os.environ.get('FOREMAN_PROOF_LAUNCH_LOG')\n"
+        "\n"
+        "def _install():\n"
+        "    if not _LOG:\n"
+        "        return\n"
+        "    from foreman import launch as launch_mod\n"
+        "    real = launch_mod.cmd_launch\n"
+        "\n"
+        "    def wrapped(args):\n"
+        "        bits = []\n"
+        "        role = getattr(args, 'role', None)\n"
+        "        pool = getattr(args, 'pool', None)\n"
+        "        spec = getattr(args, 'spec', None)\n"
+        "        if role:\n"
+        "            bits.append(str(role))\n"
+        "        if pool:\n"
+        "            bits.append(str(pool))\n"
+        "        if spec:\n"
+        "            bits.append(str(spec))\n"
+        "        for name, value in vars(args).items():\n"
+        "            if name in ('role', 'pool', 'spec'):\n"
+        "                continue\n"
+        "            flag = '--' + name.replace('_', '-')\n"
+        "            if value is True:\n"
+        "                bits.append(flag)\n"
+        "            elif value is False or value is None:\n"
+        "                continue\n"
+        "            elif isinstance(value, (list, tuple)):\n"
+        "                for item in value:\n"
+        "                    bits.extend([flag, str(item)])\n"
+        "            else:\n"
+        "                bits.extend([flag, str(value)])\n"
+        "        path = Path(_LOG)\n"
+        "        path.parent.mkdir(parents=True, exist_ok=True)\n"
+        "        with path.open('a', encoding='utf-8') as handle:\n"
+        "            handle.write(' '.join(bits) + '\\n')\n"
+        "        return real(args)\n"
+        "\n"
+        "    launch_mod.cmd_launch = wrapped\n"
+        "\n"
+        "try:\n"
+        "    _install()\n"
+        "except Exception:\n"
+        "    pass\n",
+        encoding="utf-8")
+    existing = os.environ.get("PYTHONPATH", "")
+    os.environ["PYTHONPATH"] = str(pypath) + (
+        os.pathsep + existing if existing else "")
+
     repo_a, origin_a = make_repo(root, "repo-a")
     repo_b, origin_b = make_repo(root, "repo-b")
     write_config(repo_a, repo_b, _BIN / "fake-worker")
@@ -626,6 +745,8 @@ def build_world(root: Path) -> dict:
         "specs": specs,
         "started_at": started,
         "argv_log": _BIN / "vendor-argv.log",
+        "launch_log": launch_log,
+        "spawn_log": spawn_log,
         "bin": _BIN,
     }
 
