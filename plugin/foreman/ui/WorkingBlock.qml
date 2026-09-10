@@ -265,6 +265,35 @@ Item {
     return out
   }
 
+  function indent(depth) {
+    var n = Math.max(0, (depth || 1) - 1)
+    var s = ""
+    for (var i = 0; i < n; i++) s += "  "
+    return s
+  }
+
+  function milestoneText(row) {
+    return row.id + " " + row.title + ": " + row.landed + "/" + row.leaves
+      + " pieces (split from " + row.split_from + ")"
+  }
+
+  function treeText(row) {
+    var extra = row.state ? "  " + row.state : ""
+    if (row.kind === "job" && row.state === "queued")
+      extra += "  waits: " + (row.waits || "")
+    return root.indent(row.depth) + row.id + "  " + row.kind + "  " + row.title + extra
+  }
+
+  function landingText(row) {
+    if (row.kind === "behind")
+      return row.reason + (row.behind ? " (" + String(row.behind).slice(0, 7) + ")" : "")
+    if (row.state === "landed")
+      return row.id + "  landed " + String(row.sha || "").slice(0, 7)
+    if (row.state === "failed")
+      return row.id + "  failed: " + (row.reason || "")
+    return row.id + "  " + (row.state || "queued")
+  }
+
   function idleSentence(row) {
     var nk = root.needsKinds(row.name)
     if (nk.length > 0) return "waiting on your answer above (" + nk[0] + ")"
@@ -413,6 +442,57 @@ Item {
           font.family: Style.font.family
           font.pixelSize: Style.font.bodySmall
           wrapMode: Text.Wrap
+        }
+
+        Column {
+          visible: (front.milestones || []).length > 0
+          width: parent.width
+          spacing: Style.space(2)
+          Repeater {
+            model: front.milestones || []
+            delegate: Text {
+              width: parent.width
+              text: root.milestoneText(modelData)
+              color: Color.menu.text
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.Wrap
+            }
+          }
+        }
+
+        Column {
+          visible: (front.tree || []).length > 0
+          width: parent.width
+          spacing: Style.space(1)
+          Repeater {
+            model: front.tree || []
+            delegate: Text {
+              width: parent.width
+              text: root.treeText(modelData)
+              color: Color.menu.text
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.Wrap
+            }
+          }
+        }
+
+        Column {
+          visible: (front.landings || []).length > 0
+          width: parent.width
+          spacing: Style.space(1)
+          Repeater {
+            model: front.landings || []
+            delegate: Text {
+              width: parent.width
+              text: root.landingText(modelData)
+              color: Color.menu.text
+              font.family: Style.font.family
+              font.pixelSize: Style.font.bodySmall
+              wrapMode: Text.Wrap
+            }
+          }
         }
       }
     }

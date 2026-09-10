@@ -9,7 +9,8 @@ import ".." as Foreman
 Item {
   id: root
 
-  readonly property var rows: Foreman.Model.frontQueue.rows
+  readonly property var v5rows: (Foreman.Model.front_queue && Foreman.Model.front_queue.rows) || []
+  readonly property var rows: root.v5rows.length > 0 ? root.v5rows : Foreman.Model.frontQueue.rows
   readonly property color waitColor: Color.accent
 
   function esc(s) {
@@ -17,7 +18,8 @@ Item {
       .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
   }
 
-  implicitHeight: col.implicitHeight
+  visible: root.rows.length > 0
+  implicitHeight: visible ? col.implicitHeight : 0
   height: implicitHeight
 
   Column {
@@ -54,7 +56,7 @@ Item {
             Text {
               objectName: "title"
               Layout.preferredWidth: Style.space(80)
-              text: modelData.waitsFor || ""
+              text: modelData.reason || modelData.waitsFor || ""
               color: root.waitColor
               font.family: Style.font.family
               font.pixelSize: Style.font.bodySmall
@@ -64,7 +66,7 @@ Item {
             Text {
               objectName: "title"
               Layout.fillWidth: true
-              text: root.esc(modelData.name || "") + " · " + root.esc(modelData.want || "")
+              text: root.esc(modelData.front || modelData.name || "") + (modelData.want ? " · " + root.esc(modelData.want) : "")
               color: Color.menu.text
               font.family: Style.font.family
               font.pixelSize: Style.font.body
@@ -75,15 +77,5 @@ Item {
       }
     }
 
-    Text {
-      objectName: "empty"
-      visible: root.rows.length === 0
-      width: parent.width
-      text: "no fronts waiting."
-      color: Color.muted
-      font.family: Style.font.family
-      font.pixelSize: Style.font.body
-      wrapMode: Text.Wrap
-    }
   }
 }

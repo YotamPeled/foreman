@@ -95,6 +95,7 @@ QtObject {
   property var working: ({ count: 0, rows: [] })
   property var jobQueue: ({ count: 0, rows: [] })
   property var frontQueue: ({ count: 0, rows: [] })
+  property var front_queue: ({ count: 0, rows: [] })
   property var mergeQueue: ({ count: 0, rows: [], merging: [], waiting: [], landed: [] })
   property var capacity: ({ count: 0, rows: [] })
 
@@ -182,6 +183,7 @@ QtObject {
     root.working = data.working || ({ count: 0, rows: [] })
     root.jobQueue = data.jobQueue || ({ count: 0, rows: [] })
     root.frontQueue = data.frontQueue || ({ count: 0, rows: [] })
+    root.front_queue = data.front_queue || ({ count: 0, rows: [] })
     root.mergeQueue = data.mergeQueue
       || ({ count: 0, rows: [], merging: [], waiting: [], landed: [] })
     root.capacity = data.capacity || ({ count: 0, rows: [] })

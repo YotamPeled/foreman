@@ -19,7 +19,23 @@ from foreman.status import NOW_ENV
 
 ROOT = Path(__file__).resolve().parents[2]
 V5_FIXTURE = ROOT / "tests" / "v0" / "fixture-v5"
+PLUGIN = ROOT / "plugin" / "foreman"
 PINNED_NOW = "2026-09-10T12:00:00+00:00"
+
+#: Super+M and the panel's static keys, as they stood when this task
+#: started. The plugin may gain sections; these lines must still appear.
+BINDING_LINES = (
+    'o.bind("SUPER + M", "Foreman panel", "omarchy-shell shell toggle foreman")',
+    'if (event.key === Qt.Key_Escape) {',
+    '} else if (event.text === "?" || event.text === "f" || event.text === "F") {',
+    'if (t === "?") {',
+    'if (t === "f" || t === "F") {',
+    'KeyChip { key: "F" }',
+    'KeyChip { key: "?" }',
+    'KeyChip { key: "esc" }',
+)
+
+BLOCK_KEYS = ("front_queue", "capacity", "milestones", "tree", "landings")
 
 
 @pytest.fixture()
@@ -139,3 +155,26 @@ def test_empty_v5_blocks_are_lists(tmp_path, monkeypatch):
     assert feed["front_queue"] == {"count": 0, "rows": []}
     assert feed["capacity"]["rows"] == []
     assert feed["fronts"] == []
+
+
+def _plugin_qml() -> str:
+    files = sorted(PLUGIN.rglob("*.qml"))
+    assert files, "the panel plugin holds no QML files"
+    return "\n".join(path.read_text(encoding="utf-8") for path in files)
+
+
+def test_qml_references_every_new_block_key():
+    """The plugin source names each v5 block so a missing section is red."""
+    text = _plugin_qml()
+    for key in BLOCK_KEYS:
+        assert key in text, f"plugin QML does not reference {key!r}"
+
+
+def test_existing_binding_lines_are_unchanged():
+    """Every static key line still appears; the plugin did not retune them."""
+    text = _plugin_qml()
+    binding = (ROOT / "src" / "foreman" / "panel_binding.py").read_text(
+        encoding="utf-8")
+    haystack = text + "\n" + binding
+    for line in BINDING_LINES:
+        assert line in haystack, f"binding line missing: {line!r}"

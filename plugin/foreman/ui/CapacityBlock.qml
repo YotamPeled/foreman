@@ -34,6 +34,18 @@ Item {
 
   readonly property var pools: root.orderedPools()
 
+  // v5 rows carry held/reserved/cap and no collector meter. The mock
+  // cards stay on total/meter; those titles are what panel --blocks reads.
+  function v5Shape(row) {
+    return row && typeof row.reserved === "number"
+      && (row.total === null || row.total === undefined)
+  }
+
+  function v5Text(row) {
+    var cap = (row.cap === null || row.cap === undefined) ? "-" : row.cap
+    return "held " + row.held + " / reserved " + row.reserved + " / cap " + cap
+  }
+
   // Dot access: a dynamic Palette[pool] lookup does not resolve, so each
   // pool names its colour outright. opus renders in the claude colour, as
   // the mock paints it.
@@ -118,7 +130,8 @@ Item {
     return root.waitingFor(row.pool) > 0 ? root.waitColor : Color.muted
   }
 
-  implicitHeight: col.implicitHeight
+  visible: root.pools.length > 0
+  implicitHeight: visible ? col.implicitHeight : 0
   height: implicitHeight
 
   Column {
@@ -162,6 +175,7 @@ Item {
           Text {
             objectName: "title"
             width: parent.width
+            visible: !root.v5Shape(modelData)
             text: root.busyText(modelData)
             color: Color.menu.text
             font.family: Style.font.family
@@ -170,7 +184,19 @@ Item {
           }
 
           Text {
+            objectName: "title"
             width: parent.width
+            visible: root.v5Shape(modelData)
+            text: root.v5Text(modelData)
+            color: Color.menu.text
+            font.family: Style.font.family
+            font.pixelSize: Style.font.body
+            wrapMode: Text.Wrap
+          }
+
+          Text {
+            width: parent.width
+            visible: !root.v5Shape(modelData)
             text: root.meterText(modelData)
             color: Color.muted
             font.family: Style.font.family
@@ -181,7 +207,7 @@ Item {
           Text {
             objectName: "title"
             width: parent.width
-            visible: root.thirdVisible(modelData)
+            visible: !root.v5Shape(modelData) && root.thirdVisible(modelData)
             text: root.thirdText(modelData)
             color: root.thirdColor(modelData)
             font.family: Style.font.family
@@ -192,15 +218,5 @@ Item {
       }
     }
 
-    Text {
-      objectName: "empty"
-      visible: root.pools.length === 0
-      width: parent.width
-      text: "no pools."
-      color: Color.muted
-      font.family: Style.font.family
-      font.pixelSize: Style.font.body
-      wrapMode: Text.Wrap
-    }
   }
 }
