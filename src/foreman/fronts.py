@@ -57,6 +57,164 @@ def _is_one_sentence(text: str) -> bool:
     return len(re.findall(r"[.!?](?=\s|$)", stripped)) == 1
 
 
+#: A brief that carries ``goal`` is v5-shape: different required keys,
+#: and the v1 keys it replaces are violations rather than inputs.
+_V5_EFFORTS = ("low", "medium", "high", "xhigh")
+_V5_TEAM_ROLES = ("supervisor", "builder", "backup-builder", "reviewer")
+_V5_LAND = ("push", "pr")
+_V5_REPO_REQUIRED = ("name", "url", "base", "work", "target", "check")
+#: v1 key → the v5 key that replaces it. ``task`` has no v5 brief key
+#: (jobs come from the tree); the violation still names ``[[task]]``.
+_V5_REPLACED = {
+    "want": "goal",
+    "done-when": "finish-line",
+    "land-on": "[[repository]]",
+    "task": "[[task]]",
+    "allocation": "team",
+}
+
+
+def _is_v5_brief(data: dict) -> bool:
+    """True when the brief carries ``goal``, the v5-shape marker."""
+    return "goal" in data
+
+
+def _nonempty_str(value: object) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _validate_v5(data: dict) -> list[str]:
+    """Every v5-shape violation at once, each naming the field it breaks."""
+    violations: list[str] = []
+
+    for old, new in _V5_REPLACED.items():
+        if old in data:
+            if old == "task":
+                violations.append(
+                    "field 'task' is a v1 key; a v5 brief uses no '[[task]]'")
+            else:
+                violations.append(
+                    f"field '{old}' is a v1 key; a v5 brief uses '{new}'")
+
+    goal = data.get("goal")
+    if not _nonempty_str(goal):
+        violations.append("field 'goal' is required (a non-empty string)")
+
+    finish = data.get("finish-line")
+    if finish is None or (isinstance(finish, str) and not finish.strip()):
+        violations.append(
+            "field 'finish-line' is required (a non-empty string)")
+    elif not isinstance(finish, str) or not _is_one_sentence(finish):
+        violations.append("field 'finish-line' must be one sentence")
+
+    decisions = data.get("decisions")
+    if not isinstance(decisions, list) or not decisions:
+        violations.append(
+            "field 'decisions' is required (a non-empty list of "
+            "non-empty strings)")
+    else:
+        for index, item in enumerate(decisions):
+            if not _nonempty_str(item):
+                violations.append(
+                    f"field 'decisions' #{index + 1} must be a "
+                    f"non-empty string")
+
+    supervisor = data.get("supervisor")
+    if not _nonempty_str(supervisor):
+        violations.append(
+            "field 'supervisor' is required ('<agent>:<effort>')")
+    else:
+        violations.extend(
+            _v5_supervisor_violations(supervisor.strip(), "field 'supervisor'"))
+
+    team = data.get("team")
+    if team is None:
+        violations.append(
+            "field 'team' is required (a list of "
+            "'<agent>:<effort>:<count>:<role>')")
+    elif not isinstance(team, list):
+        violations.append(
+            "field 'team' must be a list of "
+            "'<agent>:<effort>:<count>:<role>'")
+    else:
+        for index, entry in enumerate(team):
+            tag = f"field 'team' #{index + 1}"
+            violations.extend(_v5_team_violations(entry, tag))
+
+    repos = data.get("repository")
+    if not isinstance(repos, list) or not repos:
+        violations.append(
+            "field 'repository' is required (one or more tables)")
+    else:
+        for index, repo in enumerate(repos):
+            tag = f"repository #{index + 1}"
+            if not isinstance(repo, dict):
+                violations.append(f"{tag} must be a table")
+                continue
+            name = repo.get("name")
+            if _nonempty_str(name):
+                tag = f"repository '{name.strip()}'"
+            violations.extend(_v5_repository_violations(repo, tag))
+    return violations
+
+
+def _v5_supervisor_violations(value: str, tag: str) -> list[str]:
+    parts = value.split(":")
+    if len(parts) != 2 or not parts[0] or not parts[1]:
+        return [f"{tag} must be '<agent>:<effort>'"]
+    agent, effort = parts
+    violations: list[str] = []
+    if effort not in _V5_EFFORTS:
+        violations.append(
+            f"{tag} effort must be {', '.join(_V5_EFFORTS)} "
+            f"(got '{effort}')")
+    return violations
+
+
+def _v5_team_violations(entry: object, tag: str) -> list[str]:
+    if not isinstance(entry, str) or not entry.strip():
+        return [f"{tag} must be '<agent>:<effort>:<count>:<role>'"]
+    parts = entry.strip().split(":")
+    if len(parts) != 4 or not parts[0]:
+        return [f"{tag} must be '<agent>:<effort>:<count>:<role>'"]
+    agent, effort, count, role = parts
+    violations: list[str] = []
+    if effort not in _V5_EFFORTS:
+        violations.append(
+            f"{tag} effort must be {', '.join(_V5_EFFORTS)} "
+            f"(got '{effort}')")
+    if not count or not count.isdigit() or int(count) < 1:
+        violations.append(
+            f"{tag} count must be a positive integer (got '{count}')")
+    if role not in _V5_TEAM_ROLES:
+        violations.append(
+            f"{tag} role must be {', '.join(_V5_TEAM_ROLES)} "
+            f"(got '{role}')")
+    return violations
+
+
+def _v5_repository_violations(repo: dict, tag: str) -> list[str]:
+    violations: list[str] = []
+    for key in _V5_REPO_REQUIRED:
+        value = repo.get(key)
+        if not _nonempty_str(value):
+            violations.append(f"{tag}: field '{key}' is required")
+    land = repo.get("land")
+    if land is not None and land not in _V5_LAND:
+        violations.append(
+            f"{tag}: field 'land' must be 'push' or 'pr' "
+            f"(got '{land}')")
+    if "trailers" in repo:
+        trailers = repo.get("trailers")
+        if not isinstance(trailers, list) or any(
+                not isinstance(item, str) for item in trailers):
+            violations.append(
+                f"{tag}: field 'trailers' must be a list of strings")
+    if "pr-body" in repo and not isinstance(repo.get("pr-body"), str):
+        violations.append(f"{tag}: field 'pr-body' must be a string")
+    return violations
+
+
 def _find_cycle(graph: dict[str, list[str]]) -> list[str] | None:
     """A task-after cycle as a title path, or None when the graph is clean."""
     visiting: list[str] = []
@@ -211,38 +369,9 @@ def validate_commissioned_task(entry: dict, existing: list[dict]) -> list[str]:
     return violations
 
 
-def _validate_identity(data: dict, existing: set[str]) -> list[str]:
-    """The part of §4.3 a front that already ran must still satisfy.
-
-    A closed front records history: its tasks are never written, its
-    allocation never spends anything, and its brief cannot be corrected
-    after the fact. What still has to hold is that it is a front, that it
-    is named once, and that what it waits on exists.
-    """
-    return [line for line in _validate(data, existing)
-            if line.startswith("field 'name'")
-            or line.startswith("field 'after'")
-            or line.startswith("front '")]
-
-
-def _validate(data: dict, existing: set[str],
-              directory: str | None = None) -> list[str]:
-    """Every 4.3 violation at once, each naming the field or rule it breaks."""
+def _validate_v1_contract(data: dict, directory: str | None) -> list[str]:
+    """want, done-when, land-on, allocation, tasks — the old brief."""
     violations: list[str] = []
-
-    name = data.get("name")
-    if name is None or (isinstance(name, str) and not name.strip()):
-        violations.append("field 'name' is required (a non-empty string)")
-        name = None
-    elif not isinstance(name, str):
-        violations.append("field 'name' must be a non-empty string")
-        name = None
-    elif not _NAME_RE.fullmatch(name.strip()):
-        violations.append(f"field 'name' must be a directory-safe name "
-                          f"(got '{name.strip()}')")
-    elif name.strip() in existing:
-        violations.append(f"front '{name.strip()}' is already on the ledger "
-                          f"(field 'name' must be unique)")
 
     want = data.get("want")
     if not (isinstance(want, str) and want.strip()):
@@ -261,26 +390,6 @@ def _validate(data: dict, existing: set[str],
         problem = _branch_violation(directory, land_on.strip())
         if problem is not None:
             violations.append(problem)
-
-    merge = data.get("merge")
-    if merge is not None and merge not in ("self", "desk"):
-        violations.append(f"field 'merge' must be 'self' or 'desk' or "
-                          f"absent (got '{merge}')")
-
-    for key in ("order", "prefer"):
-        if key in data and not _is_int(data[key]):
-            violations.append(f"field '{key}' must be an integer")
-
-    after = data.get("after", [])
-    if not isinstance(after, list):
-        violations.append("field 'after' must be a list of front names")
-        after = []
-    else:
-        for entry in after:
-            if not (isinstance(entry, str) and entry):
-                violations.append("field 'after' must be a list of front names")
-            elif entry not in existing:
-                violations.append(f"field 'after' names unknown front '{entry}'")
 
     allocation = data.get("allocation", {})
     if not isinstance(allocation, dict):
@@ -334,6 +443,66 @@ def _validate(data: dict, existing: set[str],
     if cycle is not None:
         violations.append("task 'after' graph has a cycle: "
                           + " -> ".join(cycle))
+    return violations
+
+
+def _validate_identity(data: dict, existing: set[str]) -> list[str]:
+    """The part of §4.3 a front that already ran must still satisfy.
+
+    A closed front records history: its tasks are never written, its
+    allocation never spends anything, and its brief cannot be corrected
+    after the fact. What still has to hold is that it is a front, that it
+    is named once, and that what it waits on exists.
+    """
+    return [line for line in _validate(data, existing)
+            if line.startswith("field 'name'")
+            or line.startswith("field 'after'")
+            or line.startswith("front '")]
+
+
+def _validate(data: dict, existing: set[str],
+              directory: str | None = None) -> list[str]:
+    """Every 4.3 violation at once, each naming the field or rule it breaks."""
+    violations: list[str] = []
+
+    name = data.get("name")
+    if name is None or (isinstance(name, str) and not name.strip()):
+        violations.append("field 'name' is required (a non-empty string)")
+        name = None
+    elif not isinstance(name, str):
+        violations.append("field 'name' must be a non-empty string")
+        name = None
+    elif not _NAME_RE.fullmatch(name.strip()):
+        violations.append(f"field 'name' must be a directory-safe name "
+                          f"(got '{name.strip()}')")
+    elif name.strip() in existing:
+        violations.append(f"front '{name.strip()}' is already on the ledger "
+                          f"(field 'name' must be unique)")
+
+    merge = data.get("merge")
+    if merge is not None and merge not in ("self", "desk"):
+        violations.append(f"field 'merge' must be 'self' or 'desk' or "
+                          f"absent (got '{merge}')")
+
+    for key in ("order", "prefer"):
+        if key in data and not _is_int(data[key]):
+            violations.append(f"field '{key}' must be an integer")
+
+    after = data.get("after", [])
+    if not isinstance(after, list):
+        violations.append("field 'after' must be a list of front names")
+        after = []
+    else:
+        for entry in after:
+            if not (isinstance(entry, str) and entry):
+                violations.append("field 'after' must be a list of front names")
+            elif entry not in existing:
+                violations.append(f"field 'after' names unknown front '{entry}'")
+
+    if _is_v5_brief(data):
+        violations.extend(_validate_v5(data))
+    else:
+        violations.extend(_validate_v1_contract(data, directory))
 
     monitors = data.get("monitor", [])
     if not isinstance(monitors, list):
