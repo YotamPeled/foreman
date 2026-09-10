@@ -95,6 +95,11 @@ class Front(Entity):
     #: The target sha a rebase item is catching up to. Empty when the
     #: front is not behind.
     behind: str = ""
+    #: When the collector started this front. Empty while queued.
+    started_at: str = ""
+    #: Why the last automatic start was refused. Empty until then, and
+    #: cleared on a successful start.
+    start_refused: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -107,6 +112,10 @@ class Front(Entity):
             data.pop("base_sha", None)
         if not data.get("behind"):
             data.pop("behind", None)
+        if not data.get("started_at"):
+            data.pop("started_at", None)
+        if not data.get("start_refused"):
+            data.pop("start_refused", None)
         return data
 
 

@@ -1423,6 +1423,60 @@ def _reserve_phases(phase: str) -> tuple[str, ...]:
     return (phase,)
 
 
+def revise_front(name: str, record: dict, who: str | None, **changes) -> dict:
+    """Append a revised copy of the front line with ``changes`` applied."""
+    updated = dataclasses.replace(
+        entities.Front.from_dict(record), **changes).to_dict()
+    if "monitors" in record:
+        updated["monitors"] = record["monitors"]
+    store.append_ledger(paths.front_record_path(name), updated,
+                        session_id=who)
+    return updated
+
+
+def reserve_front(name: str, record: dict, phase: str,
+                  who: str | None) -> tuple[list[dict], list[str]]:
+    """Hold this front's team for ``phase``.
+
+    Returns (created lines, violations). Empty created and no
+    violations means already held or nothing was wanted.
+    """
+    phases = _reserve_phases(phase)
+    wanted = _wanted_reservations(record, phases)
+    created: list[dict] = []
+    violations: list[str] = []
+    with store._write_lock():
+        open_recs = open_reservations()
+        open_keys = {(rec.get("front"), rec.get("pool"), rec.get("phase"))
+                     for rec in open_recs}
+        to_create = [item for item in wanted
+                     if (name, item[0], item[3]) not in open_keys]
+        new_by_pool: dict[str, int] = {}
+        for pool, _role, count, _phase in to_create:
+            new_by_pool[pool] = new_by_pool.get(pool, 0) + count
+        for pool, count in new_by_pool.items():
+            cap = config.load().cap(pool)
+            if cap is None:
+                continue
+            reserved, others = _others_on_pool(open_recs, pool, name)
+            if cap - reserved < count:
+                by = f" by {', '.join(others)}" if others else ""
+                violations.append(
+                    f"pool {pool}: cap {cap}, reserved {reserved}{by}, "
+                    f"wants {count}")
+        if violations:
+            return [], violations
+        for pool, role, count, item_phase in to_create:
+            created.append(_append_reservation_holding_the_lock(
+                entities.Reservation(
+                    id=ids.mint("reservation"),
+                    front=name, pool=pool, role=role, count=count,
+                    phase=item_phase, released_at=None,
+                ).to_dict(),
+                who))
+    return created, []
+
+
 def front_reserve_main(name: str, phase: str = "builders") -> int:
     """Hold this front's team against the pool cap until it is released.
 
@@ -1445,39 +1499,11 @@ def front_reserve_main(name: str, phase: str = "builders") -> int:
         return Refusal(violations).report()
     assert record is not None
     key = name.strip()
-    phases = _reserve_phases(phase)
-    wanted = _wanted_reservations(record, phases)
     who = caller.by_line(me)
-    created: list[dict] = []
-    with store._write_lock():
-        open_recs = open_reservations()
-        open_keys = {(rec.get("front"), rec.get("pool"), rec.get("phase"))
-                     for rec in open_recs}
-        to_create = [item for item in wanted
-                     if (key, item[0], item[3]) not in open_keys]
-        new_by_pool: dict[str, int] = {}
-        for pool, _role, count, _phase in to_create:
-            new_by_pool[pool] = new_by_pool.get(pool, 0) + count
-        for pool, count in new_by_pool.items():
-            cap = config.load().cap(pool)
-            if cap is None:
-                continue
-            reserved, others = _others_on_pool(open_recs, pool, key)
-            if cap - reserved < count:
-                by = f" by {', '.join(others)}" if others else ""
-                violations.append(
-                    f"pool {pool}: cap {cap}, reserved {reserved}{by}, "
-                    f"wants {count}")
-        if violations:
-            return Refusal(violations).report()
-        for pool, role, count, item_phase in to_create:
-            created.append(_append_reservation_holding_the_lock(
-                entities.Reservation(
-                    id=ids.mint("reservation"),
-                    front=key, pool=pool, role=role, count=count,
-                    phase=item_phase, released_at=None,
-                ).to_dict(),
-                who))
+    wanted = _wanted_reservations(record, _reserve_phases(phase))
+    created, extra = reserve_front(key, record, phase, who)
+    if extra:
+        return Refusal(extra).report()
     if created:
         for rec in created:
             print(f"{key}: reserved {rec['pool']} {rec['count']} "

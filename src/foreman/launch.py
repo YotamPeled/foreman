@@ -1175,6 +1175,94 @@ def start_queued(front: str, node_id: str, *,
     return job_id, ""
 
 
+def _supervisor_model_effort(record: dict) -> tuple[str | None, str | None]:
+    """The supervisor model and effort from the front's team, else the
+    supervisor dict the brief recorded."""
+    team = record.get("team")
+    if isinstance(team, list):
+        for entry in team:
+            if not isinstance(entry, dict):
+                continue
+            if entry.get("role") != "supervisor":
+                continue
+            model = entry.get("model")
+            effort = entry.get("effort")
+            return (
+                model if isinstance(model, str) and model else None,
+                effort if isinstance(effort, str) and effort else None,
+            )
+    supervisor = record.get("supervisor")
+    if isinstance(supervisor, dict):
+        model = supervisor.get("model")
+        effort = supervisor.get("effort")
+        return (
+            model if isinstance(model, str) and model else None,
+            effort if isinstance(effort, str) and effort else None,
+        )
+    return None, None
+
+
+def start_queued_front(front: str, *, by: str,
+                       now: str) -> tuple[str | None, str]:
+    """Reserve builders, spawn the supervisor headless, mark the front active.
+
+    Returns ``(session_id, "")`` on success. A refused launch releases
+    the reservation and leaves the front queued with ``start_refused``.
+    """
+    key = (front or "").strip()
+    record = fronts.read_front_record(key)
+    if record is None:
+        return None, f"unknown front '{key}'"
+    if record.get("state") != "queued":
+        shown = record.get("state") or "unknown"
+        return None, f"front '{key}' is {shown}, not queued"
+    _created, violations = fronts.reserve_front(
+        key, record, "builders", by)
+    if violations:
+        return None, "; ".join(violations)
+    model, effort = _supervisor_model_effort(record)
+    args = argparse.Namespace(
+        model=model, effort=effort, dry_run=False,
+        headless=True, workspace=None, spec=None,
+    )
+    repo = _queued_repo_path(record, {})
+    branch = _queued_base_branch(record, {}) or ""
+    buf_out, buf_err = io.StringIO(), io.StringIO()
+    try:
+        with contextlib.redirect_stdout(buf_out), \
+                contextlib.redirect_stderr(buf_err):
+            code = launch_supervisor_headless(
+                args, front=key, record=record, repo=repo, branch=branch)
+    except Exception as exc:  # noqa: BLE001 - a refused start is a reason
+        code = 1
+        buf_err.write(f"{type(exc).__name__}: {exc}")
+    if code != 0:
+        fronts.release_front(key, by)
+        reason = buf_err.getvalue().strip() or "launcher refused"
+        current = fronts.read_front_record(key) or record
+        if current.get("start_refused") != reason:
+            fronts.revise_front(key, current, by, start_refused=reason)
+        return None, reason
+    session_id = None
+    for line in buf_out.getvalue().splitlines():
+        if line.startswith("session: "):
+            session_id = line.split("session: ", 1)[1].strip()
+            break
+    if not session_id:
+        live = live_front_supervisor(key)
+        if live is not None:
+            session_id = live[0]
+    if not session_id:
+        current = fronts.read_front_record(key) or record
+        supervisor = current.get("supervisor")
+        if isinstance(supervisor, str) and supervisor:
+            session_id = supervisor
+    current = fronts.read_front_record(key) or record
+    fronts.revise_front(
+        key, current, by, state="active", started_at=now, start_refused="")
+    return session_id or "", ""
+
+
 @subcommand("launch", help="Mint a session, build its worktree, start its worker.")
 def cmd_launch(args: argparse.Namespace) -> int:
     # The freeze is a violation like any other, never an early return: a
