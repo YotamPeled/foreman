@@ -153,7 +153,7 @@ clause CONFIRMED by running on the live installation, with the proof recorded as
 
 ## Team
 
-supervisor      fable-5.1:high:1
+supervisor      opus-5:high:1        (Fable retired from the roster 2026-09-10, owner ruling: quota out)
 builder         grok-4.6:high:2
 builder         muse-1.3-contributor:xhigh:3          (mechanical leaves only; pool out until 2026-09-14)
 backup-builder  opus-5:high:1        (only after a failed builder run)

@@ -80,7 +80,7 @@ launch, not advice.
 - Forbid: free-form verdict synonyms; claims broader than the executed assertions; treating its finding
   count as severity.
 
-## Fable 5.1 (high) — foreman, supervisor, judgement work
+## Fable 5.1 (high) — RETIRED FROM THE ROSTER 2026-09-10 (owner: quota out; Opus 5 high takes its place as foreman, supervisor and judgement worker). Kept for the record.
 - Judgement, tool surfaces, skills, acceptance; corrections were the highest-value input other sessions
   named (caught invented timestamps, a merge never announced, an exit-status assertion satisfied by
   unrelated refusals). Specs it wrote were built green first time by Grok.
