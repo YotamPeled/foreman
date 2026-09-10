@@ -1059,8 +1059,15 @@ def _capacity(observed: dict | None, now: datetime | None = None) -> list[str]:
     ``now`` is the same clock Working uses, so a pool that is out cannot
     print held here and out there."""
     from . import capacity
+    from . import resources as resources_mod
 
-    return capacity.capacity_lines(observed, now=now)
+    lines = capacity.capacity_lines(observed, now=now)
+    extra = resources_mod.status_lines()
+    if not extra:
+        return lines
+    if lines == ["Capacity: no collector data yet."]:
+        return ["Capacity:"] + extra
+    return list(lines) + extra
 
 
 def render(now: datetime | None = None) -> str:

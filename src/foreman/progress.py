@@ -34,8 +34,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import (
-    caller, capacity, cli, entities, fronts, hooks, ids, node as node_mod,
-    paths, store, wait,
+    caller, capacity, cli, config, entities, fronts, hooks, ids, node as node_mod,
+    paths, resources as resources_mod, store, wait,
 )
 from .caller import MERGE_DESK, OWNER, SUPERVISOR, Refusal
 from .entities import JOB_ROLES
@@ -1182,6 +1182,8 @@ def compute_node_waits(front: str, node: dict, by_id: dict[str, dict],
     An ``after`` node that is missing or not ``landed`` is a dependency.
     A ``backup-builder`` waits until a job of this node has failed.
     A ``script`` node skips the slot check and waits ``script runner``.
+    A named resource that is fully held waits ``resource <name>``, before
+    the slot check. A node that names none is unchanged.
     Otherwise the front's reserved (or allocated) count for the node's
     job role, compared with what is held, is ``no slot`` when full.
     """
@@ -1197,6 +1199,14 @@ def compute_node_waits(front: str, node: dict, by_id: dict[str, dict],
         return "backup builder: no failed run"
     if role == "script":
         return "script runner"
+    claimed = resources_mod.node_resources(node)
+    if claimed:
+        settings = config.load()
+        held = resources_mod.held_by_name()
+        for name in claimed:
+            count = settings.resource_count(name)
+            if count is None or held.get(name, 0) >= count:
+                return f"resource {name}"
     job_role = _job_role_of_node(record, node)
     if job_role:
         limit = capacity.ceiling(front, job_role)

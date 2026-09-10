@@ -13,9 +13,12 @@ from pathlib import Path
 
 import pytest
 
-from foreman import cli, config, paths, store
+from foreman import capacity, cli, config, fronts, paths, store
 from foreman.caller import SESSION_ENV
+from foreman.collector import tick
 from foreman.entities import Session
+from foreman import launch as launch_module
+from foreman.pools import _common as pool_common
 
 SPEC_VERIFY = "python -m pytest tests -q"
 
@@ -47,6 +50,10 @@ DEFAULT_TEAM = (
     "grok-4.6:high:1:supervisor",
     "grok-4.6:high:1:builder",
 )
+TWO_BUILDER_TEAM = (
+    "grok-4.6:high:1:supervisor",
+    "grok-4.6:high:2:builder",
+)
 
 
 @pytest.fixture()
@@ -63,6 +70,29 @@ def env(tmp_path, monkeypatch):
                     "user.name=foreman-test", "commit", "-q", "--allow-empty",
                     "-m", "init"], check=True)
     return tmp_path
+
+
+@pytest.fixture()
+def launch_spawn(env, monkeypatch):
+    """Capture ``cmd_launch`` args and refuse a real systemd unit."""
+    calls: list = []
+
+    def fake_spawn(argv, *, pid_path, session_id, popen):
+        pid = 2_000_000 + len(calls)
+        Path(pid_path).write_text(f"{pid}\n", encoding="utf-8")
+        calls.append({"kind": "spawn", "argv": list(argv),
+                      "session": session_id})
+        return pid
+
+    real = launch_module.cmd_launch
+
+    def wrapped(args):
+        calls.append({"kind": "launch", "args": args})
+        return real(args)
+
+    monkeypatch.setattr(pool_common, "spawn_and_wait", fake_spawn)
+    monkeypatch.setattr(launch_module, "cmd_launch", wrapped)
+    return calls
 
 
 def iso(moment: datetime) -> str:
@@ -104,11 +134,20 @@ def write_v5(root: Path, name: str, url: str,
 
 def add_front(env: Path, monkeypatch, capsys, name: str = "v5shape",
               team: tuple[str, ...] = DEFAULT_TEAM) -> str:
+    import subprocess
     monkeypatch.delenv(SESSION_ENV, raising=False)
-    _src, bare, sha = make_bare(env)
+    src, bare, sha = make_bare(env)
     assert cli.main(["front", "add",
                      str(write_v5(env, name, str(bare), team=team))]) == 0
     capsys.readouterr()
+    record = fronts.read_front_record(name)
+    work = (record or {}).get("repositories", [{}])[0].get("work") or "v5work"
+    subprocess.run(
+        ["git", "-C", str(src), "branch", work, "main"], check=True)
+    subprocess.run(
+        ["git", "--git-dir", str(bare), "fetch", "-q", "origin",
+         f"+refs/heads/{work}:refs/remotes/origin/{work}"],
+        check=True)
     return sha
 
 
@@ -263,3 +302,128 @@ def test_resource_list_prints_held_and_holders(env, monkeypatch, capsys):
         assert run(monkeypatch, ["resource", "list"]) == 0
         out = capsys.readouterr().out
         assert out.splitlines() == ["fixture-db: held 0 / count 1"], state
+
+
+def add_chain(monkeypatch, capsys, job_id="job-a", role="builder",
+              resources=None, what="implement the door"):
+    mil = add_ok(monkeypatch, capsys, title="milestone one",
+                 node_id="mil-1")
+    tsk = add_ok(monkeypatch, capsys, parent=mil, kind="task",
+                 title="the door", node_id="tsk-1")
+    job = add_ok(monkeypatch, capsys, parent=tsk, kind="job",
+                 title="implement the door", role=role, node_id=job_id,
+                 resources=resources or [], what=what)
+    return mil, tsk, job
+
+
+def test_tick_second_job_waits_resource_until_the_first_returns(
+        env, monkeypatch, capsys, launch_spawn):
+    """With fixture-db = 1, slots free, one tick starts one job and the
+    other waits resource fixture-db; after the first returns, the next
+    tick starts the second. resource list and job list print the holder
+    and the reason."""
+    write_resources(
+        "[resources]\nfixture-db = 1\n\n"
+        "[pool.grok]\ncap = 2\nroles = [\"grok\"]\n")
+    add_front(env, monkeypatch, capsys, team=TWO_BUILDER_TEAM)
+    seed_supervisor("v5shape")
+    _mil, _tsk, first = add_chain(
+        monkeypatch, capsys, job_id="job-a", resources=["fixture-db"])
+    second = add_ok(monkeypatch, capsys, parent="tsk-1", kind="job",
+                    title="the next unit", role="builder", node_id="job-b",
+                    resources=["fixture-db"])
+    assert run(monkeypatch, ["job", "queue", "v5shape", first], SUP) == 0
+    assert run(monkeypatch, ["job", "queue", "v5shape", second], SUP) == 0
+    capsys.readouterr()
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    tree = folded_tree()
+    assert tree[first]["state"] == "running"
+    assert tree[second]["state"] == "queued"
+    assert tree[second]["waits"] == "resource fixture-db"
+    job_id = tree[first]["job"]
+    assert run(monkeypatch, ["resource", "list"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "fixture-db: held 1 / count 1",
+        "  v5shape job-a",
+    ]
+    assert run(monkeypatch, ["job", "list", "v5shape"], SUP) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        f"{first}  builder  grok  running {job_id}",
+        f"{second}  builder  grok  waits: resource fixture-db",
+    ]
+
+    session_id = tree[first]["session"]
+    capacity.release_for_session(session_id, iso(NOW), "returned")
+    assert run(monkeypatch, [
+        "node", "revise", "v5shape", first, "--reason", "returned",
+        "--state", "returned",
+    ], SUP) == 0
+    capsys.readouterr()
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW + timedelta(seconds=2))
+    tree = folded_tree()
+    assert tree[second]["state"] == "running"
+    assert run(monkeypatch, ["resource", "list"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "fixture-db: held 1 / count 1",
+        "  v5shape job-b",
+    ]
+
+
+def test_tick_a_node_with_no_resources_is_unchanged(
+        env, monkeypatch, capsys, launch_spawn):
+    """A job that names no resource still starts while fixture-db is held."""
+    write_resources(
+        "[resources]\nfixture-db = 1\n\n"
+        "[pool.grok]\ncap = 2\nroles = [\"grok\"]\n")
+    add_front(env, monkeypatch, capsys, team=TWO_BUILDER_TEAM)
+    seed_supervisor("v5shape")
+    _mil, _tsk, first = add_chain(
+        monkeypatch, capsys, job_id="job-a", resources=["fixture-db"])
+    second = add_ok(monkeypatch, capsys, parent="tsk-1", kind="job",
+                    title="the next unit", role="builder", node_id="job-b")
+    assert run(monkeypatch, ["job", "queue", "v5shape", first], SUP) == 0
+    assert run(monkeypatch, ["job", "queue", "v5shape", second], SUP) == 0
+    capsys.readouterr()
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    tree = folded_tree()
+    assert tree[first]["state"] == "running"
+    assert tree[second]["state"] == "queued"
+    assert tree[second]["waits"] == "ready"
+    tick(now=NOW + timedelta(seconds=2))
+    tree = folded_tree()
+    assert tree[second]["state"] == "running"
+
+
+def test_status_prints_resource_lines_under_capacity(
+        env, monkeypatch, capsys, launch_spawn):
+    """status prints the resource lines under Capacity when any resource
+    is configured."""
+    write_resources()
+    add_front(env, monkeypatch, capsys, team=TWO_BUILDER_TEAM)
+    seed_supervisor("v5shape")
+    _mil, _tsk, first = add_chain(
+        monkeypatch, capsys, job_id="job-a", resources=["fixture-db"])
+    assert run(monkeypatch, ["job", "queue", "v5shape", first], SUP) == 0
+    capsys.readouterr()
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    capacity_block = out.split("Capacity:\n", 1)[1].split("Overall:", 1)[0]
+    assert "fixture-db: held 1 / count 1" in capacity_block
+    assert capacity_block.rstrip().endswith("fixture-db: held 1 / count 1")
+
+
+def test_status_omits_resource_lines_when_none_are_configured(
+        env, monkeypatch, capsys):
+    """No [resources] table: status does not print a resource line."""
+    add_front(env, monkeypatch, capsys)
+    seed_supervisor("v5shape")
+    assert cli.main(["status"]) == 0
+    out = capsys.readouterr().out
+    capacity_block = out.split("Capacity:\n", 1)[1].split("Overall:", 1)[0]
+    assert "fixture-db" not in capacity_block
+    assert "[resources]" not in capacity_block
