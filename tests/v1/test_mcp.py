@@ -40,8 +40,7 @@ PANEL_BRIEF = ROOT / "briefs" / "panel"
 #: disagreeing with the table.
 SUPERVISOR_TOOLS = frozenset({
     "ask", "attach", "checkpoint", "doctor", "evidence", "finding",
-    "front_done", "front_show", "front_take", "job_fail", "job_repoint", "job_verify", "kill", "launch",
-    "map_add", "map_show", "measure", "merge_request", "pool_list", "register",
+    "front_done", "front_show", "front_take", "job_fail", "job_repoint", "job_verify", "kill", "launch", "map_add", "map_resolve", "map_show", "measure", "merge_request", "pool_list", "register",
     "relaunch", "rule",
     "status", "task_add", "task_built", "task_landed", "task_reset", "turn",
     "version", "wait", "wake",

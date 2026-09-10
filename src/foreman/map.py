@@ -1,8 +1,9 @@
-"""`foreman map add|show`: the map held by the runtime.
+"""`foreman map add|resolve|show`: the map held by the runtime.
 
 ``map add`` appends one fact to ``fronts/<name>/map.jsonl``. Only the
 front's own supervisor (or the owner at a terminal) may write. ``map
-show`` folds the ledger, grouped by repo then section in first-appearance
+resolve`` records a branch's remote sha as a seen fact. ``map show``
+folds the ledger, grouped by repo then section in first-appearance
 order; the foreman, the front's supervisor and the owner may read it.
 """
 
@@ -52,6 +53,54 @@ def _default_commit(record: dict, repo: str) -> str:
     return str(sha) if sha else ""
 
 
+def _repo_url(record: dict, name: str) -> str:
+    repos = record.get("repositories")
+    repos = repos if isinstance(repos, list) else []
+    for item in repos:
+        if isinstance(item, dict) and str(item.get("name") or "") == name:
+            return str(item.get("url") or "").strip()
+    return ""
+
+
+def _unknown_repo_violation(record: dict, front: str, repo: str) -> str | None:
+    if record.get("shape") != "v5":
+        return None
+    known = _repo_names(record)
+    if repo in known:
+        return None
+    listed = ", ".join(known) if known else "(none)"
+    return (f"unknown repository '{repo}' on front "
+            f"'{front}' (known: {listed})")
+
+
+def _commit_fact(*, front: str, repo: str, section: str, text: str,
+                 basis: str, refs: list, seen_at: str, seen_where: str,
+                 commit: str, derived_from: list[str], by: str,
+                 fact_id: str | None = None) -> str:
+    fid = fact_id or ids.mint("map")
+    now = store.utcnow_iso()
+    store.append_ledger(
+        paths.front_map_path(front),
+        entities.MapFact(
+            id=fid,
+            front=front,
+            repo=repo,
+            section=section,
+            text=text,
+            basis=basis,
+            refs=list(refs),
+            seen_at=seen_at,
+            seen_where=seen_where,
+            commit=commit,
+            derived_from=list(derived_from),
+            at=now,
+            by=by,
+        ).to_dict(),
+        session_id=by,
+    )
+    return fid
+
+
 def map_add_main(front: str, repo: str | None, section: str | None,
                  fact: str | None, seen: bool, assumed: bool,
                  where: str | None = None, commit: str | None = None,
@@ -70,13 +119,9 @@ def map_add_main(front: str, repo: str | None, section: str | None,
     if not repo_name:
         violations.append("field '--repo' is required")
     elif record is not None:
-        if record.get("shape") == "v5":
-            known = _repo_names(record)
-            if repo_name not in known:
-                listed = ", ".join(known) if known else "(none)"
-                violations.append(
-                    f"unknown repository '{repo_name}' on front "
-                    f"'{front_name}' (known: {listed})")
+        unknown = _unknown_repo_violation(record, front_name, repo_name)
+        if unknown:
+            violations.append(unknown)
     section_text = "" if section is None else str(section).strip()
     if not section_text:
         violations.append("field '--section' is required")
@@ -115,32 +160,65 @@ def map_add_main(front: str, repo: str | None, section: str | None,
         sha = _default_commit(record, repo_name)
     else:
         sha = str(sha).strip()
-    fid = ids.mint("map")
-    store.append_ledger(
-        paths.front_map_path(front_name),
-        entities.MapFact(
-            id=fid,
-            front=front_name,
-            repo=repo_name,
-            section=section_text,
-            text=fact_text,
-            basis=basis,
-            refs=[],
-            seen_at=now,
-            seen_where=where_text,
-            commit=sha,
-            derived_from=sources,
-            at=now,
-            by=who,
-        ).to_dict(),
-        session_id=who,
-    )
+    fid = _commit_fact(
+        front=front_name, repo=repo_name, section=section_text,
+        text=fact_text, basis=basis, refs=[], seen_at=now,
+        seen_where=where_text, commit=sha, derived_from=sources,
+        by=who)
     print(fid)
     if weakened_by:
         if len(weakened_by) == 1:
             print(f"assumed because {weakened_by[0]} is assumed")
         else:
             print(f"assumed because {', '.join(weakened_by)} are assumed")
+    return 0
+
+
+def map_resolve_main(front: str, repo: str | None, ref: str | None) -> int:
+    verb = "map resolve"
+    me, violations = caller.resolve(verb)
+    front_name = (front or "").strip()
+    if not front_name:
+        violations.append("field 'front' is required")
+    record = fronts.read_front_record(front_name) if front_name else None
+    if front_name and record is None:
+        violations.append(f"unknown front '{front_name}'")
+    caller.check_front_supervisor(me, front_name or None, verb,
+                                  violations=violations)
+    if record is not None and record.get("shape") != "v5":
+        violations.append(f"front '{front_name}' is not v5-shape")
+    repo_name = (repo or "").strip()
+    if not repo_name:
+        violations.append("field '--repo' is required")
+    elif record is not None:
+        unknown = _unknown_repo_violation(record, front_name, repo_name)
+        if unknown:
+            violations.append(unknown)
+    branch = "" if ref is None else str(ref).strip()
+    if not branch:
+        violations.append("field '--ref' is required")
+    url = ""
+    sha = None
+    if (not violations and record is not None and repo_name and branch
+            and record.get("shape") == "v5"):
+        url = _repo_url(record, repo_name)
+        found, err = fronts._ls_remote(url, branch)
+        if err is not None or found is None:
+            violations.append(f"ref '{branch}' is absent on '{url}'")
+        else:
+            sha = found
+    if violations:
+        return _refuse(violations)
+    assert record is not None and sha is not None
+    who = caller.by_line(me)
+    now = store.utcnow_iso()
+    _commit_fact(
+        front=front_name, repo=repo_name, section="refs",
+        text=f"origin/{branch} = {sha}", basis="seen",
+        refs=[{"ref": f"origin/{branch}", "sha": sha}],
+        seen_at=now, seen_where="git ls-remote", commit=sha,
+        derived_from=[], by=who)
+    print(f"{repo_name} {branch} {sha}")
     return 0
 
 
@@ -245,6 +323,13 @@ def add_map_arguments(sub: argparse.ArgumentParser) -> None:
     add.add_argument("--from", dest="derived_from", action="append",
                      default=None,
                      help="fact id this one is derived from (repeatable)")
+    resolve = verbs.add_parser(
+        "resolve", help="Record a ref's remote sha on the map.")
+    resolve.add_argument("front", help="front the fact belongs to")
+    resolve.add_argument("--repo", default=None,
+                         help="repository name (required)")
+    resolve.add_argument("--ref", default=None,
+                         help="branch to resolve on the remote (required)")
     show = verbs.add_parser("show", help="Print the front's folded map.")
     show.add_argument("front", help="front whose map to print")
     show.add_argument("--repo", default=None,
@@ -260,6 +345,8 @@ def _map_entry(args: argparse.Namespace) -> int:
                             seen=args.seen, assumed=args.assumed,
                             where=args.where, commit=args.commit,
                             derived_from=args.derived_from)
+    if args.map_verb == "resolve":
+        return map_resolve_main(args.front, args.repo, args.ref)
     if args.map_verb == "show":
         return map_show_main(args.front, repo=args.repo,
                              as_json=args.as_json)
