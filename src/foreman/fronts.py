@@ -1446,8 +1446,14 @@ def front_adopt_main(directory: str, dry_run: bool = False) -> int:
     goal, finish line, decisions, team, repositories and the derived
     working team. No task line is written. ``--dry-run`` prints the
     line that would be appended and writes nothing.
+
+    The gate names this operation ``front adopt`` (not ``front add
+    --adopt``) so the role-gate readers, which match gates to tools by
+    CLI-path prefix, do not offer the plain ``front_add`` tool to the
+    foreman: adoption stays a CLI operation on the ``front add``
+    parser, refused to every role but the foreman (and the owner).
     """
-    verb = "front add --adopt"
+    verb = "front adopt"
     me, violations = caller.resolve(verb)
     caller.check_role(me, verb, caller.FOREMAN, violations=violations)
     data = _read_brief(directory, violations)
