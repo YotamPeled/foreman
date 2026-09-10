@@ -1,21 +1,28 @@
-"""`foreman node add|revise|list`: the tree's one write door.
+"""`foreman node add|revise|list|prove`: the tree's one write door.
 
 ``node add`` appends one node to ``fronts/<name>/tree.jsonl``. Only the
 front's own supervisor (or the owner at a terminal) may write. The door
 refuses every violation at once and names each rejected field.
 ``node revise`` appends a revised copy with ``op = revise``. The ledger
 is append-only and folded last-wins on read. ``node list`` prints the
-fold indented by depth.
+fold indented by depth. ``node prove`` runs the node's verify on
+``--base`` then ``--head`` and records what each saw.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
+import shutil
+import subprocess
+import time
+from pathlib import Path
 
 from . import caller, cli, entities, fronts, ids, paths, store
 from .caller import Refusal
 from .entities import CHILDLESS_NODE_KINDS, NODE_KINDS, NODE_SCOPES
+from .pools._common import timeout_seconds
 
 MAX_DEPTH = 3
 
@@ -435,6 +442,231 @@ def node_list_main(front: str, under: str | None = None,
     return 0
 
 
+def _git_at(repo: str, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", "-C", repo, *args],
+        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+
+def _next_copy_n(directory: Path) -> int:
+    try:
+        names = [entry.name for entry in directory.iterdir()]
+    except OSError:
+        return 1
+    highest = 0
+    for name in names:
+        prefix, sep, _rest = name.partition("-")
+        if sep and prefix.isdigit():
+            highest = max(highest, int(prefix))
+    return highest + 1
+
+
+def _write_prove_log(dest_dir: Path, label: str, body: str) -> str:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{_next_copy_n(dest_dir)}-{label}.log"
+    dest.write_text(body or "", encoding="utf-8")
+    return str(dest.resolve())
+
+
+def _resolve_program(command: str) -> str | None:
+    """The executable the verify would run, or None when it is not found."""
+    text = command.strip()
+    if not text:
+        return None
+    prog = text.split()[0]
+    if os.path.isabs(prog) or "/" in prog:
+        if os.path.isfile(prog) and os.access(prog, os.X_OK):
+            return prog
+        return None
+    return shutil.which(prog)
+
+
+def _classify_saw(exit_code: int | None, output: str, *,
+                  resolved: bool, timed_out: bool) -> str:
+    if timed_out:
+        return "died"
+    if not resolved:
+        return "silent"
+    if exit_code != 0:
+        return "red"
+    if not (output or "").strip():
+        return "silent"
+    return "green"
+
+
+def _prove_env(command: str) -> dict[str, str]:
+    child_env = os.environ.copy()
+    for name in (caller.SESSION_ENV, paths.STATE_ENV, paths.CONFIG_ENV):
+        child_env.pop(name, None)
+    if command.strip().startswith("python"):
+        child_env["PYTHONPATH"] = "src"
+    return child_env
+
+
+def _close_worktree(repo: str, area: str) -> None:
+    _git_at(repo, "worktree", "remove", "--force", area)
+    paths.remove_scratch(area)
+
+
+def _run_verify_at(repo: str, ref: str, command: str, dest_dir: Path,
+                   timeout_s: int, key: str, label: str
+                   ) -> tuple[dict | None, str]:
+    """Run ``command`` in a detached worktree of ``ref``.
+
+    Returns ``(record, error)``. ``error`` is a refusal sentence when the
+    worktree cannot be opened. The worktree is gone when this returns.
+    """
+    resolved = _resolve_program(command)
+    if resolved is None:
+        body = "resolve failed\n"
+        dest = _write_prove_log(dest_dir, label, body)
+        return ({
+            "exit": None,
+            "seconds": 0,
+            "output_ref": dest,
+            "saw": "silent",
+        }, "")
+    area = str(paths.scratch_worktree_dir("prove", key))
+    output_body = ""
+    exit_code: int | None = None
+    timed_out = False
+    started = time.monotonic()
+    try:
+        added = _git_at(repo, "worktree", "add", "--detach", area, ref)
+        if added.returncode != 0:
+            tail = (added.stdout or "").strip()
+            return None, (
+                f"cannot open a prove worktree for '{ref}': {tail}".strip())
+        try:
+            proc = subprocess.run(
+                command, shell=True, cwd=area,
+                stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                text=True, env=_prove_env(command), timeout=timeout_s)
+            output_body = proc.stdout or ""
+            exit_code = proc.returncode if proc.returncode is not None else 1
+        except subprocess.TimeoutExpired as exc:
+            timed_out = True
+            raw = exc.stdout or ""
+            if isinstance(raw, bytes):
+                output_body = raw.decode("utf-8", errors="replace")
+            else:
+                output_body = raw
+    finally:
+        _close_worktree(repo, area)
+    seconds = int(round(time.monotonic() - started))
+    dest = _write_prove_log(dest_dir, label, output_body)
+    return ({
+        "exit": exit_code,
+        "seconds": seconds,
+        "output_ref": dest,
+        "saw": _classify_saw(
+            exit_code, output_body, resolved=True, timed_out=timed_out),
+    }, "")
+
+
+def _append_prove(existing: dict, front_name: str, prove: dict,
+                  who: str, now: str) -> None:
+    updated = dict(existing)
+    updated["prove"] = prove
+    updated["op"] = "revise"
+    updated["reason_revised"] = "prove"
+    updated["at"] = now
+    updated["by"] = who
+    line = entities.Node.from_dict(updated).to_dict()
+    line["op"] = "revise"
+    line["reason_revised"] = "prove"
+    line["at"] = now
+    line["by"] = who
+    line["prove"] = prove
+    store.append_ledger(
+        paths.front_tree_path(front_name), line, session_id=who)
+
+
+def node_prove_main(front: str, node_id: str | None,
+                    base: str | None, head: str | None,
+                    repo: str | None = None,
+                    timeout: str | None = None) -> int:
+    verb = "node prove"
+    me, violations = caller.resolve(verb)
+    front_name = (front or "").strip()
+    if not front_name:
+        violations.append("field 'front' is required")
+    record = fronts.read_front_record(front_name) if front_name else None
+    if front_name and record is None:
+        violations.append(f"unknown front '{front_name}'")
+    caller.check_front_supervisor(me, front_name or None, verb,
+                                  violations=violations)
+    nid = "" if node_id is None else str(node_id).strip()
+    if not nid:
+        violations.append("field 'id' is required")
+    base_ref = _required("--base", base, violations)
+    head_ref = _required("--head", head, violations)
+    repo_path = _required("--repo", repo, violations)
+    timeout_text = "30m" if timeout is None else str(timeout).strip()
+    if not timeout_text:
+        timeout_text = "30m"
+    timeout_s = timeout_seconds(timeout_text)
+    if timeout_s is None:
+        violations.append("field '--timeout' is not a duration")
+    existing: dict | None = None
+    if record is not None and nid:
+        _folded, by_id = _read_nodes(front_name)
+        existing = by_id.get(nid)
+        if existing is None:
+            violations.append(f"unknown node '{nid}'")
+        elif not str(existing.get("verify") or "").strip():
+            violations.append(f"node '{nid}' has no verify")
+    if repo_path and not violations:
+        listed = _git_at(repo_path, "rev-parse", "--is-inside-work-tree")
+        if listed.returncode != 0:
+            violations.append(
+                f"--repo '{repo_path}' is not a git repository")
+        else:
+            repo_path = str(Path(repo_path).resolve())
+            for flag, ref in (("--base", base_ref), ("--head", head_ref)):
+                if not ref:
+                    continue
+                checked = _git_at(
+                    repo_path, "rev-parse", "--verify", ref)
+                if checked.returncode != 0:
+                    violations.append(
+                        f"{flag} '{ref}' does not resolve")
+    if violations:
+        return _refuse(violations)
+    assert record is not None and existing is not None
+    assert timeout_s is not None
+    who = caller.by_line(me)
+    now = store.utcnow_iso()
+    command = str(existing.get("verify") or "").strip()
+    dest_dir = paths.session_dir(who) / "prove"
+    base_run, err = _run_verify_at(
+        repo_path, base_ref, command, dest_dir, timeout_s,
+        f"{nid}-base", "base")
+    if err:
+        return _refuse([err])
+    assert base_run is not None
+    head_run, err = _run_verify_at(
+        repo_path, head_ref, command, dest_dir, timeout_s,
+        f"{nid}-head", "head")
+    if err:
+        return _refuse([err])
+    assert head_run is not None
+    if base_run["saw"] == "red" and head_run["saw"] == "green":
+        verdict = "proven"
+    else:
+        verdict = (f"unproven (base: {base_run['saw']}, "
+                   f"head: {head_run['saw']})")
+    prove = {
+        "base": base_run,
+        "head": head_run,
+        "verdict": verdict,
+        "at": now,
+    }
+    _append_prove(existing, front_name, prove, who, now)
+    print(f"{nid} {verdict}")
+    return 0 if verdict == "proven" else 1
+
+
 def add_node_arguments(sub: argparse.ArgumentParser) -> None:
     verbs = sub.add_subparsers(dest="node_verb", required=True)
     add = verbs.add_parser("add", help="Append a node to the front's tree.")
@@ -510,6 +742,19 @@ def add_node_arguments(sub: argparse.ArgumentParser) -> None:
                          help="restrict to this node and its descendants")
     listing.add_argument("--json", dest="as_json", action="store_true",
                          help="print the folded list as JSON")
+    prove = verbs.add_parser(
+        "prove", help="Run the node's verify on --base then --head.")
+    prove.add_argument("front", help="front the node belongs to")
+    prove.add_argument("id", help="node to prove")
+    prove.add_argument("--base", default=None,
+                       help="git ref that must go red (required)")
+    prove.add_argument("--head", default=None,
+                       help="git ref that must go green (required)")
+    prove.add_argument("--repo", default=None,
+                       help="local clone to open scratch worktrees in "
+                            "(required)")
+    prove.add_argument("--timeout", default="30m",
+                       help="how long each verify may run (default: 30m)")
 
 
 @cli.subcommand("node", help="Write or read the front's tree.")
@@ -533,6 +778,10 @@ def _node_entry(args: argparse.Namespace) -> int:
     if args.node_verb == "list":
         return node_list_main(args.front, under=args.under,
                               as_json=args.as_json)
+    if args.node_verb == "prove":
+        return node_prove_main(
+            args.front, args.id, args.base, args.head,
+            repo=args.repo, timeout=args.timeout)
     raise AssertionError(f"unknown node verb {args.node_verb!r}")
 
 

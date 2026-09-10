@@ -405,7 +405,8 @@ class Node(Entity):
     ``parent`` is the front name for a milestone node, else a node id.
     ``kind`` is milestone, task, job or derived. A revised line carries
     ``op = "revise"``. ``break_`` is the one-line change that must make
-    verify go red.
+    verify go red. ``prove`` is the red-then-green record written by
+    ``node prove``.
     """
 
     _aliases: ClassVar[dict[str, str]] = {"break_": "break"}
@@ -432,6 +433,13 @@ class Node(Entity):
     by: str | None = None
     state: str = ""
     reason_revised: str = ""
+    prove: dict = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        data = super().to_dict()
+        if not data.get("prove"):
+            data.pop("prove", None)
+        return data
 
 
 @dataclass(frozen=True)
