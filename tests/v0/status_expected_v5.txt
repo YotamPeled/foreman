@@ -1,0 +1,43 @@
+Foreman status — 0 sessions registered, 0 observed · live · collector never ticked
+foreman: none
+queue:
+  harbor  pool grok: cap 1, reserved 1, wants 1
+  orbit  running
+Needs you: nothing needs you.
+Problems: none.
+Working:
+  harbor — no supervisor · tasks 0 landed, 0 built, 0 total
+    queue: 0 waiting, 0 running
+    tree:
+      (no tree yet)
+    landings: none
+    doing now — no supervisor
+    progress — no tasks yet
+    want: (not recorded)
+    REMAINING: no tasks yet
+    ESTIMATE: no rate yet — no tasks yet
+    Blocked on you: nothing blocked on you
+  orbit — no supervisor · tasks 0 landed, 0 built, 0 total
+    allocation: grok 0/1
+    queue: 2 waiting, 0 running
+    M1 The screen: 0/1 pieces (split from 1)
+    tree:
+      mil-1  milestone  The screen
+        tsk-1  task  status shape  0/1  queued
+          job-1  job  implement it  queued  waits: ready
+        job-land1  job  land implement it  queued  waits: ready
+    landings:
+      job-land1  queued
+      behind main (c0ffee1)
+    doing now — no supervisor
+    progress — no tasks yet
+    want: (not recorded)
+    REMAINING: no tasks yet
+    ESTIMATE: no rate yet — no tasks yet
+    Blocked on you: nothing blocked on you
+Job queue: empty.
+Merge queue: empty.
+Capacity:
+  grok: held 0 / reserved 1 / cap 1
+  orbit grok: reserved 1, running 0
+Overall: 2 of 2 fronts moving (0 done), no projected finish yet; needs you: nothing needs you.

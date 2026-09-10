@@ -972,7 +972,7 @@ def _v5_tree_lines(name: str) -> list[str]:
     children = node_mod._children_of(folded)
     for node, depth in rows:
         base = node_mod._format_node(node, depth, children)
-        lines.append(f"    {base}{_tree_node_suffix(node)}")
+        lines.append(f"      {base}{_tree_node_suffix(node)}")
     return lines
 
 

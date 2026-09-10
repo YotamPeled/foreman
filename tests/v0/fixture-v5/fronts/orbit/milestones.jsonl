@@ -1,0 +1,1 @@
+{"id":"mil-1","front":"orbit","op":"add","order":1,"title":"The screen","done_when":"status shows the v5 shape","verify":"python -m pytest tests -q","reason":"decision 15","break":"drop the split count","from_ids":[],"at":"2026-09-10T11:05:00+00:00","by":"owner"}

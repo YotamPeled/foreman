@@ -9,6 +9,7 @@ so the box count does not read this machine.
 from __future__ import annotations
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 import pytest
 
@@ -18,6 +19,12 @@ from foreman.status import NOW_ENV
 
 NOW = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
 PINNED_NOW = "2026-09-10T12:00:00+00:00"
+OLD_PINNED_NOW = "2026-09-08T12:00:00+00:00"
+ROOT = Path(__file__).resolve().parents[2]
+V5_FIXTURE = "tests/v0/fixture-v5"
+V5_EXPECTED = ROOT / "tests" / "v0" / "status_expected_v5.txt"
+OLD_FIXTURE = "tests/v0/fixture"
+OLD_EXPECTED = ROOT / "tests" / "v0" / "status_expected.txt"
 
 
 @pytest.fixture()
@@ -140,6 +147,8 @@ def tree_body(out: str) -> list[str]:
         if any(rest == prefix or rest.startswith(prefix)
                for prefix in stop_prefixes):
             break
+        if rest.startswith("  "):
+            rest = rest[2:]
         body.append(rest)
     return body
 
@@ -216,3 +225,32 @@ def test_landing_item_and_behind_warning_appear(env, monkeypatch, capsys):
     out = status_out(monkeypatch, capsys)
     assert "      job-land1  queued" in out
     assert "      behind main (abcdef1)" in out
+
+
+def test_golden_v5_fixture_output(monkeypatch, capsys, tmp_path):
+    """The committed v5 fixture, byte for byte."""
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setenv(NOW_ENV, PINNED_NOW)
+    monkeypatch.delenv("FOREMAN_SESSION", raising=False)
+    monkeypatch.setenv("FOREMAN_CONFIG", str(tmp_path / "config"))
+    monkeypatch.setattr(capacity, "_snapshot", lambda: {})
+    assert cli.main(["status", "--fixture", V5_FIXTURE]) == 0
+    out = capsys.readouterr().out
+    expected = V5_EXPECTED.read_text(encoding="utf-8")
+    assert out == expected
+
+
+def test_old_fixture_text_is_unchanged(monkeypatch, capsys, tmp_path):
+    """The v0 golden file still matches the old fixture byte for byte."""
+    monkeypatch.chdir(ROOT)
+    monkeypatch.setenv(NOW_ENV, OLD_PINNED_NOW)
+    monkeypatch.delenv("FOREMAN_SESSION", raising=False)
+    monkeypatch.setenv("FOREMAN_CONFIG", str(tmp_path / "config"))
+    monkeypatch.setattr(capacity, "_snapshot", lambda: {
+        101: {"cmdline": "grok --prompt-file job.md"},
+        102: {"cmdline": "muse exec --prompt-file job.md"},
+    })
+    assert cli.main(["status", "--fixture", OLD_FIXTURE]) == 0
+    out = capsys.readouterr().out
+    expected = OLD_EXPECTED.read_text(encoding="utf-8")
+    assert out == expected
