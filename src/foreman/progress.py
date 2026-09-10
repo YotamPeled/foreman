@@ -1073,6 +1073,15 @@ def _evidence_records(front: str) -> list[dict]:
         raw = store.read_ledger(paths.front_evidence_path(front))
     except OSError:
         return []
+    return _fold_id_records(raw)
+
+
+def _is_bound_line(line: dict) -> bool:
+    return bool(str(line.get("head") or "").strip()
+                and str(line.get("base") or "").strip())
+
+
+def _fold_id_records(raw: list[dict]) -> list[dict]:
     folded = store.fold_by_id(raw)
     by_id = {row["id"]: row for row in folded
              if isinstance(row.get("id"), str)}
@@ -1090,6 +1099,134 @@ def _evidence_records(front: str) -> list[dict]:
         else:
             ordered.append(line)
     return ordered
+
+
+def _measurement_records(front: str) -> list[dict]:
+    try:
+        raw = store.read_ledger(paths.front_measurements_path(front))
+    except OSError:
+        return []
+    return _fold_id_records(raw)
+
+
+def _revise_stale(path, line: dict, new_base: str, who: str) -> None:
+    rid = line.get("id")
+    if not isinstance(rid, str) or not rid:
+        return
+    if str(line.get("stale") or "").strip():
+        return
+    if not _is_bound_line(line):
+        return
+    revised = dict(line, stale=new_base, at=store.utcnow_iso(), by=who)
+    store.append_ledger(path, revised, session_id=who)
+
+
+def mark_bound_stale(front: str, old_base: str, new_base: str,
+                     who: str) -> None:
+    """Revise every bound line whose base is ``old_base``, once.
+
+    Evidence, measurements and verified job lines each get one
+    ``stale = <new_base>`` revise. Lines with no id, no binding, a
+    different base, or an existing stale stay as they are.
+    """
+    old = (old_base or "").strip()
+    new = (new_base or "").strip()
+    if not old or not new or old == new:
+        return
+    for line in _evidence_records(front):
+        if str(line.get("base") or "").strip() == old:
+            _revise_stale(paths.front_evidence_path(front), line, new, who)
+    for line in _measurement_records(front):
+        if str(line.get("base") or "").strip() == old:
+            _revise_stale(
+                paths.front_measurements_path(front), line, new, who)
+    try:
+        jobs = store.fold_by_id(
+            store.read_ledger(paths.front_jobs_path(front)))
+    except OSError:
+        jobs = []
+    for job in jobs:
+        if job.get("state") != "verified":
+            continue
+        if str(job.get("base") or "").strip() != old:
+            continue
+        _revise_stale(paths.front_jobs_path(front), job, new, who)
+
+
+def record_rebase_evidence(front: str, who: str, *, head: str, base: str,
+                           command: str, output_ref: str) -> None:
+    """The rebase item's green check, bound to the new base, on the front."""
+    store.append_ledger(
+        paths.front_evidence_path(front),
+        entities.Evidence(
+            id=ids.mint("evidence"),
+            on=front,
+            claim=f"rebase check green on {front}",
+            status=CONFIRMED,
+            command=command,
+            output_ref=output_ref,
+            head=head,
+            base=base,
+        ).to_dict(),
+        session_id=who,
+    )
+
+
+def _is_script_node(node: dict) -> bool:
+    if str(node.get("role") or "") == "script":
+        return True
+    if str(node.get("kind") or "") in ("front-landing", "rebase"):
+        return True
+    if node.get("lands"):
+        return True
+    return False
+
+
+def _evidence_on_node(front: str, node: dict, records: list[dict]
+                      ) -> list[dict]:
+    nid = str(node.get("id") or "")
+    job_ids = set(_node_job_ids(front, node))
+    hits = []
+    for line in records:
+        on = str(line.get("on") or "")
+        if on == nid or on in job_ids:
+            hits.append(line)
+    return hits
+
+
+def stale_landed_reason(front: str) -> str | None:
+    """Why ``front done`` must wait on a re-verify, or None.
+
+    A landed work node whose bound evidence is stale, with no newer
+    CONFIRMED bound line, blocks: ``front v5 has stale evidence on
+    nod-x; re-run its verify``.
+    """
+    folded, _by_id = node_mod._read_nodes(front)
+    records = _evidence_records(front)
+    for node in folded:
+        if str(node.get("state") or "") != "landed":
+            continue
+        if _is_script_node(node):
+            continue
+        lines = _evidence_on_node(front, node, records)
+        bound = [line for line in lines if _is_bound_line(line)]
+        stale_lines = [line for line in bound
+                       if str(line.get("stale") or "").strip()]
+        if not stale_lines:
+            continue
+        last_stale = max(str(line.get("at") or "") for line in stale_lines)
+        greens = [
+            line for line in bound
+            if line.get("status") == CONFIRMED
+            and not str(line.get("stale") or "").strip()
+            and str(line.get("at") or "") > last_stale
+        ]
+        if greens:
+            continue
+        nid = node.get("id") or "node"
+        return (f"front {front} has stale evidence on {nid}; "
+                f"re-run its verify")
+    return None
 
 
 def evidence_list_main(front: str) -> int:

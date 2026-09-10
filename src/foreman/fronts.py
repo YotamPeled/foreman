@@ -1551,6 +1551,11 @@ def front_done_main(name: str) -> int:
         blocked = _finish_blocked_reason(key, record)
         if blocked:
             violations.append(blocked)
+        from . import progress as progress_mod
+
+        stale = progress_mod.stale_landed_reason(key)
+        if stale:
+            violations.append(stale)
     if violations:
         return Refusal(violations).report()
     assert record is not None

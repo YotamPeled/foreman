@@ -13,9 +13,11 @@ from pathlib import Path
 
 import pytest
 
-from foreman import cli, fronts, paths, store
+from foreman import cli, fronts, landing, paths, store
 from foreman.caller import SESSION_ENV
+from foreman.collector import tick
 from foreman.entities import Session
+from foreman.progress import _write_node_revise
 
 NOW = datetime(2026, 9, 10, 12, 0, 0, tzinfo=timezone.utc)
 SUP = "ses-sup0001"
@@ -128,9 +130,10 @@ def seed_supervisor(front, sid=SUP):
     }})
 
 
-def add_v5(env: Path, monkeypatch, capsys, name: str = "harbor") -> str:
+def add_v5(env: Path, monkeypatch, capsys,
+           name: str = "harbor") -> tuple[str, Path]:
     monkeypatch.delenv(SESSION_ENV, raising=False)
-    _src, bare, sha = make_bare(env)
+    src, bare, sha = make_bare(env)
     brief_dir = env / name
     brief_dir.mkdir(parents=True, exist_ok=True)
     (brief_dir / "brief.toml").write_text(
@@ -139,12 +142,12 @@ def add_v5(env: Path, monkeypatch, capsys, name: str = "harbor") -> str:
     capsys.readouterr()
     record = fronts.read_front_record(name)
     work = (record or {}).get("repositories", [{}])[0].get("work") or "v5work"
-    subprocess.run(["git", "-C", str(_src), "branch", work, "main"], check=True)
+    subprocess.run(["git", "-C", str(src), "branch", work, "main"], check=True)
     subprocess.run(
         ["git", "--git-dir", str(bare), "fetch", "-q", "origin",
          f"+refs/heads/{work}:refs/heads/{work}"],
         check=True)
-    return sha
+    return sha, bare
 
 
 def add_old(env: Path, monkeypatch, capsys, name: str = "flow") -> None:
@@ -166,10 +169,67 @@ def seed_returned_job(front: str, job_id: str, head: str = JOB_HEAD) -> None:
     })
 
 
+def git(repo: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout.strip()
+
+
+def open_clone(env: Path, bare: Path) -> Path:
+    clone = env / "clone"
+    subprocess.run(["git", "clone", "-q", str(bare), str(clone)], check=True)
+    git(clone, "config", "user.email", "test@example.invalid")
+    git(clone, "config", "user.name", "foreman-test")
+    return clone
+
+
+def add_origin_main_commit(clone: Path, filename: str = "main.txt",
+                           body: str = "main\n") -> str:
+    git(clone, "fetch", "-q", "origin")
+    git(clone, "checkout", "-q", "-B", "main", "origin/main")
+    (clone / filename).write_text(body, encoding="utf-8")
+    git(clone, "add", filename)
+    git(clone, "commit", "-qm", "target moved")
+    git(clone, "push", "-q", "origin", "main")
+    return git(clone, "rev-parse", "HEAD")
+
+
+def add_argv(front="harbor", parent="harbor", kind="milestone",
+             title="Front inputs", **flags):
+    argv = ["node", "add", front, "--parent", parent, "--kind", kind,
+            "--title", title,
+            "--verify", flags.get("verify", "true"),
+            "--must-not-touch", flags.get("must_not_touch",
+                                          "the live state directory"),
+            "--reason", flags.get("reason", "the tree needs this node"),
+            "--break", flags.get("break_", "admit a job as a parent"),
+            "--repo", flags.get("repo", "foreman")]
+    if flags.get("node_id") is not None:
+        argv.extend(["--id", flags["node_id"]])
+    return argv
+
+
+def add_ok(monkeypatch, capsys, **flags):
+    assert run(monkeypatch, add_argv(**flags), SUP) == 0
+    return capsys.readouterr().out.strip()
+
+
+def folded_tree(front="harbor"):
+    return {line["id"]: line for line in store.fold_by_id(
+        store.read_ledger(paths.front_tree_path(front)))}
+
+
+def rebase_items(front: str = "harbor") -> list[dict]:
+    return [node for node in folded_tree(front).values()
+            if node.get("kind") == "rebase"]
+
+
 def test_v5_evidence_carries_head_and_base_and_lists_bound(
         env, monkeypatch, capsys):
     """A verify on a v5 front stores both shas; evidence list prints bound."""
-    base_sha = add_v5(env, monkeypatch, capsys)
+    base_sha, _bare = add_v5(env, monkeypatch, capsys)
     seed_supervisor("harbor")
     seed_returned_job("harbor", "job-bind1")
     assert run(monkeypatch, ["job", "verify", "job-bind1",
@@ -209,3 +269,60 @@ def test_old_front_evidence_lists_unbound(env, monkeypatch, capsys):
     assert err == ""
     assert "unbound" in out
     assert "bound " not in out
+
+
+def test_rebase_marks_bound_evidence_stale_and_front_done_names_the_node(
+        env, monkeypatch, capsys):
+    """A target move stales the older line; front done waits on a new green."""
+    base_sha, bare = add_v5(env, monkeypatch, capsys)
+    seed_supervisor("harbor")
+    mil = add_ok(monkeypatch, capsys, title="milestone one", node_id="mil-1")
+    tsk = add_ok(monkeypatch, capsys, parent=mil, kind="task",
+                 title="the door", node_id="tsk-1")
+    node_id = add_ok(monkeypatch, capsys, parent=tsk, kind="job",
+                     title="implement the door", role="builder",
+                     node_id="nod-x")
+    seed_returned_job("harbor", "job-bind1")
+    assert run(monkeypatch, ["job", "verify", "job-bind1",
+                             "--confirmed", "--command", "true",
+                             "--output", "all green"], SUP) == 0
+    capsys.readouterr()
+    node = folded_tree()[node_id]
+    _write_node_revise("harbor", node, SUP, "landed",
+                       state="landed", job="job-bind1")
+    clone = open_clone(env, bare)
+    moved = add_origin_main_commit(clone)
+    monkeypatch.delenv(SESSION_ENV, raising=False)
+    tick(now=NOW)
+    items = rebase_items()
+    assert len(items) == 1
+    result = landing.run("harbor", items[0], by=SUP)
+    assert result.ok, result.fail_reason
+    assert run(monkeypatch, ["evidence", "list", "harbor"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert f"stale (base moved to {moved[:7]})" in out
+    folded = store.fold_by_id(
+        store.read_ledger(paths.front_evidence_path("harbor")))
+    older = [line for line in folded if line.get("on") == "job-bind1"]
+    assert older and older[0]["stale"] == moved
+    rebase_lines = [line for line in folded if line.get("on") == "harbor"]
+    assert rebase_lines
+    assert rebase_lines[0]["base"] == moved
+    assert not rebase_lines[0].get("stale")
+    assert run(monkeypatch, ["front", "done", "harbor"], SUP) == 1
+    _out, err = capsys.readouterr()
+    assert f"front harbor has stale evidence on {node_id}; re-run its verify" \
+        in err
+    record = fronts.read_front_record("harbor")
+    assert record is not None and record.get("state") != "done"
+    assert run(monkeypatch, ["evidence", "--on", "job-bind1",
+                             "--claim", "re-verified after the move",
+                             "--status", "CONFIRMED", "--command", "true",
+                             "--output", "green again"], SUP) == 0
+    capsys.readouterr()
+    assert run(monkeypatch, ["front", "done", "harbor"], SUP) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out.strip() == "harbor done"
+

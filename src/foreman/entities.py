@@ -197,6 +197,8 @@ class Job(Entity):
     retry_of: str = ""
     #: Finding class of a returned review, or ``clean``. Empty otherwise.
     review_class: str = ""
+    #: New base sha after a target move invalidated a verified line.
+    stale: str = ""
 
 
 @dataclass(frozen=True)
@@ -352,6 +354,9 @@ class Evidence(Entity):
     #: Sha of the front's contracted base this line sat on. Empty on
     #: old-front lines. A line with neither head nor base is unbound.
     base: str = ""
+    #: New base sha after a target move invalidated this line. Empty
+    #: until then; a later green line on the same node replaces it.
+    stale: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -361,6 +366,8 @@ class Evidence(Entity):
             data.pop("head", None)
         if not data.get("base"):
             data.pop("base", None)
+        if not data.get("stale"):
+            data.pop("stale", None)
         return data
 
 
@@ -389,6 +396,8 @@ class Measurement(Entity):
     head: str = ""
     #: Sha of the front's contracted base this measurement sat on.
     base: str = ""
+    #: New base sha after a target move invalidated this line.
+    stale: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -398,6 +407,8 @@ class Measurement(Entity):
             data.pop("head", None)
         if not data.get("base"):
             data.pop("base", None)
+        if not data.get("stale"):
+            data.pop("stale", None)
         return data
 
 

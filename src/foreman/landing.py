@@ -726,10 +726,26 @@ def _run_rebase_locked(front: str, item: dict, *, by: str,
         if push.returncode != 0:
             tail = (push.stderr.strip() or push.stdout.strip()).strip()
             return _fail(f"push of '{work}' failed: {tail}".strip(), **fields)
+        old_base = ""
+        if front_record is not None:
+            old_base = str(front_record.get("base_sha") or "").strip()
+            if not old_base:
+                for entry in front_record.get("repositories") or []:
+                    if not isinstance(entry, dict):
+                        continue
+                    old_base = str(entry.get("base_sha") or "").strip()
+                    if old_base:
+                        break
         _set_front_base(
             front, front_record, by,
             repo_name=str(item.get("repo") or ""),
             base_sha=onto, behind="")
+        from . import progress as progress_mod
+
+        progress_mod.mark_bound_stale(front, old_base, onto, by)
+        progress_mod.record_rebase_evidence(
+            front, by, head=head, base=onto,
+            command=command, output_ref=output_file)
         return LandingResult(ok=True, **fields)
     finally:
         paths_mod.remove_scratch(area)
