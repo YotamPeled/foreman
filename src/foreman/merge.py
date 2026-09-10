@@ -382,16 +382,30 @@ def merge_land_main(ref: str | None) -> int:
                 f"(take it first with 'foreman merge take')")
     repo = os.getcwd()
     violations.extend(_repo_problems(repo))
-    check = merge_check_command(repo)
-    if check is None:
-        resolved = os.path.realpath(repo)
-        violations.append(
-            f"no check for repository {resolved} in {paths.config_file()}: "
-            f'set [merge."{resolved}"] check = "<cmd>" '
-            f"(or [merge] check as the fallback)")
+    check_source = "[merge] fallback"
+    front_name = str((record or {}).get("front") or "")
+    front_record = fronts.read_front_record(front_name) if front_name else None
+    if front_record is not None and front_record.get("shape") == "v5":
+        from .landing import policy_for
+        try:
+            policy = policy_for(front_name, repo)
+            check = policy.check
+            check_source = policy.source
+        except Refusal as exc:
+            check = None
+            violations.extend(exc.violations)
+    else:
+        check = merge_check_command(repo)
+        if check is None:
+            resolved = os.path.realpath(repo)
+            violations.append(
+                f"no check for repository {resolved} in {paths.config_file()}: "
+                f'set [merge."{resolved}"] check = "<cmd>" '
+                f"(or [merge] check as the fallback)")
     if violations:
         return _refuse(violations)
     assert record is not None and check is not None
+    print(f"check: {check} ({check_source})")
     who = caller.by_line(me)
     mid = str(record.get("id"))
     branch, target = str(record.get("branch")), str(record.get("target"))

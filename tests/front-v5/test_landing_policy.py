@@ -10,12 +10,17 @@ from __future__ import annotations
 
 import json
 import subprocess
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from foreman import cli, fronts, landing, paths, store
 from foreman.caller import Refusal, SESSION_ENV
+
+NOW = datetime(2026, 9, 8, 12, 0, 0, tzinfo=timezone.utc)
+SUP = "ses-sup0001"
+DESK = "ses-desk001"
 
 OLD_BRIEF = '''name      = "{name}"
 order     = 1
@@ -201,3 +206,139 @@ def test_front_policy_prints_the_fields(env, capsys):
         "check", "land", "trailers", "pr_body", "script",
         "base", "work", "target", "url", "source",
     ]
+
+
+# --------------------------------------------------------------------------
+# merge land reads the policy
+# --------------------------------------------------------------------------
+
+
+def git(repo: Path, *args: str) -> str:
+    completed = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    assert completed.returncode == 0, completed.stderr
+    return completed.stdout.strip()
+
+
+def make_repo(root: Path) -> Path:
+    """A repo with a bare origin beside it, both under tmp_path."""
+    repo = root / "repo"
+    repo.mkdir(parents=True, exist_ok=True)
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "test@example.invalid")
+    git(repo, "config", "user.name", "test")
+    (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+    git(repo, "add", "seed.txt")
+    git(repo, "commit", "-qm", "seed")
+    origin = root / "origin.git"
+    git(root, "init", "-q", "--bare", "-b", "main", str(origin))
+    git(repo, "remote", "add", "origin", str(origin))
+    git(repo, "push", "-q", "origin", "HEAD:refs/heads/main")
+    return repo
+
+
+def make_branch(repo: Path, name: str, filename: str) -> None:
+    git(repo, "checkout", "-qb", name)
+    (repo / filename).write_text(f"{name}\n", encoding="utf-8")
+    git(repo, "add", filename)
+    git(repo, "commit", "-qm", name)
+    git(repo, "checkout", "-q", "main")
+
+
+def run(monkeypatch, argv, session=None, cwd=None):
+    if session is None:
+        monkeypatch.delenv(SESSION_ENV, raising=False)
+    else:
+        monkeypatch.setenv(SESSION_ENV, session)
+    if cwd is not None:
+        monkeypatch.chdir(cwd)
+    return cli.main(argv)
+
+
+def seed_roster(*entries):
+    store.write_snapshot(
+        paths.roster_path(),
+        {"sessions": {entry["id"]: entry for entry in entries}})
+
+
+def session_record(sid, role, front=None):
+    started = (NOW - timedelta(minutes=30)).isoformat()
+    return {
+        "id": sid, "role": role, "pool": "opus", "model": "opus",
+        "front": front, "job": None, "pid": None, "pgid": None,
+        "worktree": "", "log": "", "timeout": "20m",
+        "launched_by": "owner",
+        "started_at": started,
+        "last_declared_at": None, "last_observed_at": None,
+        "cpu_s": 0.0, "state": "running",
+    }
+
+
+def seed_built_task(front: str, title: str = "first") -> str:
+    tid = f"tsk-{front[:7]}1"
+    store.append_ledger(paths.front_tasks_path(front), {
+        "id": tid, "front": front, "title": title,
+        "scope": "WHAT: x.\nINPUTS: y.\nOUTPUTS: z.\nOUT OF SCOPE: n.",
+        "verify": "true", "size": 1, "after": [],
+        "state": "built", "units_done": 1, "units_total": 1,
+    })
+    return tid
+
+
+def request_take_land(monkeypatch, capsys, repo: Path, front: str,
+                      task: str) -> tuple[int, str, str]:
+    assert run(monkeypatch, ["merge", "request", "feat",
+                             "--front", front, "--tasks", task,
+                             "--target", "main"], SUP, cwd=repo) == 0
+    mid = capsys.readouterr().out.split()[0]
+    assert run(monkeypatch, ["merge", "take", mid], DESK) == 0
+    capsys.readouterr()
+    rc = run(monkeypatch, ["merge", "land", mid], DESK, cwd=repo)
+    out, err = capsys.readouterr()
+    return rc, out, err
+
+
+def test_merge_land_v5_prints_the_repository_check(env, monkeypatch, capsys):
+    """A v5 front lands with its repository check, not ``[merge] check``."""
+    repo = make_repo(env)
+    write_merge_fallback(env, "false")
+    brief_dir = env / "v5desk"
+    brief_dir.mkdir()
+    (brief_dir / "brief.toml").write_text(
+        V5_BRIEF.format(name="v5desk", url=str(repo)).replace(
+            "[[repository]]", 'merge = "desk"\n\n[[repository]]'),
+        encoding="utf-8")
+    assert fronts.front_add_main(str(brief_dir)) == 0
+    capsys.readouterr()
+    make_branch(repo, "feat", "feat.txt")
+    seed_roster(session_record(SUP, "supervisor", "v5desk"),
+                session_record(DESK, "merge-desk"))
+    task = seed_built_task("v5desk")
+    rc, out, err = request_take_land(monkeypatch, capsys, repo, "v5desk", task)
+    assert rc == 0, err
+    assert "check: true (repository foreman)" in out
+    assert "[merge] fallback" not in out
+
+
+def test_merge_land_old_front_prints_the_fallback(env, monkeypatch, capsys):
+    """An old-shape front still lands on ``[merge] check`` and says so."""
+    repo = make_repo(env)
+    write_merge_fallback(env, "true")
+    brief_dir = env / "olddesk"
+    brief_dir.mkdir()
+    (brief_dir / "brief.toml").write_text(
+        OLD_BRIEF.format(name="olddesk").replace(
+            'reviews   = "on request"',
+            'reviews   = "on request"\nmerge     = "desk"'),
+        encoding="utf-8")
+    assert fronts.front_add_main(str(brief_dir)) == 0
+    capsys.readouterr()
+    make_branch(repo, "feat", "feat.txt")
+    seed_roster(session_record(SUP, "supervisor", "olddesk"),
+                session_record(DESK, "merge-desk"))
+    task = seed_built_task("olddesk")
+    rc, out, err = request_take_land(monkeypatch, capsys, repo, "olddesk", task)
+    assert rc == 0, err
+    assert "check: true ([merge] fallback)" in out
+    assert "repository " not in out.split("check:", 1)[-1].split("\n", 1)[0]
