@@ -331,7 +331,7 @@ def test_job_queue_tool_is_listed_for_supervisor(env, monkeypatch):
                                      "method": "tools/list",
                                      "params": {}})["result"]["tools"]}
     for name in ("job_queue", "job_cancel", "job_front", "job_edit",
-                 "job_list"):
+                 "job_land", "job_list"):
         assert name in supervisor
     monkeypatch.setenv(SESSION_ENV, WORKER)
     worker = {tool["name"] for tool in
@@ -339,7 +339,7 @@ def test_job_queue_tool_is_listed_for_supervisor(env, monkeypatch):
                                  "method": "tools/list",
                                  "params": {}})["result"]["tools"]}
     for name in ("job_queue", "job_cancel", "job_front", "job_edit",
-                 "job_list"):
+                 "job_land", "job_list"):
         assert name not in worker
 
 
