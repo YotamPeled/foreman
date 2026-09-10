@@ -1532,6 +1532,79 @@ def front_release_main(name: str) -> int:
     return 0
 
 
+def _front_live_sessions(name: str) -> list[str]:
+    """Roster ids of this front that are still starting, running or stalled."""
+    sessions = caller.read_roster().get("sessions", {})
+    found: list[str] = []
+    for session_id, entry in sessions.items():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("front") != name:
+            continue
+        if entry.get("state") not in ("starting", "running", "stalled"):
+            continue
+        found.append(session_id)
+    return found
+
+
+def front_stop_main(name: str, reason: str | None) -> int:
+    """Kill the front's live sessions, release its team, mark it stopped.
+
+    Queued jobs stay queued. Refused unless the front is active, naming
+    the state it is in.
+    """
+    from . import launch as launch_module
+
+    me, violations = caller.resolve("front stop")
+    caller.check_role(me, "front stop", caller.FOREMAN,
+                      violations=violations)
+    record = _revised(name, violations)
+    text = (reason or "").strip() if isinstance(reason, str) else ""
+    if not text:
+        violations.append("field '--reason' is required for 'front stop'")
+    if record is not None and record.get("state") != "active":
+        shown = record.get("state") or "unknown"
+        violations.append(
+            f"front '{name.strip()}' is {shown}, not active")
+    if violations:
+        return Refusal(violations).report()
+    assert record is not None
+    key = name.strip()
+    who = caller.by_line(me)
+    for session_id in _front_live_sessions(key):
+        launch_module.cmd_kill(
+            argparse.Namespace(target=session_id, reason=text))
+    release_front(key, who)
+    current = read_front_record(key) or record
+    revise_front(key, current, who, state="stopped", stop_reason=text)
+    print(f"{key} stopped")
+    return 0
+
+
+def front_resume_main(name: str) -> int:
+    """Re-queue a stopped front with ``prefer`` unchanged.
+
+    It takes its place in the order and starts through the tick like
+    any other queued front. Refused unless the front is stopped.
+    """
+    me, violations = caller.resolve("front resume")
+    caller.check_role(me, "front resume", caller.FOREMAN,
+                      violations=violations)
+    record = _revised(name, violations)
+    if record is not None and record.get("state") != "stopped":
+        shown = record.get("state") or "unknown"
+        violations.append(
+            f"front '{name.strip()}' is {shown}, not stopped")
+    if violations:
+        return Refusal(violations).report()
+    assert record is not None
+    key = name.strip()
+    revise_front(key, record, caller.by_line(me),
+                 state="queued", stop_reason="")
+    print(f"{key} queued")
+    return 0
+
+
 def front_close_main(name: str, merged: str | None = None) -> int:
     """Mark a front done, landing its built tasks where told.
 
@@ -1994,6 +2067,14 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
     release = verbs.add_parser(
         "release", help="Give back a front's open reservations.")
     release.add_argument("name", help="front name")
+    stop = verbs.add_parser(
+        "stop", help="Stop a running front and give its team back.")
+    stop.add_argument("name", help="front name")
+    stop.add_argument("--reason", default=None,
+                      help="why it is being stopped; it lands on the record")
+    resume = verbs.add_parser(
+        "resume", help="Re-queue a stopped front.")
+    resume.add_argument("name", help="front name")
     close = verbs.add_parser("close", help="Mark a front done.")
     close.add_argument("name", help="front name")
     close.add_argument("--merged", default=None,
@@ -2033,7 +2114,7 @@ def add_front_arguments(sub: argparse.ArgumentParser) -> None:
 
 
 @cli.subcommand("front", help="Add, list, show, queue, policy, land, prefer, allocate, "
-                     "reserve, release, close, take, import or mark a "
+                     "reserve, release, stop, resume, close, take, import or mark a "
                      "front done.")
 def _front_entry(args: argparse.Namespace) -> int:
     if args.front_verb == "add":
@@ -2053,6 +2134,10 @@ def _front_entry(args: argparse.Namespace) -> int:
         return front_reserve_main(args.name, phase=args.phase)
     if args.front_verb == "release":
         return front_release_main(args.name)
+    if args.front_verb == "stop":
+        return front_stop_main(args.name, reason=args.reason)
+    if args.front_verb == "resume":
+        return front_resume_main(args.name)
     if args.front_verb == "close":
         return front_close_main(args.name, merged=args.merged)
     if args.front_verb == "take":

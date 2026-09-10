@@ -10,7 +10,7 @@ import dataclasses
 from dataclasses import dataclass, field
 from typing import Any, ClassVar
 
-FRONT_STATES = ("queued", "active", "done", "halted", "frozen")
+FRONT_STATES = ("queued", "active", "done", "halted", "frozen", "stopped")
 TASK_STATES = ("waiting", "ready", "active", "built", "landed")
 JOB_STATES = ("planned", "queued", "running", "returned", "returned-with-work",
               "verified", "failed", "killed", "died", "history")
@@ -100,6 +100,9 @@ class Front(Entity):
     #: Why the last automatic start was refused. Empty until then, and
     #: cleared on a successful start.
     start_refused: str = ""
+    #: Why ``front stop`` stopped this front. Empty unless state is
+    #: ``stopped``.
+    stop_reason: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -116,6 +119,8 @@ class Front(Entity):
             data.pop("started_at", None)
         if not data.get("start_refused"):
             data.pop("start_refused", None)
+        if not data.get("stop_reason"):
+            data.pop("stop_reason", None)
         return data
 
 
