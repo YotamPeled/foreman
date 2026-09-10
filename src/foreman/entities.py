@@ -13,7 +13,7 @@ from typing import Any, ClassVar
 FRONT_STATES = ("queued", "active", "done", "halted", "frozen")
 TASK_STATES = ("waiting", "ready", "active", "built", "landed")
 JOB_STATES = ("planned", "queued", "running", "returned", "returned-with-work",
-              "verified", "failed", "killed", "history")
+              "verified", "failed", "killed", "died", "history")
 JOB_KINDS = ("implement", "review", "merge", "research", "verify")
 JOB_ROLES = ("opus", "muse", "astra", "grok")
 #: Roles a roster session may carry: every worker role, plus the two
@@ -189,6 +189,12 @@ class Job(Entity):
     #: Why the collector moved the job, when the cause differs from the
     #: state. A timeout kill is failed with outcome_reason "job timed out".
     outcome_reason: str = ""
+    #: Why a review job died: ``quota``, ``access`` or ``no verdict``.
+    #: Empty on every other job. A died review is never a verdict.
+    died_because: str = ""
+    #: The died review this job retries. Empty unless ``job retry``
+    #: created it; nothing else writes this field.
+    retry_of: str = ""
 
 
 @dataclass(frozen=True)
@@ -486,6 +492,8 @@ class Node(Entity):
     head: str = ""
     base_sha: str = ""
     dropped: list = field(default_factory=list)
+    #: The died review a retry was queued for. Empty unless ``job retry``.
+    retry_of: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = super().to_dict()
@@ -525,6 +533,8 @@ class Node(Entity):
             data.pop("base_sha", None)
         if not data.get("dropped"):
             data.pop("dropped", None)
+        if not data.get("retry_of"):
+            data.pop("retry_of", None)
         return data
 
 

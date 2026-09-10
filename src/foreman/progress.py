@@ -709,6 +709,9 @@ def job_fail_main(job_id: str, finding: str | None = None,
                               "(verified work is evidence, not a failure)")
         elif state == "failed":
             violations.append(f"job '{key}' is already failed")
+        elif state == "died":
+            violations.append(
+                f"job '{key}' has died; job retry keeps the line")
         else:
             task, task_violation = _task_of_job(front or "", record)
             if task is None:
@@ -1137,6 +1140,20 @@ def _job_role_of_node(record: dict | None, node: dict) -> str:
         mapped = fronts._job_role_for_pool(pool) if pool else None
         return mapped or pool
     return ""
+
+
+def _node_for_job(front: str, job_id: str) -> dict | None:
+    """The tree node that recorded ``job_id``, or None."""
+    if not job_id:
+        return None
+    folded, _by_id = node_mod._read_nodes(front)
+    for node in folded:
+        if str(node.get("job") or "") == job_id:
+            return node
+    for node in folded:
+        if job_id in _node_job_ids(front, node):
+            return node
+    return None
 
 
 def _node_job_ids(front: str, node: dict) -> list[str]:
@@ -1674,16 +1691,27 @@ def job_list_main(front: str) -> int:
     folded, _by_id = node_mod._read_nodes(front_name)
     listed = [node for node in folded
               if node.get("kind") == "job"
-              and (str(node.get("state") or "") in ("queued", "running")
+              and (str(node.get("state") or "") in ("queued", "running",
+                                                    "redesign")
                    or (str(node.get("state") or "") in ("landed", "failed")
                        and (node.get("lands") or node.get("role") == "script")))]
+    jobs, _by_job = _read_jobs(front_name)
     lines = []
     for node in _queue_order(listed):
         nid = node.get("id")
         team_role = node.get("role") or ""
         job_role = _job_role_of_node(record, node)
         state = str(node.get("state") or "")
-        if state == "running":
+        if state == "redesign":
+            rounds = node.get("review_rounds") or []
+            cls = ""
+            if isinstance(rounds, list) and rounds:
+                last = rounds[-1]
+                if isinstance(last, dict):
+                    cls = last.get("class") or ""
+            lines.append(
+                f"{nid}  {team_role}  {job_role}  redesign (twice: {cls})")
+        elif state == "running":
             job_id = node.get("job") or ""
             lines.append(
                 f"{nid}  {team_role}  {job_role}  running {job_id}")
@@ -1699,8 +1727,98 @@ def job_list_main(front: str) -> int:
             waits = node.get("waits") or ""
             lines.append(
                 f"{nid}  {team_role}  {job_role}  waits: {waits}")
+    for job in jobs:
+        if not isinstance(job, dict):
+            continue
+        jid = job.get("id") or ""
+        if job.get("state") == "died":
+            because = job.get("died_because") or ""
+            lines.append(f"{jid}  died ({because})")
+        retry_of = job.get("retry_of") or ""
+        if retry_of:
+            lines.append(f"{jid}  retry of {retry_of}")
     if lines:
         print("\n".join(lines))
+    return 0
+
+
+def job_retry_main(front: str, job_id: str | None) -> int:
+    """Queue a new review job for the node of a died review.
+
+    Front supervisor only. The died line is never rewritten; the new
+    line carries ``retry_of`` naming it. Nothing else creates a retry.
+    """
+    verb = "job retry"
+    me, violations = caller.resolve(verb)
+    front_name = (front or "").strip()
+    if not front_name:
+        violations.append("field 'front' is required")
+    record = fronts.read_front_record(front_name) if front_name else None
+    if front_name and record is None:
+        violations.append(f"unknown front '{front_name}'")
+    _check(me, front_name or None, verb, violations)
+    key = "" if job_id is None else str(job_id).strip()
+    if not key:
+        violations.append("field 'job' is required")
+    died: dict | None = None
+    if record is not None and key:
+        _jobs, by_job = _read_jobs(front_name)
+        died = by_job.get(key)
+        if died is None:
+            violations.append(f"unknown job '{key}'")
+        elif died.get("state") != "died":
+            shown = died.get("state") or "unstarted"
+            violations.append(
+                f"job '{key}' is {shown}; only a died review is retried")
+        elif died.get("kind") != "review":
+            violations.append(
+                f"job '{key}' is kind {died.get('kind')}; "
+                f"only a died review is retried")
+        else:
+            for other in _jobs:
+                if other.get("retry_of") == key:
+                    violations.append(
+                        f"job '{key}' already has retry {other.get('id')}")
+                    break
+    node = None
+    if record is not None and key and died is not None:
+        node = _node_for_job(front_name, key)
+        if node is None:
+            violations.append(f"job '{key}' has no tree node to retry")
+    if violations:
+        return _refuse(violations)
+    assert record is not None and died is not None and node is not None
+    who = caller.by_line(me)
+    now = store.utcnow_iso()
+    new_id = ids.mint("job")
+    attempt = died.get("attempt")
+    attempt = attempt + 1 if isinstance(attempt, int) else 2
+    queued = entities.Job(
+        id=new_id,
+        task=died.get("task"),
+        kind="review",
+        role=str(died.get("role") or ""),
+        spec_path=str(died.get("spec_path") or ""),
+        worktree=str(died.get("worktree") or ""),
+        branch=str(died.get("branch") or ""),
+        base=str(died.get("base") or ""),
+        base_sha=str(died.get("base_sha") or ""),
+        log=str(died.get("log") or ""),
+        timeout=str(died.get("timeout") or ""),
+        units=job_units_count(died),
+        attempt=attempt,
+        state="queued",
+        queued_at=now,
+        retry_of=key,
+    ).to_dict()
+    queued["retry_of"] = key
+    store.append_ledger(
+        paths.front_jobs_path(front_name), queued, session_id=who)
+    _write_node_revise(
+        front_name, node, who, "retry",
+        state="queued", job=new_id, retry_of=key,
+        session=None, queued_at=now, waits="")
+    print(f"{new_id} retry of {key}")
     return 0
 
 
@@ -1737,6 +1855,10 @@ def add_job_arguments(sub: argparse.ArgumentParser) -> None:
     listing = verbs.add_parser(
         "list", help="Print the front's queued jobs in queue order.")
     listing.add_argument("front", help="front whose queue to print")
+    retry = verbs.add_parser(
+        "retry", help="Queue a new review for a died review job.")
+    retry.add_argument("front", help="front the job belongs to")
+    retry.add_argument("job", help="died review job to retry")
     land = verbs.add_parser(
         "land", help="Queue a script item that lands a verified job.")
     land.add_argument("front", help="front the node belongs to")
@@ -1793,6 +1915,8 @@ def _job_entry(args: argparse.Namespace) -> int:
                              after=args.after, sheet_add=args.sheet_add)
     if args.job_verb == "list":
         return job_list_main(args.front)
+    if args.job_verb == "retry":
+        return job_retry_main(args.front, args.job)
     if args.job_verb == "land":
         return job_land_main(args.front, args.node)
     if args.job_verb == "verify":

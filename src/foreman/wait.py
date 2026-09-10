@@ -20,12 +20,12 @@ from .pools._common import timeout_seconds
 POLL_SECONDS = 2.0
 
 TERMINAL = frozenset({
-    "returned", "returned-with-work", "failed", "killed", "verified",
+    "returned", "returned-with-work", "failed", "killed", "died", "verified",
     "history",
 })
 
 OK_WITHOUT_CODE = frozenset({"returned", "returned-with-work", "verified"})
-FAIL_WITHOUT_CODE = frozenset({"failed", "killed"})
+FAIL_WITHOUT_CODE = frozenset({"failed", "killed", "died"})
 
 
 def _folded_job(front: str, job_id: str) -> dict | None:

@@ -56,7 +56,7 @@ WORKER_EXEMPT_ROLES = ("supervisor", "foreman", "owner")
 RUNNING_LIKE = ("running", "starting", "stalled")
 JOB_RUNNING_LIKE = ("planned", "queued", "running")
 TERMINAL_JOB_STATES = ("returned", "returned-with-work", "verified",
-                        "failed", "killed", "history")
+                        "failed", "killed", "died", "history")
 TERMINAL_SESSION_STATES = ("exited", "killed")
 REASSERT_KINDS = (
     "supervisor silent",
@@ -539,13 +539,59 @@ def _job_head(record: dict) -> str:
     return proc.stdout.strip()
 
 
+def _job_line(front: str | None, job_id: str | None) -> dict | None:
+    """The latest jobs.jsonl line for ``job_id`` on ``front``, or None."""
+    if not front or not job_id:
+        return None
+    try:
+        records = store.read_ledger(paths.front_jobs_path(front))
+    except OSError:
+        return None
+    latest: dict | None = None
+    for record in records:
+        if isinstance(record, dict) and record.get("id") == job_id:
+            latest = record
+    return latest
+
+
+def _review_died_because(adapter, record: dict, sid: str) -> str | None:
+    """``quota``, ``access`` or ``no verdict`` for a dead review, else None.
+
+    A review session that ended with a non-empty adapter refusal, or
+    with no verdict file, is died — never returned and never a verdict.
+    Implement jobs, and reviews that left a verdict without a refusal,
+    take the ordinary returned/failed/killed path.
+    """
+    latest = _job_line(record.get("front"), record.get("job"))
+    if latest is None or latest.get("kind") != "review":
+        return None
+    refusal = None
+    if adapter is not None:
+        try:
+            refusal = adapter.refusal(Session.from_dict(record))
+        except Exception:  # noqa: BLE001 - a broken adapter must not
+            refusal = None
+    if isinstance(refusal, dict) and refusal:
+        kind = refusal.get("kind")
+        if kind == "access":
+            return "access"
+        return "quota"
+    try:
+        if not paths.session_verdict_path(sid).is_file():
+            return "no verdict"
+    except OSError:
+        return "no verdict"
+    return None
+
+
 def _mark_job(front: str | None, job_id: str | None, to_state: str,
               stamp: str | None, by: str | None = None,
               reason: str | None = None,
-              exit_code: int | None = None) -> None:
+              exit_code: int | None = None,
+              extra: dict | None = None) -> None:
     """Move a job to ``to_state``. A terminal state is terminal: when the
     latest record for the job is already returned, returned-with-work,
-    verified, failed, killed or history, nothing is appended, so a
+    verified, failed, killed, died or history, nothing is appended, so a
     returned event is never duplicated and a verification or failure is
     never overwritten by a later tick. The one append carries the one wake event for the
     job's launcher: the transition is computed here, so the event is
@@ -554,7 +600,8 @@ def _mark_job(front: str | None, job_id: str | None, to_state: str,
     (a timeout kill marks the job failed but wakes ``job timed out``).
     ``exit_code`` is the worker's code from a finish marker, or None
     when no marker was read; ``reason``, when given, is stored as
-    ``outcome_reason`` on the job line."""
+    ``outcome_reason`` on the job line. ``extra`` copies onto the new
+    line (a died review carries ``died_because``)."""
     if not front or not job_id:
         return
     try:
@@ -577,8 +624,13 @@ def _mark_job(front: str | None, job_id: str | None, to_state: str,
         revised["head"] = ""
     if reason:
         revised["outcome_reason"] = reason
+    if extra:
+        revised.update(extra)
     if stamp is not None and to_state in ("returned", "returned-with-work"):
         revised["returned_at"] = stamp
+    if to_state == "died":
+        # A death is not a verdict: drop any path the running line carried.
+        revised["verdict_path"] = ""
     if to_state == "killed":
         # A killed line is authored by whoever stopped the job, and by
         # nobody where the process merely vanished. Carrying the `by` of
@@ -1366,7 +1418,14 @@ def _tick_inner(moment: datetime, now_iso: str,
                     pool_common.unit_status(sid))
             except Exception:  # noqa: BLE001 - status never blocks a tick
                 unit_failed = False
-            if unit_failed:
+            died_because = _review_died_because(adapter, record, sid)
+            if died_because:
+                _mark_job(record.get("front"), record.get("job"),
+                          "died", now_iso,
+                          extra={"died_because": died_because},
+                          exit_code=_exit_code_of(observed, finish))
+                _release_slots(sid, now_iso, "died")
+            elif unit_failed:
                 _mark_job(record.get("front"), record.get("job"),
                           "failed", None,
                           exit_code=_exit_code_of(observed, finish))
@@ -1448,7 +1507,14 @@ def _tick_inner(moment: datetime, now_iso: str,
                               f"process(es) still alive", asserted)
                 elif state in RUNNING_LIKE:
                     update["state"] = "exited"
-                    if _finish_rc_clean(observed):
+                    died_because = _review_died_because(adapter, record, sid)
+                    if died_because:
+                        _mark_job(record.get("front"), record.get("job"),
+                                  "died", now_iso,
+                                  extra={"died_because": died_because},
+                                  exit_code=_exit_code_of(observed, finish))
+                        _release_slots(sid, now_iso, "died")
+                    elif _finish_rc_clean(observed):
                         _mark_job(record.get("front"), record.get("job"),
                                   "returned", now_iso,
                                   exit_code=_exit_code_of(observed, finish))

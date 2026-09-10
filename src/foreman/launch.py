@@ -1091,20 +1091,29 @@ def start_queued(front: str, node_id: str, *,
     branch = f"job/{front_name}-{nid}"
     base = _queued_base_branch(record, existing)
     spec_path = _queue_spec_path(front_name, nid)
-    job_id = ids.mint("job")
+    retry_of = str(existing.get("retry_of") or "").strip()
+    pending = str(existing.get("job") or "").strip()
+    if retry_of or str(existing.get("role") or "").strip() == "reviewer":
+        kind = "review"
+    else:
+        kind = "implement"
+    if retry_of and pending:
+        job_id = pending
+    else:
+        job_id = ids.mint("job")
     try:
         spec_text = render_node_page(
             front_name, existing,
             repo=repo_name, branch=branch, session_id="queued",
             job=job_id, timeout=adapter.timeout_default,
-            target=base or "", kind="implement")
+            target=base or "", kind=kind)
     except Refused as exc:
         return None, str(exc)
     write_no_symlink(spec_path, spec_text)
     argv = [
         role, pool, spec_path,
         "--front", front_name,
-        "--kind", "implement",
+        "--kind", kind,
         "--branch", branch,
         "--repo", repo_path,
         "--job", job_id,
@@ -1137,9 +1146,18 @@ def start_queued(front: str, node_id: str, *,
                 break
     session_id = session_id if isinstance(session_id, str) and session_id \
         else None
+    if retry_of:
+        _jobs, by_job = progress_mod._read_jobs(front_name)
+        job_rec = by_job.get(job_id)
+        if job_rec is not None and str(job_rec.get("retry_of") or "") != retry_of:
+            store.append_ledger(
+                paths.front_jobs_path(front_name),
+                dict(job_rec, retry_of=retry_of),
+                session_id=by)
     progress_mod._write_node_revise(
         front_name, existing, by, "started",
-        state="running", session=session_id, job=job_id, waits="")
+        state="running", session=session_id, job=job_id, waits="",
+        retry_of=retry_of)
     return job_id, ""
 
 

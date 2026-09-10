@@ -318,6 +318,7 @@ def test_state_tuples_cover_listed_states():
         "verified",
         "failed",
         "killed",
+        "died",
         "history",
     }
     assert set(entities.MERGE_STATES) == {"requested", "merging", "landed", "failed"}
