@@ -122,6 +122,10 @@ class Job(Entity):
     #: this field existed carry none, so a branch-moved check on them
     #: answers False and a failure stays a failure.
     base: str = ""
+    #: The full sha that ref resolved to at launch: origin's head after
+    #: fetch when the repository has a remote, else the local branch.
+    #: Empty on records written before this field existed.
+    base_sha: str = ""
     #: The `--because` sentence a failed or killed job was verified with.
     #: Empty on every other job; the screen renders it beside the job.
     verify_because: str = ""

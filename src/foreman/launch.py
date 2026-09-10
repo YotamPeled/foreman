@@ -285,6 +285,84 @@ def default_base(repo: str) -> str:
         return "HEAD"
 
 
+def has_origin_remote(repo: str) -> bool:
+    """True when ``repo`` lists a remote named ``origin``."""
+    proc = subprocess.run(
+        ["git", "-C", repo, "remote"],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    return proc.returncode == 0 and "origin" in proc.stdout.splitlines()
+
+
+def _short_sha(sha: str) -> str:
+    return sha[:7]
+
+
+def _local_vs_origin(repo: str, local_sha: str, origin_sha: str) -> str | None:
+    """``behind``, ``ahead of`` or ``diverged from``, or None when equal."""
+    if local_sha == origin_sha:
+        return None
+    behind = subprocess.run(
+        ["git", "-C", repo, "merge-base", "--is-ancestor",
+         local_sha, origin_sha],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    if behind.returncode == 0:
+        return "behind"
+    ahead = subprocess.run(
+        ["git", "-C", repo, "merge-base", "--is-ancestor",
+         origin_sha, local_sha],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    if ahead.returncode == 0:
+        return "ahead of"
+    return "diverged from"
+
+
+def resolve_base(repo: str, branch: str) -> tuple[str, str, str | None]:
+    """Resolve ``branch`` against origin when the repository has one.
+
+    Returns ``(start_ref, full_sha, printed_line)``. ``start_ref`` is
+    ``origin/<branch>`` after a successful fetch, or ``<branch>`` when
+    there is no origin. ``printed_line`` is the comparison (or the no
+    remote line), or None when there is nothing to say. Fetch failure
+    raises :class:`Refused` naming the branch and git's stderr. A
+    repository with no origin and no local branch returns
+    ``(<branch>, "", None)`` so the caller can refuse in its own words
+    or let ``git worktree add`` fail as it does today.
+    """
+    if not has_origin_remote(repo):
+        if not local_branch_exists(repo, branch):
+            return branch, "", None
+        sha = run_git(repo, "rev-parse", "--verify", f"refs/heads/{branch}")
+        return (
+            branch,
+            sha,
+            f"base {branch}: no remote; local {_short_sha(sha)}",
+        )
+    fetched = subprocess.run(
+        ["git", "-C", repo, "fetch", "origin", branch],
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+    )
+    if fetched.returncode != 0:
+        raise Refused(
+            f"cannot fetch origin {branch!r}: {fetched.stderr.strip()}"
+        )
+    start = f"origin/{branch}"
+    origin_sha = run_git(repo, "rev-parse", "--verify", start)
+    note = None
+    if local_branch_exists(repo, branch):
+        local_sha = run_git(
+            repo, "rev-parse", "--verify", f"refs/heads/{branch}")
+        relation = _local_vs_origin(repo, local_sha, origin_sha)
+        if relation is not None:
+            note = (
+                f"base {branch}: local {_short_sha(local_sha)} is "
+                f"{relation} origin {_short_sha(origin_sha)}; using origin"
+            )
+    return start, origin_sha, note
+
+
 def checked_out_branch(repo: str) -> str | None:
     """The branch this checkout is on, or None when it is on none."""
     try:
@@ -754,6 +832,18 @@ def cmd_launch(args: argparse.Namespace) -> int:
     if not os.path.isdir(repo):
         problems.append(f"repo {repo!r} is not a directory")
 
+    # --base against origin, when given. default_base is unchanged when
+    # the flag is absent. Fetch failure joins this list so it is named
+    # with every other refusal at once.
+    cut_from: str | None = None
+    base_sha = ""
+    base_note: str | None = None
+    if args.base is not None and os.path.isdir(repo):
+        try:
+            cut_from, base_sha, base_note = resolve_base(repo, args.base)
+        except Refused as exc:
+            problems.append(str(exc))
+
     spec_text: str | None = None
     if args.spec is not None and os.path.isabs(args.spec):
         try:
@@ -775,6 +865,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
     session_id = ids.mint("session")
     branch = args.branch or f"foreman/{session_id}"
     target = args.base or default_base(repo)
+    start_point = cut_from or target
     worktree = os.path.abspath(
         # Worktrees live under the state directory, not beside the repo:
         # a swarm must not litter the directory its repository sits in.
@@ -805,7 +896,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
                     args.branch)
             created_branch = False
         else:
-            run_git(repo, "worktree", "add", "-b", branch, worktree, target)
+            run_git(repo, "worktree", "add", "-b", branch, worktree,
+                    start_point)
     except Refused as exc:
         return refuse(str(exc))
 
@@ -981,6 +1073,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
                 kind=args.kind, role=args.role,
                 spec_path=os.path.abspath(args.spec), session=session_id,
                 worktree=worktree, branch=branch, base=target,
+                base_sha=base_sha,
                 log=log_path, timeout=timeout,
                 # The unit count the job was launched to do. It was parsed,
                 # validated and written into the job file, and then left
@@ -1001,6 +1094,8 @@ def cmd_launch(args: argparse.Namespace) -> int:
         remove_dry_run_files(repo, branch, worktree, log_path, session_id,
                              delete_branch=created_branch)
 
+    if base_note:
+        print(base_note)
     print(f"session: {session_id}")
     print(f"worktree: {worktree}")
     print(f"log: {log_path}")
