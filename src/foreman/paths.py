@@ -86,6 +86,16 @@ def collector_path() -> Path:
     return state_dir() / "collector.json"
 
 
+def clockwork_path() -> Path:
+    """Append-only: one line per clockwork item run, by the collector."""
+    return state_dir() / "clockwork.jsonl"
+
+
+def clockwork_output_dir() -> Path:
+    """Where a configured clockwork item's combined output is kept."""
+    return state_dir() / "clockwork"
+
+
 def panel_path() -> Path:
     """The panel's one summary file: every fact its eight blocks render.
 

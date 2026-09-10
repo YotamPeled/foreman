@@ -56,6 +56,7 @@ def _ensure_verbs() -> None:
     already imported; without this a server started fresh (``foreman
     mcp`` imports nothing else first) would list one tool.
     """
+    from . import clockwork as _clockwork  # noqa: F401
     from . import collector as _collector  # noqa: F401
     from . import config as _config  # noqa: F401
     from . import doctor as _doctor  # noqa: F401
