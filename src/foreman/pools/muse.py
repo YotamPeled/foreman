@@ -197,6 +197,7 @@ class MuseAdapter(PoolAdapter):
     binary = "muse"
     timeout_default = "20m"
     effort_default = "xhigh"
+    effort_min = "xhigh"
     interactive = False
 
     def command_str(self, ctx: LaunchContext) -> str:

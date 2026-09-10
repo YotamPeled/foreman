@@ -128,3 +128,87 @@ def test_invalid_effort_default_is_refused_like_timeout(env, tmp_path):
     with pytest.raises(plugins.InvalidManifest, match="effort_default") as raised:
         plugins.load_manifest(dest)
     assert "soon" in str(raised.value)
+
+
+def write_spec(root: Path) -> str:
+    spec = root / "spec.md"
+    spec.write_text(SPEC_OK, encoding="utf-8")
+    return str(spec)
+
+
+def launch(argv: list[str]) -> int:
+    return cli.main(["launch", *argv])
+
+
+def test_muse_dry_run_without_effort_uses_pool_xhigh(env, capsys):
+    """A muse launch with no --effort prints the pool default and the
+    vendor argv carries xhigh. Without the pool key it would still
+    print high, the argparse default."""
+    repo = make_repo(env / "repo")
+    spec = write_spec(env)
+    rc = launch(["muse", "muse", spec, "--repo", str(repo),
+                 "--worktree", str(env / "wt-muse-default"), "--dry-run"])
+    assert rc == 0, capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert "effort: xhigh (pool default)" in out
+    assert "--reasoning-effort xhigh" in out
+
+
+def test_muse_effort_high_is_refused_naming_the_ruling(env, capsys):
+    """Muse runs at xhigh only (ruling rul-frzifag). The refusal names
+    the pool, the ruling and the effort that was asked for, and joins
+    the collected list — a dry run that started would be the bug."""
+    repo = make_repo(env / "repo")
+    spec = write_spec(env)
+    rc = launch(["muse", "muse", spec, "--repo", str(repo),
+                 "--worktree", str(env / "wt-muse-high"),
+                 "--effort", "high", "--dry-run"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "pool muse runs at xhigh only (ruling rul-frzifag); got high" in err
+    assert "foreman launch: refused" in err
+
+
+def test_grok_dry_run_without_effort_uses_pool_high(env, capsys):
+    """Grok's packaged default is high; a dry run with no --effort
+    must run at high, not at whatever the adapter used to hard-code."""
+    repo = make_repo(env / "repo")
+    spec = write_spec(env)
+    rc = launch(["grok", "grok", spec, "--repo", str(repo),
+                 "--worktree", str(env / "wt-grok-default"), "--dry-run"])
+    assert rc == 0, capsys.readouterr().err
+    out = capsys.readouterr().out
+    assert "effort: high (pool default)" in out
+    assert "--reasoning-effort high" in out
+
+
+def test_launch_without_effort_default_names_the_key(env, capsys):
+    """A fixture pool that omitted effort_default inherits nothing: a
+    launch with no --effort is refused naming the key to add."""
+    write_user_pool(
+        "noeffort",
+        'name = "noeffort"\n'
+        'model = "no-effort-model"\n'
+        'timeout_default = "5m"\n'
+        'interactive = false\n'
+        'roles = ["muse"]\n'
+        'adapter = "grok"\n',
+    )
+    repo = make_repo(env / "repo")
+    spec = write_spec(env)
+    rc = launch(["muse", "noeffort", spec, "--repo", str(repo),
+                 "--worktree", str(env / "wt-noeffort"), "--dry-run"])
+    assert rc == 1
+    err = capsys.readouterr().err
+    assert "effort_default" in err
+    assert "noeffort" in err
+    assert "foreman launch: refused" in err
+
+
+def test_muse_packaged_manifest_carries_effort_min_xhigh(env):
+    """The floor lives on the muse manifest and the adapter, so a user
+    clone keeps it and a packaged launch without a directory pool still
+    refuses below xhigh."""
+    manifest = plugins.load_manifest(plugins.packaged_dir("muse"))
+    assert manifest.effort_min == "xhigh"
+    assert get_pool("muse").effort_min == "xhigh"

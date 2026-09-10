@@ -30,6 +30,8 @@ Adapter contract (the whole interface a new pool must implement):
   key has ``None`` and a launch without ``--effort`` is refused naming
   the key to add. Default ``"high"`` so an in-memory adapter (a test
   fake) keeps today's behaviour.
+- ``effort_min``: optional floor; a launch below it is refused. Muse
+  ships ``xhigh`` (ruling rul-frzifag). Default ``None``.
 - ``interactive``: only ``interactive = True`` pools may open a window.
 - ``launch(ctx) -> int``: start the worker detached, return its pid. The
   worker shell writes its own pid to ``ctx.pid_path`` as its first act;
@@ -100,6 +102,7 @@ class PoolAdapter:
     binary_is_foreman_worker: bool = True
     timeout_default: str = "20m"
     effort_default: str | None = "high"
+    effort_min: str | None = None
     interactive: bool = False
 
     def launch(self, ctx: LaunchContext) -> int:

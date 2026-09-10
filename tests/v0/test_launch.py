@@ -343,19 +343,18 @@ def test_bad_units_refused(env, fake_pool, capsys):
     assert "bad units" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("effort", ["high", "xhigh"])
-def test_dry_run_prints_muse_command(env, capsys, effort):
+def test_dry_run_prints_muse_command(env, capsys):
     repo = make_repo(env / "repo")
     spec = write_spec(env, "spec.md", SPEC_OK)
     worktree = str(env / "wt-dry")
     rc = launch(["muse", "muse", spec, "--repo", str(repo),
-                 "--worktree", worktree, "--effort", effort, "--dry-run"])
+                 "--worktree", worktree, "--effort", "xhigh", "--dry-run"])
     assert rc == 0
     out = capsys.readouterr().out
     sid = session_line(out)
     assert "muse exec" in out
     assert "--model muse-spark-1.3-contributor" in out
-    assert f"--reasoning-effort {effort}" in out
+    assert "--reasoning-effort xhigh" in out
     assert "--approval-mode never" in out
     assert "--json" in out
     assert "--yolo" not in out

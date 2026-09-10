@@ -276,7 +276,8 @@ def test_add_scaffolds_a_listable_pool_that_refuses_to_launch(env, capsys):
     spec.write_text(SPEC_OK, encoding="utf-8")
     rc = cli.main(["launch", "muse", "newpool", str(spec),
                    "--repo", str(repo),
-                   "--worktree", str(env / "wt-newpool")])
+                   "--worktree", str(env / "wt-newpool"),
+                   "--effort", "high"])
     assert rc == 1
     err = capsys.readouterr().err
     assert "failed to start the process" in err
@@ -377,6 +378,7 @@ def test_user_claude_pool_launches_its_manifest_model(env, capsys):
                     'name = "fable"\n'
                     'model = "claude-fable-5-1"\n'
                     'timeout_default = "20m"\n'
+                    'effort_default = "high"\n'
                     'interactive = false\n'
                     'roles = ["opus"]\n'
                     'adapter = "claude"\n')

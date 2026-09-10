@@ -85,6 +85,9 @@ class PoolManifest:
     #: the directory omitted the key. A packaged pool always names one;
     #: a user pool without it inherits nothing.
     effort_default: str | None = None
+    #: Optional floor: a launch below this is refused. Muse ships
+    #: ``xhigh`` (ruling rul-frzifag).
+    effort_min: str | None = None
     roles: tuple[str, ...] = ()
     #: Extra names an agent string may use for this pool (a model
     #: nickname, a role the owner types). Optional; validated like roles.
@@ -194,6 +197,7 @@ def load_manifest(directory: Path | str) -> PoolManifest:
                        f"'timeout_default' must parse like '20m', "
                        f"got {timeout!r})")
     effort_default = _optional_effort(path, raw, "effort_default")
+    effort_min = _optional_effort(path, raw, "effort_min")
     interactive = raw.get("interactive", False)
     if not isinstance(interactive, bool):
         raise _invalid(f"{path} misnames 'interactive' "
@@ -238,7 +242,7 @@ def load_manifest(directory: Path | str) -> PoolManifest:
         vendor_stdin = stdin
     return PoolManifest(
         name=name, model=model, timeout_default=timeout,
-        effort_default=effort_default,
+        effort_default=effort_default, effort_min=effort_min,
         interactive=interactive, roles=tuple(roles),
         aliases=tuple(aliases),
         adapter=adapter, vendor_argv=vendor_argv,
@@ -483,6 +487,7 @@ class DirectoryPool(PoolAdapter):
         self.model = manifest.model
         self.timeout_default = manifest.timeout_default
         self.effort_default = manifest.effort_default
+        self.effort_min = manifest.effort_min
         self.interactive = manifest.interactive
         self.roles: tuple[str, ...] = manifest.roles
         self.binary = _vendor_binary(manifest)

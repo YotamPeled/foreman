@@ -6,7 +6,9 @@ on a new branch from the base branch (a review of an existing branch
 checks that branch out detached instead, and creates no branch); create
 the per-session directory holding a log file that is never reused;
 resolve the timeout from the pool's default unless ``--timeout``
-overrides; write ``FOREMAN-JOB.md`` (with the role prompt embedded, so
+overrides, and the effort from the pool's default unless ``--effort``
+overrides (a launch below the pool's ``effort_min`` is refused);
+write ``FOREMAN-JOB.md`` (with the role prompt embedded, so
 the worker actually receives it) and ``FOREMAN-ROLE.md`` into the
 worktree, refusing symlinks; record the session on the roster snapshot
 under one lock; start the process through the pool's adapter and move
@@ -172,7 +174,9 @@ def add_launch_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--units", default=None,
                         help="unit count, e.g. 4 (default: every unit "
                              "the task still lacks)")
-    parser.add_argument("--effort", default="high", choices=EFFORTS)
+    parser.add_argument("--effort", default=None, choices=EFFORTS,
+                        help="low, medium, high or xhigh "
+                             "(pool default otherwise)")
     parser.add_argument("--scope", default=None, help="task scope text")
     parser.add_argument("--window", action="store_true",
                         help="owner debugging only: open this worker in a "
@@ -643,6 +647,18 @@ def render_worker_prompt(*, role: str, front: str, supervisor: str,
     })
 
 
+def effort_below(got: str, minimum: str) -> bool:
+    """True when ``got`` is strictly weaker than ``minimum``.
+
+    Rank is the order of :data:`EFFORTS` (low < medium < high < xhigh).
+    A name the launcher does not offer is not compared.
+    """
+    try:
+        return EFFORTS.index(got) < EFFORTS.index(minimum)
+    except ValueError:
+        return False
+
+
 def refuse(*problems: str) -> int:
     print("foreman launch: refused", file=sys.stderr)
     for problem in problems:
@@ -825,6 +841,28 @@ def cmd_launch(args: argparse.Namespace) -> int:
         problems.append(
             f"bad timeout {args.timeout!r}; use a number with a unit, e.g. 20m"
         )
+    # --effort absent uses the pool's default. A user pool that omitted
+    # the key inherits nothing: the launch names the key to add. A
+    # launch below effort_min joins this list (muse: xhigh only).
+    effort: str | None = args.effort
+    effort_from_pool = False
+    if adapter is not None:
+        if effort is None:
+            default = getattr(adapter, "effort_default", None)
+            if isinstance(default, str) and default:
+                effort = default
+                effort_from_pool = True
+            else:
+                problems.append(
+                    f"pool {args.pool} names no effort_default; "
+                    f"add the key or pass --effort")
+        minimum = getattr(adapter, "effort_min", None)
+        if (isinstance(effort, str) and effort
+                and isinstance(minimum, str) and minimum
+                and effort_below(effort, minimum)):
+            problems.append(
+                f"pool {args.pool} runs at {minimum} only "
+                f"(ruling rul-frzifag); got {effort}")
     try:
         explicit_units = parse_units(args.units) \
             if args.units is not None else None
@@ -904,6 +942,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
     if problems:
         return refuse(*problems)
     assert spec_text is not None and adapter is not None
+    assert effort is not None
 
     # The count travels, not the flag: an explicit `--units n` credits n,
     # and the default is every unit the task still lacks.
@@ -1019,7 +1058,7 @@ def cmd_launch(args: argparse.Namespace) -> int:
             branch=branch,
             target=target,
             timeout=timeout,
-            effort=args.effort,
+            effort=effort,
             units=units,
             kind=args.kind,
             window=bool(getattr(args, "window", False)),
@@ -1146,6 +1185,10 @@ def cmd_launch(args: argparse.Namespace) -> int:
     print(f"worktree: {worktree}")
     print(f"log: {log_path}")
     print(f"pid: {pid if pid is not None else '(not started --dry-run)'}")
+    if effort_from_pool:
+        print(f"effort: {effort} (pool default)")
+    else:
+        print(f"effort: {effort}")
     print(f"command: {command}")
     print_world()
     if not args.dry_run:
